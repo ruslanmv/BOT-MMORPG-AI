@@ -12,7 +12,9 @@ The **MMORPG** that I will choose for this project is [NewWorld](https://www.new
 
 
 
-![](assets/images/posts/README/new.jpg)
+<img src="assets/images/posts/README/new.png" style="zoom:50%;" />
+
+
 
 but also this program should be compatible with  **World of Warcraft**, **Genshin Impact**, **Guild Wars 2** ,**Final Fantasy XIV**, Elder **Scrolls Online** and so on.
 
