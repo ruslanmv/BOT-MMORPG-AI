@@ -87,7 +87,9 @@ C:\IMG\right_2021_10_17_12_15_45_810.jpg
 
 We are going to use the default key bindings for the standard Keyboard + Mouse controls. 
 
-The first  aim of this program is register only the **navigation** and  **combat**  during the gameplay.
+The first  aim of this program is register only the **navigation** and  **combat**  during the gameplay. 
+
+For optimal use of this program, the gameplay resolution should be  1920x 1080, 4k resolution currently is not supported.
 
 
 
