@@ -87,7 +87,7 @@ C:\IMG\right_2021_10_17_12_15_45_810.jpg
 
 We are going to use the default key bindings for the standard Keyboard + Mouse controls. 
 
-The first  aim of this program is register only the navigation and the **combat**+**navigation**
+The first  aim of this program is register only the **navigation** and  **combat**  during the gameplay.
 
 
 
