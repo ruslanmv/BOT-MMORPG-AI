@@ -243,13 +243,13 @@ column:   datetime+.jpg , W, S,A,D,Shift,Z,LeftCTRL ,Space,LeftMouseButton,Holdl
 
 
 
-For example of the csv when  is **AFK**
+For example  when during the registration the character is **AFK** (away from keyboard)  the **.csv** file should have the following data:
 
 
 
 C:\IMG\gameplay_2021_10_17_12_15_37_666.jpg, 0,0,0,0,0,0,0,0,0,0,0,0,0
 
- C:\IMG\gameplay_2021_10_17_12_15_37_771.jpg,  0,0,0,0,0,0,0,0,0,0,0,0,0
+C:\IMG\gameplay_2021_10_17_12_15_37_771.jpg,  0,0,0,0,0,0,0,0,0,0,0,0,0
 
  C:\IMG\gameplay_2021_10_17_12_15_37_876.jpg, 0,0,0,0,0,0,0,0,0,0,0,0,0
 
@@ -260,3 +260,4 @@ C:\IMG\gameplay_2021_10_17_12_15_37_666.jpg, 0,0,0,0,0,0,0,0,0,0,0,0,0
 .
 
 C:\IMG\right_2021_10_17_12_15_45_810.jpg,  0,0,0,0,0,0,0,0,0,0,0,0,0
+
