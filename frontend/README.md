@@ -237,7 +237,7 @@ The log file  should be saved in the directory **LOG**:
 
 Each row of the dataset should include
 
-#column :      1                    2   3   4      5     6                 7             8                                    9                                     10                     11      12  13
+#column :      1                    2  3 4 5   6      7  8               9         10                            11                                   12                             13       14 15
 
 column:   datetime+.jpg , W, S,A,D,Shift,Z,LeftCTRL ,Space,LeftMouseButton,Holdleftmousebutton,RightMouseButton,LShift, x  ,R
 
@@ -247,17 +247,17 @@ For example  when during the registration the character is **AFK** (away from ke
 
 
 
-C:\IMG\gameplay_2021_10_17_12_15_37_666.jpg, 0,0,0,0,0,0,0,0,0,0,0,0,0
+C:\IMG\gameplay_2021_10_17_12_15_37_666.jpg, 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
 
-C:\IMG\gameplay_2021_10_17_12_15_37_771.jpg,  0,0,0,0,0,0,0,0,0,0,0,0,0
+C:\IMG\gameplay_2021_10_17_12_15_37_771.jpg,  0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
 
- C:\IMG\gameplay_2021_10_17_12_15_37_876.jpg, 0,0,0,0,0,0,0,0,0,0,0,0,0
-
-.
+ C:\IMG\gameplay_2021_10_17_12_15_37_876.jpg, 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
 
 .
 
 .
 
-C:\IMG\right_2021_10_17_12_15_45_810.jpg,  0,0,0,0,0,0,0,0,0,0,0,0,0
+.
+
+C:\IMG\right_2021_10_17_12_15_45_810.jpg,   0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
 
