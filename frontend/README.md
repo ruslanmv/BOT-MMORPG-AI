@@ -45,9 +45,7 @@ jupyter lab
 
 ## Requirements of the images gameplay (v.01)
 
-The pictures of the gameplay should be  with the following requirements;
-
-
+The pictures of the gameplay should satisfy the following requirements:
 
 Dimensions: **320x160**, 
 
@@ -62,8 +60,6 @@ Vertical resolution: **96 dpi**
 Bith depth: **24**
 
 Format: **JPG**
-
-
 
 The screenshots should be saved in the directory **IMG**, for example:
 
@@ -173,7 +169,7 @@ The following controls are not considered in the current version of the registra
 
 
 
-## Considered
+## Considered controls in the registration
 
 ### Melee Combat
 
