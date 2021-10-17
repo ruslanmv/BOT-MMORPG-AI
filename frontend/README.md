@@ -81,33 +81,15 @@ C:\IMG\gameplay_2021_10_17_12_15_37_771.jpg
 
 C:\IMG\right_2021_10_17_12_15_45_810.jpg
 
-
-
-
-
-
-
 **Controls** for **[New World](https://newworld.wiki.fextralife.com/New+World+Wiki)** covers information on input methods supported by the game and used to control the player character as well as navigate menus and user interfaces. 
 
 
 
-For the logging 
-
-
-
-
-
-
-
-##  New World Controls 
+## New World Controls Registration
 
 ### PC Key Bindings
 
-The following are the default key bindings for the standard Keyboard + Mouse controls. 
-
-
-
-
+We are going to use the default key bindings for the standard Keyboard + Mouse controls. 
 
 The first  aim of this program is register only the navigation and the **combat**+**navigation**
 
@@ -115,7 +97,7 @@ The first  aim of this program is register only the navigation and the **combat*
 
 ## Not considered
 
-The following controls are not considered in the current version of the registration
+The following controls are not considered in the current version of the registration:
 
 ### Camera
 
