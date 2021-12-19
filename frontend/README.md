@@ -205,11 +205,7 @@ C:\IMG\right_2021_10_17_12_15_45_810.jpg,   0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
 
 The keybord recording will be given by one python script as follows:
 
-**[Keyboard recording](./keyboard_recording/README.md)** 
+**[Keyboard and Mouse recording](./recording/README.md)** 
 
-### Mouse Recording
 
-The mouse recording will be given by one python script as follows:
-
-**[Keyboard recording](./keyboard_recording/README.md)** 
 
