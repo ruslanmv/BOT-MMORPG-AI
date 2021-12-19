@@ -209,11 +209,19 @@ C:\IMG\right_2021_10_17_12_15_45_810.jpg,   0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
 
 
 
-### Keyboard Recording
+## Layer 1: Generation of Data 
 
-The keybord recording will be given by one python script as follows:
+### Keyboard/Mouse Recording
 
-**[Keyboard and Mouse recording](./recording/README.md)** 
+The keybord and mouse recording will be given by one python script 
+
+**[Keyboard and Mouse recording](./input_record/README.md)** 
 
 
+
+### Video Recording
+
+The screen vide recording will be given by one python script 
+
+**[Screen video_recording](./video_record/README.md)** 
 
