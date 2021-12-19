@@ -28,7 +28,7 @@ a) By  recording the **keyboard** + **mouse** during the **gameplay** in PC. The
 
 b) By recording the **gameplay screen**.
 
-Also this layer includes the merge of both source of data into a single formated dataset that is already formated ready to use.
+Also this layer includes the merge of both sources of data into a single formated dataset that is already formated ready to use.
 
 **Layer 2**. We should incorporate a mechanims that ingest the temporal data into a  datalake.
 
