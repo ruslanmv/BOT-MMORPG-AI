@@ -8,32 +8,34 @@
 
 Here we are going to create a program that will record the the keyboard and mouse and screen during your gameplay.
 
-The **frontend layer** of this project is one of **hardest** part due to the **anticheat security system** of the games.  So the methodology chosen should be the most simple possible and undetectable, I know is not quite easy to afford that however in general always there are ways to achieve that.
+The **frontend layer** of this project is one of **hardest** part due to the **anticheat security system** of the games.  So the methodology chosen should be the most simple possible and undetectable, I know is not quite easy to afford that but in general always there are ways to achieve that.
 
 
 
-## Methodology  
+## Frontend Design 
 
-The manner to get the data, in this project will be done by recording the **keyboard** + **mouse** during the **gameplay** in PC.
+The frontend part consists basically intro three layers.
 
-The current project does not support mobile games. 
+![](assets/images/posts/README/genshin.png)
 
-We wont use any commercial program to solve this problem. We want to use a free , open source program that anyone can read ,modify and improve.
+**Layer 0** is the layer where the player start playing the videogame.
 
+**Layer 1**. In this part we  generate the data by  recording the **keyboard** + **mouse** during the **gameplay** in PC. The current project does not support mobile games at the moment. 
 
+**Layer 2**. We should incorporate a mechanims that ingest the temporal data into a  datalake.
+
+We wont use any commercial program to solve this problem. We want to use a **free** , **open source** program that anyone can **read** ,**modify** and **improve**.
 
 ## Environment setup
 
+
+
 We will use a python language as a base to develop the **first layer** of the generation of the data.
 
-The second layer should be the ingestion to the **datalake**
+The **second layer** should be the ingestion to the **datalake**.
 
 
-
-
-First we will need create a new environment to perform our program.
-
-First you need to install anaconda at this [link](https://www.anaconda.com/products/individual)
+For the local enviroment we  need to install anaconda at this [link](https://www.anaconda.com/products/individual)
 
 <img src="../assets/images/posts/README/1-16336103937251.jpg" alt="img" style="zoom:40%;" />
 
@@ -67,10 +69,6 @@ then open the jupyterlab with the command
 ```
 jupyter lab
 ```
-
-
-
-
 
 ## Requirements of the images gameplay (v.01)
 
