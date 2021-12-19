@@ -47,3 +47,5 @@ Please free  to contribute following the standard guidelines for submitting patc
 
 To more information visit [ruslanmv.com](https://ruslanmv.com/).
 
+Copyright 2021 Ruslan Magana Vsevolodovna <contactATruslanmvDOTcom>
+This program is distributed under the terms of the GNU Lesser General Public License.

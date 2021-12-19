@@ -20,7 +20,15 @@ The frontend part consists basically intro three layers.
 
 **Layer 0** is the layer where the player start playing the videogame.
 
-**Layer 1**. In this part we  generate the data by  recording the **keyboard** + **mouse** during the **gameplay** in PC. The current project does not support mobile games at the moment. 
+**Layer 1**. In this part we  generate the data.
+
+It consists into two parts.
+
+a) By  recording the **keyboard** + **mouse** during the **gameplay** in PC. The current project does not support mobile games at the moment. 
+
+b) By recording the **gameplay screen**.
+
+Also this layer includes the merge of both source of data into a single formated dataset that is already formated ready to use.
 
 **Layer 2**. We should incorporate a mechanims that ingest the temporal data into a  datalake.
 
