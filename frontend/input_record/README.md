@@ -7,7 +7,7 @@ AutoHotPy doesn't really need any. You just place the scripts in the same folder
 
 1. Verify you have Python installed
 
-2. Install git for Windows [here](https://github.com/git-for-windows/git/releases/download/)
+2. Install git for Windows [here](https://git-scm.com/download/win)
 
 3. Run your terminal as administrator
 
