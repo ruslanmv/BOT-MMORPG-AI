@@ -62,7 +62,7 @@ The time that we will choose is **12:00**
 
 There are two different versions of the same program. 
 
-**Type 1   **- The **type blog**, via **Jupyter Notebook** in the format **.ipynb**
+**Type 1**- The **type blog**, via **Jupyter Notebook** in the format **.ipynb**
 
 **Type 2**- The **type prod**, via **Python** by using **command Prompt.**
 
