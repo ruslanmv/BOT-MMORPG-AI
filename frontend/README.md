@@ -1,9 +1,5 @@
 
 
-
-
-
-
 ## Frontend - Gameplay  Record
 
 Here we are going to create a program that will record the the keyboard and mouse and screen during your gameplay.
@@ -24,7 +20,7 @@ The frontend part consists basically intro three layers.
 
 It consists into two parts.
 
-a) By  recording the **keyboard** + **mouse** during the **gameplay** in PC. The current project does not support mobile games at the moment. 
+a) By  recording the **keyboard** + **gamepad** during the **gameplay** in PC. The current project does not support mobile games at the moment. 
 
 b) By recording the **gameplay screen**.
 
@@ -33,6 +29,20 @@ Also this layer includes the merge of both sources of data into a single formate
 **Layer 2**. We should incorporate a mechanims that ingest the temporal data into a  datalake.
 
 We wont use any commercial program to solve this problem. We want to use a **free** , **open source** program that anyone can **read** ,**modify** and **improve**.
+
+
+
+# Design of the Solution for Task 1
+
+For the Task 1, we are going to consider Mondstand as the Initial Point and Thousand Wind Temple the Final Point.
+
+![](assets/images/posts/README/Image0a.png)
+
+The first **dataset** that we are going to create  will record only the **gamepad**. For this project we will consider a simple **xbox one** controller, attached to the game.
+
+![](assets/images/posts/README/Image02.jpg)
+
+
 
 ## Environment setup
 

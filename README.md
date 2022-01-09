@@ -26,11 +26,47 @@ We will start with  local development  and some free AWS microservices.
 
 
 
+
+
+## Tasks to perform
+
+The first tasks that we want to perform are: 
+
+Create a Neural Network that allow the following:
+
+1. Auto exploration
+2. Kill moobs in a Dungeon
+3. Collect items.
+
+
+
+## Task 1 Auto exploration
+
+The first challenge that we want to perform is develop an **Neural Network** that allow us run from the Initial **Point A** until  final **Point B**
+
+we will consider the initial  point **Mondstand** and the Final point **Thousand Wind Temple**
+
+![](assets/images/posts/README/Image00.png)
+
+
+
+
+
+The time that we will choose is **12:00**
+
+![](assets/images/posts/README/Image01.jpeg)
+
+
+
+
+
+
+
 ## Current Solution
 
 The preliminary solution is given with the following parts:
 
-1. **[Creation of the frontend application](./frontend/README.md)** - Here, we need to create the python program that will record our gameplay and control our videogame. This program should be able to record the screen during the gameplay.  (**updated dec 2021**)      
+1. **[Creation of the frontend application](./frontend/README.md)** - Here, we need to create the python program that will record our gameplay and control our videogame. This program should be able to record the screen during the gameplay.  (**updated Jan 2022**)      
 2. **Creation of the backend pipeline** Here, we need to create a pipeline program that will move the recorded data into the cloud. Here we can use object storage like **s3** or **minio**. This allows us do not to saturate the **hard disk** on the client side during the **gameplay.** 
 3. **Creation of the Dataset** - In this part, we have to create a dataset of the gameplay, recording the keys and mouse position and the screen. The recorded dataset may be stored in a non-relational database.
 4. **Data wrangling** -This part, we have to augment the images correctly to create the appropriate machine learning model. Here we need to apply good skills in computer vision.
