@@ -1,26 +1,8 @@
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 ## Frontend - Gameplay  Record
 
 Here we are going to create a program that will record the the keyboard and mouse and screen during your gameplay.
 
 The **frontend layer** of this project is one of **hardest** part due to the **anticheat security system** of the games.  So the methodology chosen should be the most simple possible and undetectable, I know is not quite easy to afford that but in general always there are ways to achieve that.
-
-
 
 ## Frontend Design 
 
@@ -60,6 +42,52 @@ The first **dataset** that we are going to create  will record only the **gamepa
 
 
 
+
+
+## Prerequisites
+
+This library should work with anything after Python 3.6, albeit testing has only been done on 3.8.4 and later. Currently the only supported OS is Windows 10.
+
+To use the Virtual Controller object, you need `ScpVBus`. For ease [one of it's versions](https://github.com/shauleiz/vXboxInterface) is included in this project. More information about the original can be found at [nefarius's archived repo](https://github.com/nefarius/ScpVBus).
+You'll probably also require [x360ce](https://www.x360ce.com/#Help_Old_Version) for easing the connection to games as well as debugging it. I've included it's older version as that's the one that worked for me. 
+
+##  Connect xbox controller to Windows 10
+
+To connect any xbox  game controller to Windows 10, follow this procedure step by step:
+
+Click the **Search** button, type **Settings** in the search bar. 
+
+The **Windows Settings** screen will open. Select **Devices** option as follows:
+
+![Windows settings](assets/images/posts/README/word-image-60-1024x480.png)
+
+As you will select the **Devices** option, the following screen will appear:
+
+![Bluetooth and Other services](assets/images/posts/README/word-image-61-1024x492.png)
+
+Select **Add Bluetooth or other device** option as the above image is showing. As you will select this option, the following dialogue will appear:
+
+![](assets/images/posts/README/blutu2.jpg)
+
+Select the **Bluetooh** option as above image is showing. It will display the connected **Game Controller**, select that and click **Done** button.![](assets/images/posts/README/blutu23.jpg)
+
+### Installing ScpVbus
+
+We need ScpVBus to talk to Windows about gamepad related details:
+Open an elevated cmd command prompt in the ScpVBus-x64 directory and run `devcon.exe install ScpVBus.inf Root\ScpVBus`. Successful run is indicated by the following message:
+
+    Device node created. Install is complete when drivers are installed...
+    Updating drivers for Root\ScpVBus from {Location}\PYXInput\ScpVBus-x64\ScpVBus.inf.
+    Drivers installed successfully.
+
+After you have installed your **Driver**, connect yuo xbox driver, you can open the program at`versions\0.01\vXboxInterface-x64\SCPUser.exe` and you will see
+
+
+
+
+
+![](assets/images/posts/README/xbox.jpg)
+
 ## Layer 1: Generation of Data 
 
 ### Keyboard/ Gamepad/ Mouse Recording
@@ -77,24 +105,6 @@ For future release we can use
 The screen vide recording will be given by one python script 
 
 **[Screen video_recording](./video_record/README.md)** 
-
-## Prerequisites
-
-This library should work with anything after Python 3.6, albeit testing has only been done on 3.8.4 and later. Currently the only supported OS is Windows 10.
-
-To use the Virtual Controller object, you need `ScpVBus`. For ease [one of it's versions](https://github.com/shauleiz/vXboxInterface) is included in this project. More information about the original can be found at [nefarius's archived repo](https://github.com/nefarius/ScpVBus).
-You'll probably also require [x360ce](https://www.x360ce.com/#Help_Old_Version) for easing the connection to games as well as debugging it. I've included it's older version as that's the one that worked for me. 
-
-### Installing ScpVbus
-
-We need ScpVBus to talk to Windows about gamepad related details:
-Open an elevated cmd command prompt in the ScpVBus-x64 directory and run `devcon.exe install ScpVBus.inf Root\ScpVBus`. Successful run is indicated by the following message:
-
-    Device node created. Install is complete when drivers are installed...
-    Updating drivers for Root\ScpVBus from {Location}\PYXInput\ScpVBus-x64\ScpVBus.inf.
-    Drivers installed successfully.
-
-
 
 ## Environment setup
 

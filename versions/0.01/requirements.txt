@@ -1,0 +1,14 @@
+#numpy
+pandas
+tensorflow
+opencv-python
+pypiwin32
+tflearn
+
+#pip3 uninstall numpy
+#pip3 install numpy==1.16.4
+#https://stackoverflow.com/questions/55890813/how-to-fix-object-arrays-cannot-be-loaded-when-allow-pickle-false-for-imdb-loa/56062555
+#Since NumPy version 19.0, one must specify dtype=object
+#when creating an array from "ragged" sequences. I'm faced with a large number
+# of array calls from my own code and Pandas using threading, line-by-line debugging led me nowhere.
+

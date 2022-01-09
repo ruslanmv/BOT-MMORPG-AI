@@ -95,7 +95,7 @@ The preliminary solution is given with the following parts:
 
 Currently, to use the latest version of this AI, you will need to run first 
 
-[1-collect_data.ipynb](./v01/1-collect_data.ipynb)
+[1-collect_data.ipynb](./versions/0.01/1-collect_data.ipynb)
 
 or
 
@@ -107,7 +107,7 @@ You need this for both training and testing.
 
 Next, Train the model with
 
-[2-train_model.ipynb](./v01/2-train_model.ipynb)
+[2-train_model.ipynb](./versions/0.01/2-train_model.ipynb)
 
 or
 
