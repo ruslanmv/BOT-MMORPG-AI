@@ -58,7 +58,21 @@ The time that we will choose is **12:00**
 
 
 
+# How to run the BOT-MMORPG program
 
+There are two different versions of the same program. 
+
+**Type 1   **- The **type blog**, via **Jupyter Notebook** in the format **.ipynb**
+
+**Type 2**- The **type prod**, via **Python** by using **command Prompt.**
+
+The **Type 1**, the non prod, is the self-explanatory program written in **Jupyter notebook.**   
+
+ The reason to do that is familiarize with the code, and see the  logic the development. In this way anyone who is interested to understand why I have made the program in this way.
+
+This help to newcomers introduce the code , and help find bugs. In addition allows write the code type blog.
+
+The **Type 2** is the production program, written in simply python script, without discussions or extra things that are not needed to run the whole program. Here we skip all the analysis of the type 1 and just we  put everything a clean as a possible.
 
 
 
@@ -74,6 +88,50 @@ The preliminary solution is given with the following parts:
 6. **Training g Docker Container** -Creation o the Docker container environment with **JypyterLab** for this Bot project with all the training packages.
 7. **Training of the model** - Here, we need to train the neural network. Here we may require a cluster. We can use the **Colab** to use the training with colab or pay a little to run a cluster on **EMR AWS** with a Container with all our environment ready.
 8. **Creation of the frontend application that plays** - Here, we need to create a program that reads the game's screen and depends on what executes the **Artificial intelligence Model** you have made before.
+
+
+
+## How to use BOT-MMORPG
+
+Currently, to use the latest version of this AI, you will need to run first 
+
+[1-collect_data.ipynb](./v01/1-collect_data.ipynb)
+
+or
+
+1-collect_data.py
+
+When creating training data, this works when you have the game, in fullscreen mode, 1980x1080 resolution.
+
+You need this for both training and testing.
+
+Next, Train the model with
+
+[2-train_model.ipynb](./v01/2-train_model.ipynb)
+
+or
+
+2-train_model.py
+
+Finally, use the model in game with 
+
+3-test_model.ipynb 
+
+or
+
+3-test_model .py
+
+
+
+## Acknowledgments
+
+* Everyone at the [gamePyd](https://github.com/4amVim/gamePyd) proyect
+* Everyone at [vJoy](http://vjoystick.sourceforge.net/site/) for the vXboxInterface DLL
+* [nefarius](https://github.com/nefarius) for [ScpVBus](https://github.com/nefarius/ScpVBus)
+* See also the list of [contributors](https://github.com/bayangan1991/PYXInput/graphs/contributors) who participated in PYXinput 
+* This project  it is possible thank you the previous projects
+  [Self-Driving-Car-with-Neural-Networks](https://ruslanmv.com/blog/Self-Driving-Car-with-Neural-Networks) 
+* Everyone at [PyGTA5](https://github.com/Sentdex/pygta5) project
 
 
 

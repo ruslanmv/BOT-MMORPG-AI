@@ -1,5 +1,19 @@
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 ## Frontend - Gameplay  Record
 
 Here we are going to create a program that will record the the keyboard and mouse and screen during your gameplay.
@@ -41,6 +55,44 @@ For the Task 1, we are going to consider Mondstand as the Initial Point and Thou
 The first **dataset** that we are going to create  will record only the **gamepad**. For this project we will consider a simple **xbox one** controller, attached to the game.
 
 ![](assets/images/posts/README/Image02.jpg)
+
+
+
+
+
+## Layer 1: Generation of Data 
+
+### Keyboard/ Gamepad/ Mouse Recording
+
+The keybord and mouse recording will be given by one python script 
+
+The version v01 of this program will consider only the Keyboard and Gamepad.
+
+For future release we can use
+
+**[Keyboard and Mouse recording](./input_record/README.md)** 
+
+### Video Recording
+
+The screen vide recording will be given by one python script 
+
+**[Screen video_recording](./video_record/README.md)** 
+
+## Prerequisites
+
+This library should work with anything after Python 3.6, albeit testing has only been done on 3.8.4 and later. Currently the only supported OS is Windows 10.
+
+To use the Virtual Controller object, you need `ScpVBus`. For ease [one of it's versions](https://github.com/shauleiz/vXboxInterface) is included in this project. More information about the original can be found at [nefarius's archived repo](https://github.com/nefarius/ScpVBus).
+You'll probably also require [x360ce](https://www.x360ce.com/#Help_Old_Version) for easing the connection to games as well as debugging it. I've included it's older version as that's the one that worked for me. 
+
+### Installing ScpVbus
+
+We need ScpVBus to talk to Windows about gamepad related details:
+Open an elevated cmd command prompt in the ScpVBus-x64 directory and run `devcon.exe install ScpVBus.inf Root\ScpVBus`. Successful run is indicated by the following message:
+
+    Device node created. Install is complete when drivers are installed...
+    Updating drivers for Root\ScpVBus from {Location}\PYXInput\ScpVBus-x64\ScpVBus.inf.
+    Drivers installed successfully.
 
 
 
@@ -87,6 +139,10 @@ then open the jupyterlab with the command
 ```
 jupyter lab
 ```
+
+
+
+
 
 ## Requirements of the images gameplay (v.01)
 
@@ -219,19 +275,5 @@ C:\IMG\right_2021_10_17_12_15_45_810.jpg,   0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
 
 
 
-## Layer 1: Generation of Data 
 
-### Keyboard/Mouse Recording
-
-The keybord and mouse recording will be given by one python script 
-
-**[Keyboard and Mouse recording](./input_record/README.md)** 
-
-
-
-### Video Recording
-
-The screen vide recording will be given by one python script 
-
-**[Screen video_recording](./video_record/README.md)** 
 
