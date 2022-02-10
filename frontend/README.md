@@ -106,9 +106,17 @@ The screen vide recording will be given by one python script
 
 **[Screen video_recording](./video_record/README.md)** 
 
+
+
+### Filters Image Analysis
+
+In ordering to improve the datasets we require to find the best filters that allows create the best machine learning model
+
+**[Image filters with OpenCV ](./image_filters/README.md)** 
+
+
+
 ## Environment setup
-
-
 
 We will use a python language as a base to develop the **first layer** of the generation of the data.
 
