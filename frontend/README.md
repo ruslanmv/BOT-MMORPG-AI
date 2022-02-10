@@ -90,6 +90,14 @@ After you have installed your **Driver**, connect yuo xbox driver, you can open 
 
 ## Layer 1: Generation of Data 
 
+### Filters Image Analysis
+
+In ordering to improve the datasets we require to find the best filters that allows create the best machine learning model
+
+**[Image filters with OpenCV ](./image_filters/README.md)** 
+
+
+
 ### Keyboard/ Gamepad/ Mouse Recording
 
 The keybord and mouse recording will be given by one python script 
@@ -107,12 +115,6 @@ The screen vide recording will be given by one python script
 **[Screen video_recording](./video_record/README.md)** 
 
 
-
-### Filters Image Analysis
-
-In ordering to improve the datasets we require to find the best filters that allows create the best machine learning model
-
-**[Image filters with OpenCV ](./image_filters/README.md)** 
 
 
 
