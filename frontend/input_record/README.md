@@ -15,17 +15,17 @@ Click the **Search** button, type **Settings** in the search bar.
 
 The **Windows Settings** screen will open. Select **Devices** option as follows:
 
-![Windows settings](/assets/images/posts/README/word-image-60-1024x480.png)
+![Windows settings](../assets/images/posts/README/word-image-60-1024x480.png)
 
 As you will select the **Devices** option, the following screen will appear:
 
-![Bluetooth and Other services](/assets/images/posts/README/word-image-61-1024x492.png)
+![Bluetooth and Other services](../assets/images/posts/README/word-image-61-1024x492.png)
 
 Select **Add Bluetooth or other device** option as the above image is showing. As you will select this option, the following dialogue will appear:
 
-![](/assets/images/posts/README/blutu2.jpg)
+![](../assets/images/posts/README/blutu2.jpg)
 
-Select the **Bluetooh** option as above image is showing. It will display the connected **Game Controller**, select that and click **Done** button.![](/assets/images/posts/README/blutu23.jpg)
+Select the **Bluetooh** option as above image is showing. It will display the connected **Game Controller**, select that and click **Done** button.![](../assets/images/posts/README/blutu23.jpg)
 
 To use the Virtual Controller object, you need `ScpVBus`. For ease [one of it's versions](https://github.com/shauleiz/vXboxInterface) is included in this project. More information about the original can be found at [nefarius's archived repo](https://github.com/nefarius/ScpVBus).
 You'll probably also require [x360ce](https://www.x360ce.com/#Help_Old_Version) for easing the connection to games as well as debugging it. I've included it's older version as that's the one that worked for me. 
