@@ -63,6 +63,8 @@ Click below  for more information:
 
 **[Input recording](./input_record/README.md)** 
 
+<img src="../assets/images/posts/README/xbox.jpg" style="zoom:40%;" />
+
 ### Video Recording
 
 The screen vide recording will be given by one python script 
