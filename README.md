@@ -1,5 +1,7 @@
 ## How to create your own Bot with Artificial Intelligence that plays your favorites  RPG or MMORPG games
 
+*Last revision Feb 2022*
+
 Today I will try to explain how to create a program that will play your favorite **video games**. This is useful when you don't have time to farm and you need to kill moobs and get items. 
 
 If you are interested in joining to this project, you are **welcome** to contribute. You can join to [slack here](https://join.slack.com/share/enQtMjg3MzM0OTY2MDMzNy04NDY5OGE2NzJiNTk4YzkyYjBlMDAyMzBiNzlkZTIyNzllOTA5MmQ5NDkzOTEyYmQ0MTgxZjAyNjM0MWM2NThl)
@@ -80,7 +82,7 @@ The **Type 2** is the production program, written in simply python script, witho
 
 The preliminary solution is given with the following parts:
 
-1. **[Creation of the frontend application](./frontend/README.md)** - Here, we need to create the python program that will record our gameplay and control our videogame. This program should be able to record the screen during the gameplay.  (**updated Jan 2022**)      
+1. **[Creation of the frontend application](./frontend/README.md)** - Here, we need to create the python program that will record our gameplay and control our videogame. This program should be able to record the screen during the gameplay.  (**updated Feb 2022**)      
 2. **Creation of the backend pipeline** Here, we need to create a pipeline program that will move the recorded data into the cloud. Here we can use object storage like **s3** or **minio**. This allows us do not to saturate the **hard disk** on the client side during the **gameplay.** 
 3. **Creation of the Dataset** - In this part, we have to create a dataset of the gameplay, recording the keys and mouse position and the screen. The recorded dataset may be stored in a non-relational database.
 4. **Data wrangling** -This part, we have to augment the images correctly to create the appropriate machine learning model. Here we need to apply good skills in computer vision.
@@ -143,3 +145,4 @@ To more information visit [ruslanmv.com](https://ruslanmv.com/).
 
 Copyright 2021 Ruslan Magana Vsevolodovna <contactATruslanmvDOTcom>
 This program is distributed under the terms of the GNU Lesser General Public License.
+

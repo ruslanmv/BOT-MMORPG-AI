@@ -133,25 +133,11 @@ Bith depth: **24**
 
 Format: **JPG**
 
-The screenshots should be saved in the directory **IMG**, for example:
+The screenshots will be saved in format **numpy array**.
 
-C:\IMG\gameplay_2021_10_17_12_15_37_666.jpg
 
-C:\IMG\gameplay_2021_10_17_12_15_37_771.jpg
-
- C:\IMG\gameplay_2021_10_17_12_15_37_876.jpg
-
-.
-
-.
-
-.
-
-C:\IMG\right_2021_10_17_12_15_45_810.jpg
 
 **Controls** for Genshin Impact covers information on input methods supported by the game and used to control the player character as well as navigate menus and user interfaces. 
-
-
 
 ## Controls Registration
 
@@ -220,29 +206,31 @@ The following controls are not considered in the current version of the registra
 - Open Battle Pass Screen : F4
 - Challenge Interrupted : P
 
-### Requirements of the gaming_log.csv (v.01)
+### Requirements of the training_data-n.npy (v.01)
 
 The log file  should be saved in the directory **LOG**:
 
 Each row of the dataset should include
 
-For example  when during the registration the character is **AFK** (away from keyboard)  the **.csv** file should have the following data:
+For example  when during the registration the character is **AFK** (away from keyboard)  the **.npy** file should 
+
+the gamepad and keyboard arrays all are  zeros
 
 
 
-C:\IMG\gameplay_2021_10_17_12_15_37_666.jpg, 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+C:\data\training_data-1.npy
 
-C:\IMG\gameplay_2021_10_17_12_15_37_771.jpg,  0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+C:\data\training_data-2.npy
 
- C:\IMG\gameplay_2021_10_17_12_15_37_876.jpg, 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+ C:\data\training_data-3.npy
+
+.
 
 .
 
 .
 
-.
-
-C:\IMG\right_2021_10_17_12_15_45_810.jpg,   0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+C:\IMG\training_data-10.npy
 
 
 

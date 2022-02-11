@@ -3,7 +3,7 @@ There are two methods to record the input
 
 - **ScpVbus** - Allows record the Gamepad and Keyboard(**working**)
 
-- **AutoHotPy** -  It is an optional library to record the mouse and keyboard
+- **AutoHotPy** -  It is an optional library to record the mouse and keyboard(**not supported**)
 
   ​                         At the moment is disabled the option to record the mouse. 
 
