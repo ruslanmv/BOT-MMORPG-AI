@@ -71,7 +71,7 @@ The screen vide recording will be given by one python script
 
 **[Screen video_recording](./video_record/README.md)** 
 
-![](../assets/images/posts/README/screen.jpg)
+![](../assets/images/posts/README/screen_small.jpg)
 
 ## Environment setup
 
@@ -82,7 +82,7 @@ The **second layer** should be the ingestion to the **datalake**.
 
 For the local enviroment we  need to install anaconda at this [link](https://www.anaconda.com/products/individual)
 
-<img src="../assets/images/posts/README/1-16336103937251.jpg" alt="img" style="zoom:40%;" />
+![](../assets/images/posts/README/conda.jpg)
 
 then in the command prompt terminal we type
 
