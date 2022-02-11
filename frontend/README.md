@@ -96,7 +96,7 @@ In ordering to improve the datasets we require to find the best filters that all
 
 **[Image filters with OpenCV ](./image_filters/README.md)** 
 
-
+![](../assets/images/posts/README/images.png)
 
 ### Keyboard/ Gamepad/ Mouse Recording
 
