@@ -42,7 +42,7 @@ The first **dataset** that we are going to create  will record only the **gamepa
 
 This library should work with anything after Python 3.6, albeit testing has only been done on 3.8.4 and later. Currently the only supported OS is Windows 10.
 
-To use the Virtual Controller object, you need `ScpVBus`. For ease [one of it's versions](https://github.com/shauleiz/vXboxInterface) is included in this project. More information about the original can be found at [nefarius's archived repo](https://github.com/nefarius/ScpVBus).
+To use the Virtual Controller object, you need `ScpVBus`.  For the installation go here **[Input recording](./input_record/README.md)** . For ease [one of it's versions](https://github.com/shauleiz/vXboxInterface) is included in this project. More information about the original can be found at [nefarius's archived repo](https://github.com/nefarius/ScpVBus).
 You'll probably also require [x360ce](https://www.x360ce.com/#Help_Old_Version) for easing the connection to games as well as debugging it. I've included it's older version as that's the one that worked for me. 
 
 ## Layer 1: Generation of Data 
@@ -69,7 +69,7 @@ The screen vide recording will be given by one python script
 
 **[Screen video_recording](./video_record/README.md)** 
 
-
+![](../assets/images/posts/README/screen.jpg)
 
 ## Environment setup
 
