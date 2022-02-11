@@ -1,5 +1,68 @@
-## Keyboard and Mouse Recording
-For this project I will use AutoHotPy, it is a scripting tool, just like AutoHotKey, but it uses Interception library (https://github.com/oblitum/Interception).
+## Input  Recording
+There are two methods to record the input
+
+- **ScpVbus** - Allows record the Gamepad and Keyboard(**working**)
+
+- **AutoHotPy** -  It is an optional library to record the mouse and keyboard
+
+  ​                         At the moment is disabled the option to record the mouse. 
+
+##  Connect xbox controller to Windows 10
+
+To connect any xbox  game controller to Windows 10, we follow this procedure step by step:
+
+Click the **Search** button, type **Settings** in the search bar. 
+
+The **Windows Settings** screen will open. Select **Devices** option as follows:
+
+![Windows settings](../assets/images/posts/README/word-image-60-1024x480.png)
+
+As you will select the **Devices** option, the following screen will appear:
+
+![Bluetooth and Other services](../assets/images/posts/README/word-image-61-1024x492.png)
+
+Select **Add Bluetooth or other device** option as the above image is showing. As you will select this option, the following dialogue will appear:
+
+![](../assets/images/posts/README/blutu2.jpg)
+
+Select the **Bluetooh** option as above image is showing. It will display the connected **Game Controller**, select that and click **Done** button.![](../assets/images/posts/README/blutu23.jpg)
+
+To use the Virtual Controller object, you need `ScpVBus`. For ease [one of it's versions](https://github.com/shauleiz/vXboxInterface) is included in this project. More information about the original can be found at [nefarius's archived repo](https://github.com/nefarius/ScpVBus).
+You'll probably also require [x360ce](https://www.x360ce.com/#Help_Old_Version) for easing the connection to games as well as debugging it. I've included it's older version as that's the one that worked for me. 
+
+# ScpVbus
+
+### Installing ScpVbus
+
+We need ScpVBus to talk to Windows about gamepad related details:
+Open an elevated cmd command prompt in the ScpVBus-x64 directory and run `devcon.exe install ScpVBus.inf Root\ScpVBus`. Successful run is indicated by the following message:
+
+    Device node created. Install is complete when drivers are installed...
+    Updating drivers for Root\ScpVBus from {Location}\PYXInput\ScpVBus-x64\ScpVBus.inf.
+    Drivers installed successfully.
+
+After you have installed your **Driver**, connect yuo xbox driver, you can open the program at`versions\0.01\vXboxInterface-x64\SCPUser.exe` and you will see
+
+
+
+
+
+![](../assets/images/posts/README/xbox.jpg)
+
+
+
+For the version v0.1 we **do not need** the  AutoHotPy.
+
+It is a **future feature** for the MMORPG-AI
+
+# AutoHotPy
+
+An alternative way to record the mouse and keyboard is  AutoHotPy, it is a scripting tool, just like AutoHotKey, but it uses Interception library (https://github.com/oblitum/Interception).
+
+The reason to select  AutoHotPy is due to we want to record the mouse and is not supported by ScpVbus
+
+The keyboard and mouse recording will be given by one python script .
+
 The great thing is that Interception uses a very low level driver to capture keyboard and mouse events, which makes it perfect for games that have problems with AutoHotKey
 
 ## Installation
@@ -71,12 +134,8 @@ with F2 you start the macro that in in memory.
 
 With F3  you save your macro into a python file 'recorded_macro.py'
 
-
-
 ## TO DO
 Extract the relevant information from the recorded_macro.py and  save it into a dataset of keyboard and  mouse dataset.
-
-
 
 ### Known bugs:
 
