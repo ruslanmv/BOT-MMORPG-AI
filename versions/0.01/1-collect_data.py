@@ -19,7 +19,7 @@ nk = [0,0,0,0,0,0,0,0,1]
 starting_value = 1
 
 while True:
-    file_name = 'training_data-{}.npy'.format(starting_value)
+    file_name = 'preprocessed_training_data-{}.npy'.format(starting_value)
 
     if os.path.isfile(file_name):
         print('File exists, moving along',starting_value)
@@ -116,8 +116,12 @@ def main(file_name, starting_value):
             output_gamepad = gamepad_keys_to_output(gamepad_keys)
             #print(output_gamepad)
             #print(type(output_gamepad))
-            training_data.append([screen,output,output_gamepad])
-
+            #training_data.append([screen,output,output_gamepad])  #(Nx3)
+            
+            #We have to concatetnate the keys and the gamepad
+            output=np.concatenate((output, output_gamepad), axis=None) 
+            #then append
+            training_data.append([screen,output]) #(Nx2)
             #print('loop took {} seconds'.format(time.time()-last_time))
             last_time = time.time()
             cv2.imshow('window',cv2.resize(screen,(640,360)))
@@ -134,7 +138,7 @@ def main(file_name, starting_value):
                     training_data = []
                     starting_value += 1
                     #file_name = 'training_data-{}.npy'.format(starting_value)
-                    file_name = 'training_data-{}.npy'.format(starting_value)
+                    file_name = 'preprocessed_training_data-{}.npy'.format(starting_value)
 
                     
         keys = key_check()
