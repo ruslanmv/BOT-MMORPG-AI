@@ -28,8 +28,6 @@ We will start with  local development  and some free AWS microservices.
 
 
 
-
-
 ## Tasks to perform
 
 The first tasks that we want to perform are: 
@@ -82,7 +80,7 @@ The **Type 2** is the production program, written in simply python script, witho
 
 The preliminary solution is given with the following parts:
 
-1. **[Creation of the frontend application](./frontend/README.md)** - Here, we need to create the python program that will record our gameplay and control our videogame. This program should be able to record the screen during the gameplay.  (**updated Feb 2022**)      
+1. **[Creation of the frontend application](./frontend/README.md)** - Here, we need to create the python program that will record our gameplay and control our videogame. This program should be able to record the screen during the gameplay.  (**updated March 2022**)      
 2. **Creation of the backend pipeline** Here, we need to create a pipeline program that will move the recorded data into the cloud. Here we can use object storage like **s3** or **minio**. This allows us do not to saturate the **hard disk** on the client side during the **gameplay.** 
 3. **Creation of the Dataset** - In this part, we have to create a dataset of the gameplay, recording the keys and mouse position and the screen. The recorded dataset may be stored in a non-relational database.
 4. **Data wrangling** -This part, we have to augment the images correctly to create the appropriate machine learning model. Here we need to apply good skills in computer vision.
@@ -93,19 +91,29 @@ The preliminary solution is given with the following parts:
 
 
 
+For the development of the Neural Network we have two approaches:
+
+The **first approach is** consider the images **preprocessed** , that means take the rgb images and the input into an array **(450, 480, 270, 3)** without processing the data and then use an **inception_v3** model with 29 ouputs.
+
+The **second experimental** approach  consists to take  the images and filter them into unicolor, adapted to the path where the characters run, then append this unicolor image  with the input into an array **(450, 480, 270, 1)** and then use an **inception_v3** model with 29 ouputs. The motivation to use unicolor is just a manner to simplify the image such is explained in this [blog](https://ruslanmv.com/blog/How-to-use-OpenCV-with-Games) 
+
+
+
 ## How to use BOT-MMORPG
 
 Currently, to use the latest version of this AI, you will need to run first 
 
-[1-collect_data.ipynb](./versions/0.01/1-collect_data.ipynb)
+[1-Collect_Data_Preprocessed-rgb.ipynb](./versions/0.01/1-Collect_Data_Preprocessed-rgb.ipynb)
 
 or
 
-1-collect_data.py
+[1-collect_data.py](./versions/0.01/1-collect_data.py)
 
 When creating training data, this works when you have the game, in fullscreen mode, 1980x1080 resolution.
 
 You need this for both training and testing.
+
+(An experimental test was apply certain filters like those presented [here](https://github.com/ruslanmv/BOT-MMORPG-AI/blob/master/versions/0.01/0-Way-Identification.ipynb) and then [1-Collect_Data_Processed_single_color](./versions/0.01/1-Collect_Data_Processed_single_color.ipynb)  )
 
 Next, Train the model with
 
@@ -113,7 +121,7 @@ Next, Train the model with
 
 or
 
-2-train_model.py
+[2-train_model.py](./versions/0.01/2-train_model.py)
 
 Finally, use the model in game with 
 
