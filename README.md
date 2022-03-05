@@ -115,7 +115,7 @@ You need this for both training and testing.
 
 Next, Train the model with
 
-[2-train_model.ipynb](./versions/0.01/2-train_model.ipynb)
+[2-train_model_preprocessed.ipynb](./versions/0.01/2-train_model_preprocessed.ipynb)
 
 or
 
