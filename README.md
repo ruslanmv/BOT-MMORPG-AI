@@ -113,7 +113,7 @@ You need this for both training and testing.
 
 (An experimental test was apply certain filters like those presented [here](https://github.com/ruslanmv/BOT-MMORPG-AI/blob/master/versions/0.01/0-Way-Identification.ipynb) and then [1-Collect_Data_Processed_single_color](./versions/0.01/1-Collect_Data_Processed_single_color.ipynb)  )
 
-Next, Train the model with
+Next, Train the model . With the preprocessed data we will consider the  **inception_v3**  model.
 
 [2-train_model_preprocessed.ipynb](./versions/0.01/2-train_model_preprocessed.ipynb)
 
