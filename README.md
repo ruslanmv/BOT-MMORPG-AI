@@ -123,7 +123,7 @@ or
 
 Finally, use the model in game with 
 
-3-test_model.ipynb 
+[3-test_model.ipynb](./versions/0.01/3-test_model.ipynb) 
 
 or
 
