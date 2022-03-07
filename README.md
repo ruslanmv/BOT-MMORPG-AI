@@ -80,13 +80,28 @@ The **Type 2** is the production program, written in simply python script, witho
 
 The preliminary solution is given with the following parts:
 
-1. **[Creation of the frontend application](./frontend/README.md)** - Here, we need to create the python program that will record our gameplay and control our videogame. This program should be able to record the screen during the gameplay.  (**updated March 2022**)      
-2. **Creation of the backend pipeline** Here, we need to create a pipeline program that will move the recorded data into the cloud. Here we can use object storage like **s3** or **minio**. This allows us do not to saturate the **hard disk** on the client side during the **gameplay.** 
-3. **Creation of the Dataset** - In this part, we have to create a dataset of the gameplay, recording the keys and mouse position and the screen. The recorded dataset may be stored in a non-relational database.
-4. **Data wrangling** -This part, we have to augment the images correctly to create the appropriate machine learning model. Here we need to apply good skills in computer vision.
+1. **[Creation of the frontend application](./frontend/README.md)** - Here, we create a  python program that will record our gameplay and control our videogame.  The frontend application consists into 3 programs.
+
+   a) Collection of Data - This program  record the screen during the gameplay. At this stage we focus with small amount of data. Later in the Part 2 we will allocate the data in the cloud.
+
+   b) Creation of the Model - This program read the collected data and we create a neural network model
+
+   c) Test the model - Here we load the created model and test in the gameplay.
+
+    (**updated March 2022**).
+
+2. **Creation of the backend pipeline** . The extension of the frontend part consists to create a pipeline program that will move the recorded data into the cloud. This is important to record log periods of gameplay recording. Here we can use object storage like **s3** or **minio**. This allows us do not to saturate the **hard disk** on the client side during the **gameplay.** 
+
+3. **Creation of the Dataset** - In this part, we  load the a dataset of the gameplay, that contains the screen images, the recorded  keys and gamepad. 
+
+4. **Data wrangling** -We can improve our dataset by performing the augmentation procedure of the images. Here we need to apply good skills in computer vision.
+
 5. **Model creation** - The first version of this bot will use Neural Networks. The framework used will be **Tensorflow** and **Pytorch**. Here we will create the brain of our bot.
+
 6. **Training g Docker Container** - Creation o the Docker container environment with **JypyterLab** for this Bot project with all the training packages.
+
 7. **Training of the model** - Here, we need to train the neural network. Here we may require a cluster. We can use the **Colab** to use the training with colab or pay a little to run a cluster on **EMR AWS** with a Container with all our environment ready.
+
 8. **Creation of the frontend application that plays** - Here, we need to create a program that reads the game's screen and depends on what executes the **Artificial intelligence Model** you have made before.
 
 For the development of the Neural Network we have two approaches:
@@ -149,7 +164,7 @@ Currently we are using the  **Inception_v3**  model, but we are interested to pe
 | [MobileNet](https://keras.io/api/applications/mobilenet)     | 16        | 70.4%          | 89.5%          | 4.3M       | 55    | 22.6                               | 3.4                                |
 | [MobileNetV2](https://keras.io/api/applications/mobilenet/#mobilenetv2-function) | 14        | 71.3%          | 90.1%          | 3.5M       | 105   | 25.9                               | 3.8                                |
 
-And identify  the behavior  with our train and test datasets.
+And identify  the behavior  with our train and test d
 
 
 
