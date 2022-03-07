@@ -84,8 +84,8 @@ The preliminary solution is given with the following parts:
 2. **Creation of the backend pipeline** Here, we need to create a pipeline program that will move the recorded data into the cloud. Here we can use object storage like **s3** or **minio**. This allows us do not to saturate the **hard disk** on the client side during the **gameplay.** 
 3. **Creation of the Dataset** - In this part, we have to create a dataset of the gameplay, recording the keys and mouse position and the screen. The recorded dataset may be stored in a non-relational database.
 4. **Data wrangling** -This part, we have to augment the images correctly to create the appropriate machine learning model. Here we need to apply good skills in computer vision.
-5. **Model creation**- The first version of this bot will use Neural Networks. The framework used will be **Tensorflow** and **Pytorch**. Here we will create the brain of our bot.
-6. **Training g Docker Container** -Creation o the Docker container environment with **JypyterLab** for this Bot project with all the training packages.
+5. **Model creation** - The first version of this bot will use Neural Networks. The framework used will be **Tensorflow** and **Pytorch**. Here we will create the brain of our bot.
+6. **Training g Docker Container** - Creation o the Docker container environment with **JypyterLab** for this Bot project with all the training packages.
 7. **Training of the model** - Here, we need to train the neural network. Here we may require a cluster. We can use the **Colab** to use the training with colab or pay a little to run a cluster on **EMR AWS** with a Container with all our environment ready.
 8. **Creation of the frontend application that plays** - Here, we need to create a program that reads the game's screen and depends on what executes the **Artificial intelligence Model** you have made before.
 
@@ -121,13 +121,35 @@ or
 
 [2-train_model.py](./versions/0.01/2-train_model.py)
 
-Finally, use the model in game with 
+Finally, we test our  model in game with 
 
 [3-test_model.ipynb](./versions/0.01/3-test_model.ipynb) 
 
 or
 
 3-test_model .py
+
+### Note developments:
+
+Currently we are using the  **Inception_v3**  model, but we are interested to perform transform learning from the following models:
+
+| Model                                                        | Size (MB) | Top-1 Accuracy | Top-5 Accuracy | Parameters | Depth | Time (ms) per inference step (CPU) | Time (ms) per inference step (GPU) |
+| ------------------------------------------------------------ | --------- | -------------- | -------------- | ---------- | ----- | ---------------------------------- | ---------------------------------- |
+| [Xception](https://keras.io/api/applications/xception)       | 88        | 79.0%          | 94.5%          | 22.9M      | 81    | 109.4                              | 8.1                                |
+| [VGG16](https://keras.io/api/applications/vgg/#vgg16-function) | 528       | 71.3%          | 90.1%          | 138.4M     | 16    | 69.5                               | 4.2                                |
+| [VGG19](https://keras.io/api/applications/vgg/#vgg19-function) | 549       | 71.3%          | 90.0%          | 143.7M     | 19    | 84.8                               | 4.4                                |
+| [ResNet50](https://keras.io/api/applications/resnet/#resnet50-function) | 98        | 74.9%          | 92.1%          | 25.6M      | 107   | 58.2                               | 4.6                                |
+| [ResNet50V2](https://keras.io/api/applications/resnet/#resnet50v2-function) | 98        | 76.0%          | 93.0%          | 25.6M      | 103   | 45.6                               | 4.4                                |
+| [ResNet101](https://keras.io/api/applications/resnet/#resnet101-function) | 171       | 76.4%          | 92.8%          | 44.7M      | 209   | 89.6                               | 5.2                                |
+| [ResNet101V2](https://keras.io/api/applications/resnet/#resnet101v2-function) | 171       | 77.2%          | 93.8%          | 44.7M      | 205   | 72.7                               | 5.4                                |
+| [ResNet152](https://keras.io/api/applications/resnet/#resnet152-function) | 232       | 76.6%          | 93.1%          | 60.4M      | 311   | 127.4                              | 6.5                                |
+| [ResNet152V2](https://keras.io/api/applications/resnet/#resnet152v2-function) | 232       | 78.0%          | 94.2%          | 60.4M      | 307   | 107.5                              | 6.6                                |
+| [InceptionV3](https://keras.io/api/applications/inceptionv3) | 92        | 77.9%          | 93.7%          | 23.9M      | 189   | 42.2                               | 6.9                                |
+| [InceptionResNetV2](https://keras.io/api/applications/inceptionresnetv2) | 215       | 80.3%          | 95.3%          | 55.9M      | 449   | 130.2                              | 10.0                               |
+| [MobileNet](https://keras.io/api/applications/mobilenet)     | 16        | 70.4%          | 89.5%          | 4.3M       | 55    | 22.6                               | 3.4                                |
+| [MobileNetV2](https://keras.io/api/applications/mobilenet/#mobilenetv2-function) | 14        | 71.3%          | 90.1%          | 3.5M       | 105   | 25.9                               | 3.8                                |
+
+And identify  the behavior  with our train and test datasets.
 
 
 
