@@ -164,7 +164,7 @@ Currently we are using the  **Inception_v3**  model, but we are interested to pe
 | [MobileNet](https://keras.io/api/applications/mobilenet)     | 16        | 70.4%          | 89.5%          | 4.3M       | 55    | 22.6                               | 3.4                                |
 | [MobileNetV2](https://keras.io/api/applications/mobilenet/#mobilenetv2-function) | 14        | 71.3%          | 90.1%          | 3.5M       | 105   | 25.9                               | 3.8                                |
 
-And identify  the behavior  with our train and test d
+And identify  the behavior  with our train and test dataset.
 
 
 
