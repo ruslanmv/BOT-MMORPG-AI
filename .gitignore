@@ -70,3 +70,6 @@ target/
 
 #Jupyter Notebook checkpoints
 *.ipynb_checkpoints/
+versions/0.01/backup/0-collect_data(testing).ipynb
+# backup
+backup/
