@@ -1,5 +1,5 @@
-## Input  Recording
-There are two methods to record the input
+## Gameplay  API
+There are programs that are needed , one record the gamepad gameplay and the second run the gamepad from the AI model created.
 
 - **ScpVbus** - Allows record the Gamepad and Keyboard(**working**)
 
@@ -63,6 +63,8 @@ At the very least, however, I think coming up with something for the throttle co
 The API Gamepad that executes the control gamepad
 
 **[vjoy-gamepad](../../versions/0.01/vjoy-gamepad/README.md)** 
+
+![](../assets/images/posts/README/vjoy.jpg)
 
 
 

@@ -90,6 +90,12 @@ The preliminary solution is given with the following parts:
 
     (**updated March 2022**).
 
+   There is one program to record the gameplay and there is another that simulates the gameplay 
+
+   **[Gameplay API programs](./frontend//input_record/README.md)** 
+
+   
+
 2. **Creation of the backend pipeline** . The extension of the frontend part consists to create a pipeline program that will move the recorded data into the cloud. This is important to record log periods of gameplay recording. Here we can use object storage like **s3** or **minio**. This allows us do not to saturate the **hard disk** on the client side during the **gameplay.** 
 
 3. **Creation of the Dataset** - In this part, we  load the a dataset of the gameplay, that contains the screen images, the recorded  keys and gamepad. 

@@ -63,7 +63,7 @@ Click below  for more information:
 
 For the recording of the input
 
-**[Input recording](./input_record/README.md)** 
+**[Gameplay API programs](./input_record/README.md)** 
 
 ![](../assets/images/posts/README/xbox_small.jpg)
 
@@ -129,19 +129,15 @@ jupyter lab
 
 The pictures of the gameplay should satisfy the following requirements:
 
-Dimensions: **320x160**, 
+Dimensions: **1080 x 1920**, 
 
-Width: **320 pixels**
+Width: **1080 pixels**
 
-Height **160 pixels**
+Height **1920 pixels**
 
 Horizontal resolution:**96dpi**
 
 Vertical resolution: **96 dpi**
-
-Bith depth: **24**
-
-Format: **JPG**
 
 The screenshots will be saved in format **numpy array**.
 
@@ -226,8 +222,6 @@ For example  when during the registration the character is **AFK** (away from ke
 
 the gamepad and keyboard arrays all are  zeros
 
-
-
 C:\data\training_data-1.npy
 
 C:\data\training_data-2.npy
@@ -241,8 +235,3 @@ C:\data\training_data-2.npy
 .
 
 C:\IMG\training_data-10.npy
-
-
-
-
-
