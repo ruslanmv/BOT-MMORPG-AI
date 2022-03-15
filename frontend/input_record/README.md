@@ -1,9 +1,9 @@
 ## Gameplay  API
-There are programs that are needed , one record the gamepad gameplay and the second run the gamepad from the AI model created.
+The gameplay API consists into two programs, one record the gamepad gameplay and the second run the gamepad from the AI model created.
 
-- **ScpVbus** - Allows record the Gamepad and Keyboard(**working**)
+- **ScpVbus** - Allows record the Gamepad and Keyboard (**working**)
 
-- **vjoy-gamepad** Allows control the  Gamepad in the Gampley(**working**)
+- **vjoy-gamepad** - Allows control the  Gamepad in the Gameplay (**working**)
 
   
 
