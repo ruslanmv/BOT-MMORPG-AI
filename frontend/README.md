@@ -61,9 +61,17 @@ The version v01 of this program will consider only the Keyboard and Gamepad.
 
 Click below  for more information:
 
+For the recording of the input
+
 **[Input recording](./input_record/README.md)** 
 
 ![](../assets/images/posts/README/xbox_small.jpg)
+
+The API Gamepad that executes the control gamepad
+
+**[vjoy-gamepad](../versions/0.01/vjoy-gamepad/README.md)** 
+
+
 
 ### Video Recording
 

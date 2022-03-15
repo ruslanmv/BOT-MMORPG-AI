@@ -3,9 +3,9 @@ There are two methods to record the input
 
 - **ScpVbus** - Allows record the Gamepad and Keyboard(**working**)
 
-- **AutoHotPy** -  It is an optional library to record the mouse and keyboard(**not supported**)
+- **vjoy-gamepad** Allows control the  Gamepad in the Gampley(**working**)
 
-  ​                         At the moment is disabled the option to record the mouse. 
+  
 
 ##  Connect xbox controller to Windows 10
 
@@ -30,6 +30,8 @@ Select the **Bluetooh** option as above image is showing. It will display the co
 To use the Virtual Controller object, you need `ScpVBus`. For ease [one of it's versions](https://github.com/shauleiz/vXboxInterface) is included in this project. More information about the original can be found at [nefarius's archived repo](https://github.com/nefarius/ScpVBus).
 You'll probably also require [x360ce](https://www.x360ce.com/#Help_Old_Version) for easing the connection to games as well as debugging it. I've included it's older version as that's the one that worked for me. 
 
+
+
 # ScpVbus
 
 ### Installing ScpVbus
@@ -43,21 +45,38 @@ Open an elevated cmd command prompt in the ScpVBus-x64 directory and run `devcon
 
 After you have installed your **Driver**, connect yuo xbox driver, you can open the program at`versions\0.01\vXboxInterface-x64\SCPUser.exe` and you will see
 
+![](../assets/images/posts/README/xbox.jpg)
 
 
 
+# vjoy-gamepad
 
-![](/assets/images/posts/README/xbox.jpg)
 
 
+vjoy is a module that emulates a generic controller. 
+Combine this with x360ce, which takes your generic controller and makes it emulate an xbox360 controller, and voila, you have xbox 360 controller emulation. 
+
+I've actually employed this in game and it does work, I just have yet to find a good algorithm to apply to the network output to actually improve the driving performance. 
+
+At the very least, however, I think coming up with something for the throttle control will be wise. Haven't had much time to mess with this, but it's definitely an option now. s
+
+The API Gamepad that executes the control gamepad
+
+**[vjoy-gamepad](../../versions/0.01/vjoy-gamepad/README.md)** 
+
+
+
+## AutoHotPy (optional)
+
+**AutoHotPy** It is an optional library to record the mouse and keyboard(**not supported**)
+
+​                         At the moment is disabled the option to record the mouse. 
+
+An alternative way to record the mouse and keyboard is  AutoHotPy, it is a scripting tool, just like AutoHotKey, but it uses Interception library (https://github.com/oblitum/Interception).
 
 For the version v0.1 we **do not need** the  AutoHotPy.
 
 It is a **future feature** for the MMORPG-AI
-
-# AutoHotPy
-
-An alternative way to record the mouse and keyboard is  AutoHotPy, it is a scripting tool, just like AutoHotKey, but it uses Interception library (https://github.com/oblitum/Interception).
 
 The reason to select  AutoHotPy is due to we want to record the mouse and is not supported by ScpVbus
 
