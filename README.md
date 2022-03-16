@@ -94,7 +94,7 @@ The preliminary solution is given with the following parts:
 
    **[Gameplay API programs](./frontend//input_record/README.md)** 
 
-   
+   ![](./frontend/assets/images/posts/README/mmo-gamepad-api.gif)
 
 2. **Creation of the backend pipeline** . The extension of the frontend part consists to create a pipeline program that will move the recorded data into the cloud. This is important to record log periods of gameplay recording. Here we can use object storage like **s3** or **minio**. This allows us do not to saturate the **hard disk** on the client side during the **gameplay.** 
 
