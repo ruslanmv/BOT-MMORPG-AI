@@ -53,6 +53,10 @@ After you have installed your **Driver**, connect yuo xbox driver, you can open 
 
 
 
+![](../assets/images/posts/README/mmo-gamepad-api.gif)
+
+
+
 vjoy is a module that emulates a generic controller. 
 Combine this with x360ce, which takes your generic controller and makes it emulate an xbox360 controller, and voila, you have xbox 360 controller emulation. 
 

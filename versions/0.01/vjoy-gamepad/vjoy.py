@@ -170,6 +170,10 @@ def test2():
     reset = vj.generateJoystickPosition()
     setJoy(0, 0, scale)
     vj.close()
+    
+    
+    
+    
 
 
 
@@ -266,11 +270,7 @@ def throttle_min():
     
 
     
-       
-    
-    
-
-
+      
 def reverse_brake():
     vj.open()
     joystickPosition = vj.generateJoystickPosition(wAxisZ = 32786)
