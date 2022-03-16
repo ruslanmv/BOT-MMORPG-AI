@@ -62,7 +62,7 @@ Combine this with x360ce, which takes your generic controller and makes it emula
 
 I've actually employed this in game and it does work, I just have yet to find a good algorithm to apply to the network output to actually improve the driving performance. 
 
-At the very least, however, I think coming up with something for the throttle control will be wise. Haven't had much time to mess with this, but it's definitely an option now. s
+At the very least, however, I think coming up with something for the throttle control will be wise. Haven't had much time to mess with this, but it's definitely an option now. 
 
 The API Gamepad that executes the control gamepad
 
