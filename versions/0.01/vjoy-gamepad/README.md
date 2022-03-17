@@ -48,16 +48,70 @@ test1()
 ### Analizing the important buttons in the gamepad
 
 
+
+```python
+import pandas as pd
+```
+
+
+```python
+from vjoy2 import *
+```
+
+Let us define the gamepad keys that we will use
+
+
+
+
+```python
+gamepad_real_keys=['LT', 'RT', 'Lx', 'Ly', 'Rx', 'Ry', 'UP', 'DOWN', 'LEFT', 'RIGHT',
+       'START', 'SELECT', 'L3', 'R3', 'LB', 'RB', 'A', 'B', 'X', 'Y']
+
+```
+
+
 ```python
 ultimate_release()
+```
+
+
+```python
+#Testing keys
+test1()
+```
+
+
+```python
+#XY Axis up and down
+test2()
+```
+
+    vj opening
+    sending axes
+    vj closing
+
+
+
+```python
+ultimate_release()
+```
+
+### Analizing the important buttons in the gamepad
+
+# Left Thumbstick
+
+
+```python
+#RX min
+look_rx_left()
 ```
 
 <img src="img/left-r.jpg" width="700">
 
 
 ```python
-#RX min
-look_left()
+#RX max
+look_rx_right()
 
 ```
 
@@ -65,40 +119,345 @@ look_left()
 
 
 ```python
-#RX max
-look_right()
+#RY min
+look_ry_up()
 ```
 
 <img src="img/up-r.jpg" width="700">
 
 
 ```python
-#RY min
-look_up()
+#RY max
+look_ry_down()
 ```
 
 <img src="img/down-r.jpg" width="700">
 
 
 ```python
-#RY mx
-look_down()
+ultimate_release()
+```
+
+
+#   Right Thumbstick  
+
+
+```python
+#left
+game_lx_left()
 ```
 
 
 ```python
-#RZ max
-throttle()
+#right
+game_lx_right()
 ```
 
 
 ```python
-#Z max
-reverse_brake()
+#up
+game_ly_up()
+```
+
+
+```python
+#left
+game_ly_down()
 ```
 
 
 ```python
 ultimate_release()
+```
+
+# LT and RT  
+
+
+```python
+#Z max
+gamepad_lt()
+```
+
+
+```python
+#Z min
+gamepad_rt()
+```
+
+
+```python
+ultimate_release()
+```
+
+
+# RZ
+
+
+```python
+#RZ max
+throttle_max()
+```
+
+
+```python
+#RZ max
+throttle_min()
+```
+
+# Buttons A, B, X, Y,
+
+
+```python
+#Button 1 = A    
+def button_A():
+    vj.open()
+    btn = 1
+    vj.sendButtons(btn)
+    time.sleep(0.25)
+    vj.sendButtons(0)
+    vj.close() 
+```
+
+
+```python
+button_A()
+```
+
+
+```python
+#Button 2 = B    
+def button_B():
+    vj.open()
+    btn = 2
+    vj.sendButtons(btn)
+    time.sleep(0.25)
+    vj.sendButtons(0)
+    vj.close() 
+```
+
+
+```python
+button_B()
+```
+
+
+```python
+#Button 3 = AB   
+def button_AB():
+    vj.open()
+    btn = 3
+    vj.sendButtons(btn)
+    time.sleep(0.25)
+    vj.sendButtons(0)
+    vj.close() 
+```
+
+
+```python
+button_AB()
+```
+
+
+```python
+#Button 4 = X   
+def button_X():
+    vj.open()
+    btn = 4
+    vj.sendButtons(btn)
+    time.sleep(0.25)
+    vj.sendButtons(0)
+    vj.close() 
+```
+
+
+```python
+button_X()
+```
+
+
+```python
+#Button 5 = AX   
+def button_AX():
+    vj.open()
+    btn = 5
+    vj.sendButtons(btn)
+    time.sleep(0.25)
+    vj.sendButtons(0)
+    vj.close() 
+```
+
+
+```python
+button_AX()
+```
+
+
+```python
+#Button 6 = BX   
+def button_BX():
+    vj.open()
+    btn = 6
+    vj.sendButtons(btn)
+    time.sleep(0.25)
+    vj.sendButtons(0)
+    vj.close() 
+```
+
+
+```python
+button_BX()
+```
+
+
+```python
+#Button 7 = ABX  
+def button_ABX():
+    vj.open()
+    btn = 7
+    vj.sendButtons(btn)
+    time.sleep(0.25)
+    vj.sendButtons(0)
+    vj.close() 
+```
+
+
+```python
+button_ABX()
+```
+
+
+```python
+#Button 8 = Y  
+def button_Y():
+    vj.open()
+    btn = 8
+    vj.sendButtons(btn)
+    time.sleep(0.25)
+    vj.sendButtons(0)
+    vj.close() 
+```
+
+
+```python
+button_Y()
+```
+
+
+```python
+#Button 9 = AY  
+def button_AY():
+    vj.open()
+    btn = 9
+    vj.sendButtons(btn)
+    time.sleep(0.25)
+    vj.sendButtons(0)
+    vj.close() 
+```
+
+
+```python
+button_AY()
+```
+
+
+```python
+#Button 10 = BY  
+def button_BY():
+    vj.open()
+    btn = 10
+    vj.sendButtons(btn)
+    time.sleep(0.25)
+    vj.sendButtons(0)
+    vj.close() 
+```
+
+
+```python
+button_BY()
+```
+
+
+```python
+#Button 11 = ABY  
+def button_ABY():
+    vj.open()
+    btn = 11
+    vj.sendButtons(btn)
+    time.sleep(0.25)
+    vj.sendButtons(0)
+    vj.close() 
+```
+
+
+```python
+button_ABY()
+```
+
+
+```python
+#Button 12 = XY  
+def button_XY():
+    vj.open()
+    btn = 12
+    vj.sendButtons(btn)
+    time.sleep(0.25)
+    vj.sendButtons(0)
+    vj.close() 
+```
+
+
+```python
+button_XY()
+```
+
+
+```python
+#Button 13 = AXY  
+def button_AXY():
+    vj.open()
+    btn = 13
+    vj.sendButtons(btn)
+    time.sleep(0.25)
+    vj.sendButtons(0)
+    vj.close() 
+```
+
+
+```python
+button_AXY()
+```
+
+
+```python
+#Button 14 = BXY  
+def button_BXY():
+    vj.open()
+    btn = 14
+    vj.sendButtons(btn)
+    time.sleep(0.25)
+    vj.sendButtons(0)
+    vj.close() 
+```
+
+
+```python
+button_BXY()
+```
+
+
+```python
+#Button 15 = ABXY  
+def button_ABXY():
+    vj.open()
+    btn = 15
+    vj.sendButtons(btn)
+    time.sleep(0.25)
+    vj.sendButtons(0)
+    vj.close() 
+```
+
+
+```python
+button_ABXY()
 ```
 
