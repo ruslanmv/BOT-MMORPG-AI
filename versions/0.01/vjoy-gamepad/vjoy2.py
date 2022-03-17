@@ -2,6 +2,9 @@ import ctypes
 import struct, time
 import numpy as np
 
+
+#Vjoy adapted to MMORPG-AI
+
 CONST_DLL_VJOY = "vJoyInterface.dll"
 
 class vJoy(object):
@@ -181,10 +184,7 @@ def test3():
     #vj.sendButtons(0)
     print("vj closing", flush=True)
     vj.close()
-
-
-
-
+  
     
 # DOES change view. 
 def test5():
@@ -203,40 +203,38 @@ def test5():
     vj.close()
     
 
+    
 
-
-
-def look_left():
+def ultimate_release():
     vj.open()
-    joystickPosition = vj.generateJoystickPosition(wAxisXRot = 0)
+    joystickPosition = vj.generateJoystickPosition()
     vj.update(joystickPosition)
-    vj.close()
-
-def look_right():
-    vj.open()
-    joystickPosition = vj.generateJoystickPosition(wAxisXRot = 32786)
-    vj.update(joystickPosition)
+    time.sleep(0.001)
     vj.close()
     
+
     
     
-    
-    
-    
-def look_up():
+######## Gamepad definitions ###############
+
+#LT and RT  (corresponds to Z in Joystic Test)
+      
+def gamepad_lt():
     vj.open()
-    joystickPosition = vj.generateJoystickPosition(wAxisYRot = 0)
+    joystickPosition = vj.generateJoystickPosition(wAxisZ = 32786)
     vj.update(joystickPosition)
     vj.close()
-
-def look_down():
+    
+    
+def gamepad_rt():
     vj.open()
-    joystickPosition = vj.generateJoystickPosition(wAxisYRot = 32786)
+    joystickPosition = vj.generateJoystickPosition(wAxisZ = 0)
     vj.update(joystickPosition)
     vj.close()    
     
-    
-def game_left():
+# Left Thumbstick
+
+def game_lx_left():
     vj.open()
     # valueX, valueY between -1.0 and 1.0
     # scale between 0 and 16000
@@ -245,7 +243,7 @@ def game_left():
     setJoy(-1, 0, scale)
     vj.close()    
     
-def game_right():
+def game_lx_right():
     vj.open()
     # valueX, valueY between -1.0 and 1.0
     # scale between 0 and 16000
@@ -254,7 +252,7 @@ def game_right():
     setJoy(1, 0, scale)
     vj.close()    
     
-def game_up():
+def game_ly_up():
     vj.open()
     # valueX, valueY between -1.0 and 1.0
     # scale between 0 and 16000
@@ -264,17 +262,53 @@ def game_up():
     vj.close()    
     
     
-def game_down():
+def game_ly_down():
     vj.open()
     # valueX, valueY between -1.0 and 1.0
     # scale between 0 and 16000
     scale = 16393.0
     #reset = vj.generateJoystickPosition()
     setJoy(0, 1, scale)
-    vj.close()    
+    vj.close()        
+    
+    
+    
+#   Right Thumbstick  
+    
+    
+def look_rx_left():
+    vj.open()
+    joystickPosition = vj.generateJoystickPosition(wAxisXRot = 0)
+    vj.update(joystickPosition)
+    vj.close()
+    
+    
+def look_rx_right():
+    vj.open()
+    joystickPosition = vj.generateJoystickPosition(wAxisXRot = 32786)
+    vj.update(joystickPosition)
+    vj.close()
+    
+    
+def look_ry_up():
+    vj.open()
+    joystickPosition = vj.generateJoystickPosition(wAxisYRot = 0)
+    vj.update(joystickPosition)
+    vj.close()
     
 
-def throttle():
+def look_ry_down():
+    vj.open()
+    joystickPosition = vj.generateJoystickPosition(wAxisYRot = 32786)
+    vj.update(joystickPosition)
+    vj.close()    
+        
+    
+
+
+# RZ    
+
+def throttle_max():
     vj.open()
     joystickPosition = vj.generateJoystickPosition(wAxisZRot = 32786)
     vj.update(joystickPosition)
@@ -288,46 +322,163 @@ def throttle_min():
     joystickPosition = vj.generateJoystickPosition(wAxisZRot = 0)
     vj.update(joystickPosition)
     vj.close()
-    
-    
+        
     
 
-    
-      
-def reverse_brake():
+#Button 1 = A    
+def button_A():
     vj.open()
-    joystickPosition = vj.generateJoystickPosition(wAxisZ = 32786)
-    vj.update(joystickPosition)
-    vj.close()
+    btn = 1
+    time.sleep(2)
+    vj.sendButtons(btn)
+    time.sleep(1)
+    vj.sendButtons(0)
+    vj.close() 
     
+# Buttons A, B, X, Y,
     
-def reverse_brake_min():
+#Button 1 = A    
+def button_A():
     vj.open()
-    joystickPosition = vj.generateJoystickPosition(wAxisZ = 0)
-    vj.update(joystickPosition)
+    btn = 1
+    vj.sendButtons(btn)
+    time.sleep(0.25)
+    vj.sendButtons(0)
+    vj.close()    
+    
+
+#Button 2 = B    
+def button_B():
+    vj.open()
+    btn = 2
+    vj.sendButtons(btn)
+    time.sleep(0.25)
+    vj.sendButtons(0)
+    vj.close() 
+    
+#Button 3 = AB   
+def button_AB():
+    vj.open()
+    btn = 3
+    vj.sendButtons(btn)
+    time.sleep(0.25)
+    vj.sendButtons(0)
+    vj.close()     
+
+#Button 4 = X   
+def button_X():
+    vj.open()
+    btn = 4
+    vj.sendButtons(btn)
+    time.sleep(0.25)
+    vj.sendButtons(0)
+    vj.close()  
+    
+#Button 5 = AX   
+def button_AX():
+    vj.open()
+    btn = 5
+    vj.sendButtons(btn)
+    time.sleep(0.25)
+    vj.sendButtons(0)
+    vj.close()       
+
+#Button 6 = BX   
+def button_BX():
+    vj.open()
+    btn = 6
+    vj.sendButtons(btn)
+    time.sleep(0.25)
+    vj.sendButtons(0)
+    vj.close() 
+    
+#Button 7 = ABX  
+def button_ABX():
+    vj.open()
+    btn = 7
+    vj.sendButtons(btn)
+    time.sleep(0.25)
+    vj.sendButtons(0)
+    vj.close()     
+    
+#Button 8 = Y  
+def button_Y():
+    vj.open()
+    btn = 8
+    vj.sendButtons(btn)
+    time.sleep(0.25)
+    vj.sendButtons(0)
+    vj.close()     
+    
+#Button 9 = AY  
+def button_AY():
+    vj.open()
+    btn = 9
+    vj.sendButtons(btn)
+    time.sleep(0.25)
+    vj.sendButtons(0)
+    vj.close() 
+    
+    
+#Button 10 = BY  
+def button_BY():
+    vj.open()
+    btn = 10
+    vj.sendButtons(btn)
+    time.sleep(0.25)
+    vj.sendButtons(0)
+    vj.close()     
+    
+    
+    
+#Button 11 = ABY  
+def button_ABY():
+    vj.open()
+    btn = 11
+    vj.sendButtons(btn)
+    time.sleep(0.25)
+    vj.sendButtons(0)
     vj.close()    
     
     
-    
-
-def ultimate_release():
+#Button 12 = XY  
+def button_XY():
     vj.open()
-    joystickPosition = vj.generateJoystickPosition()
-    vj.update(joystickPosition)
-    time.sleep(0.001)
-    vj.close()
+    btn = 12
+    vj.sendButtons(btn)
+    time.sleep(0.25)
+    vj.sendButtons(0)
+    vj.close()  
     
-
+#Button 13 = AXY  
+def button_AXY():
+    vj.open()
+    btn = 13
+    vj.sendButtons(btn)
+    time.sleep(0.25)
+    vj.sendButtons(0)
+    vj.close()     
+    
+#Button 14 = BXY  
+def button_BXY():
+    vj.open()
+    btn = 14
+    vj.sendButtons(btn)
+    time.sleep(0.25)
+    vj.sendButtons(0)
+    vj.close() 
+    
+#Button 15 = ABXY  
+def button_ABXY():
+    vj.open()
+    btn = 15
+    vj.sendButtons(btn)
+    time.sleep(0.25)
+    vj.sendButtons(0)
+    vj.close() 
+    
 
 if __name__ == '__main__':
-
-    for i in reversed(range(1,4)):
-        print(i)
-        time.sleep(1)
-    
-    for i in range(200):
-        reverse_brake()
-        time.sleep(0.01)
 
     ultimate_release()
 
