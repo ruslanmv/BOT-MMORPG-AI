@@ -30,23 +30,6 @@ SOURCE: https://gist.github.com/Flandan/fdadd7046afee83822fcff003ab47087#file-vj
 
 ### How to use
 
-```python
-from vjoy import *
-```
-
-
-```python
-ultimate_release()
-```
-
-```python
-#Testing keys
-test1()
-```
-
-
-### Analizing the important buttons in the gamepad
-
 
 
 ```python
@@ -56,17 +39,6 @@ import pandas as pd
 
 ```python
 from vjoy2 import *
-```
-
-Let us define the gamepad keys that we will use
-
-
-
-
-```python
-gamepad_real_keys=['LT', 'RT', 'Lx', 'Ly', 'Rx', 'Ry', 'UP', 'DOWN', 'LEFT', 'RIGHT',
-       'START', 'SELECT', 'L3', 'R3', 'LB', 'RB', 'A', 'B', 'X', 'Y']
-
 ```
 
 
@@ -98,7 +70,7 @@ ultimate_release()
 
 ### Analizing the important buttons in the gamepad
 
-# Left Thumbstick
+# Right Thumbstick
 
 
 ```python
@@ -139,7 +111,7 @@ ultimate_release()
 ```
 
 
-#   Right Thumbstick  
+#   Left Thumbstick  
 
 
 ```python
