@@ -148,7 +148,9 @@ Finally, we test our  model in game with
 
 or
 
-3-test_model .py
+[3-test_model .py](./versions/0.01/3-test_model .py) 
+
+
 
 ### Note developments:
 
