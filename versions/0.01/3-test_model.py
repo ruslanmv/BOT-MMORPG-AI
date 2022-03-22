@@ -1,4 +1,5 @@
 import numpy as np
+import pandas as pd
 from grabscreen import grab_screen
 import cv2
 import time
@@ -10,6 +11,8 @@ import random
 from statistics import mode,mean
 import numpy as np
 from motion import motion_detection
+#Importing Gamepad library
+from vjoy2 import *
 
 GAME_WIDTH = 1920
 GAME_HEIGHT = 1080
@@ -24,7 +27,7 @@ motion_log = deque(maxlen=log_len)
 WIDTH = 480
 HEIGHT = 270
 LR = 1e-3
-EPOCHS = 10
+EPOCHS = 1
 
 choices = deque([], maxlen=5)
 hl_hist = 250
@@ -113,10 +116,9 @@ def no_keys():
     
 
 
-model = googlenet(WIDTH, HEIGHT, 3, LR, output=9)
-MODEL_NAME = ''
+model = googlenet(WIDTH, HEIGHT, 3, LR, output=29)
+MODEL_NAME = 'model/test'
 model.load(MODEL_NAME)
-
 print('We have loaded a previous model!!!!')
 
 def main():
@@ -144,27 +146,32 @@ def main():
 
             last_time = time.time()
             screen = cv2.resize(screen, (WIDTH,HEIGHT))
-
+            print(len(t_minus), len(t_now), len(t_plus))
             delta_count_last = motion_detection(t_minus, t_now, t_plus)
-
+            delta_count=delta_count_last
+            
             t_minus = t_now
             t_now = t_plus
             t_plus = screen
             t_plus = cv2.blur(t_plus,(4,4))
-
+            
+            
             prediction = model.predict([screen.reshape(WIDTH,HEIGHT,3)])[0]
-            prediction = np.array(prediction) * np.array([4.5, 0.1, 0.1, 0.1,  1.8,   1.8, 0.5, 0.5, 0.2])
-
-            mode_choice = np.argmax(prediction)
-
+            prediction=prediction.round(decimals=2, out=None)
+            prediction = np.array(prediction) * np.array([4.5, 0.1, 0.1, 0.1,  1.8,   1.8, 0.5, 0.5, 0.2,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1])
+            prediction_list=list(prediction)
+            #python convert list to absolute value
+            result =  [abs(element) for element in prediction_list]
+            mode_choice=np.argmax(result)
+            val_prediction=prediction_list[mode_choice]
+          
+            #KEYBOARD INPUT
             if mode_choice == 0:
                 straight()
                 choice_picked = 'straight'
-                
             elif mode_choice == 1:
                 reverse()
                 choice_picked = 'reverse'
-                
             elif mode_choice == 2:
                 left()
                 choice_picked = 'left'
@@ -186,6 +193,85 @@ def main():
             elif mode_choice == 8:
                 no_keys()
                 choice_picked = 'nokeys'
+            #GAMEPAD INPUT                
+            elif mode_choice == 9:
+                gamepad_lt()
+                choice_picked ='LT'
+            elif mode_choice == 10:
+                gamepad_rt()
+                choice_picked ='RT'
+            elif mode_choice == 11:
+                if val_prediction < 0:
+                    game_lx_left()
+                    choice_picked ='Lx'
+                else:
+                    game_lx_right()
+                    choice_picked ='Lx'
+            elif mode_choice == 12:
+                if val_prediction < 0:
+                    game_ly_down()
+                    choice_picked ='Ly'
+                else:
+                    game_ly_up()
+                    choice_picked ='Ly'   
+            elif mode_choice == 13:
+                if val_prediction < 0:
+                    look_rx_left()
+                    choice_picked ='Rx'
+                else:
+                    look_rx_right()
+                    choice_picked ='Rx'  
+            elif mode_choice == 14:
+                if val_prediction < 0:
+                    look_ry_down()
+                    choice_picked ='Ry'
+                else:
+                    look_ry_up()
+                    choice_picked ='Ry'                 
+            elif mode_choice == 15:
+                #To be defined
+                choice_picked ='UP'
+            elif mode_choice == 16:
+                #To be defined
+                choice_picked ='DOWN'               
+            elif mode_choice == 17:
+                #To be defined
+                choice_picked ='LEFT'
+            elif mode_choice == 18:
+                #To be defined
+                choice_picked ='RIGHT'
+            elif mode_choice == 19:
+                #To be defined
+                choice_picked ='START'
+            elif mode_choice == 20:
+                #To be defined
+                choice_picked ='SELECT'
+            elif mode_choice == 21:
+                #To be defined
+                choice_picked ='L3'
+            elif mode_choice == 22:
+                #To be defined
+                choice_picked ='R3'
+            elif mode_choice == 23:
+                #To be defined
+                choice_picked ='LB'
+            elif mode_choice == 24:
+                #To be defined
+                choice_picked ='RB'
+            elif mode_choice == 25:
+                button_A()
+                choice_picked ='A'
+            elif mode_choice == 26:
+                button_B()
+                choice_picked ='B'
+            elif mode_choice == 27:
+                button_X()
+                choice_picked ='X'
+            elif mode_choice == 28:
+                button_Y()
+                choice_picked ='Y'
+                
+         
 
             motion_log.append(delta_count)
             motion_avg = round(mean(motion_log),3)
@@ -241,5 +327,7 @@ def main():
                 ReleaseKey(W)
                 ReleaseKey(D)
                 time.sleep(1)
+
+
 
 main()       
