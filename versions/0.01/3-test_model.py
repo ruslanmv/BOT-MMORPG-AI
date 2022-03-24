@@ -13,6 +13,8 @@ import numpy as np
 from motion import motion_detection
 #Importing Gamepad library
 from vjoy2 import *
+#Importing escape library
+import msvcrt
 
 GAME_WIDTH = 1920
 GAME_HEIGHT = 1080
@@ -122,6 +124,7 @@ model.load(MODEL_NAME)
 print('We have loaded a previous model!!!!')
 
 def main():
+    aborted = False
     last_time = time.time()
     for i in list(range(4))[::-1]:
         print(i+1)
@@ -146,8 +149,8 @@ def main():
 
             last_time = time.time()
             screen = cv2.resize(screen, (WIDTH,HEIGHT))
-            print(len(t_minus), len(t_now), len(t_plus))
-            delta_count_last = motion_detection(t_minus, t_now, t_plus)
+            #print(len(t_minus), len(t_now), len(t_plus))
+            delta_count_last = motion_detection(t_minus, t_now, t_plus,screen)
             delta_count=delta_count_last
             
             t_minus = t_now
@@ -315,7 +318,12 @@ def main():
                     del motion_log[0]
     
         keys = key_check()
-
+        
+        
+        # First of all, check if ESCape was pressed
+        if msvcrt.kbhit() and ord(msvcrt.getch()) == 27:
+            aborted = True
+            break
         # p pauses game and can get annoying.
         if 'T' in keys:
             if paused:
@@ -327,7 +335,11 @@ def main():
                 ReleaseKey(W)
                 ReleaseKey(D)
                 time.sleep(1)
-
+    if aborted:
+        ultimate_release()
+        print("Program was aborted")
 
 
 main()       
+
+#To abort the code, go to your command promt terminal, and there you can press ESC to abort the program or to pause the AI  program.

@@ -152,6 +152,23 @@ or
 
 
 
+![](../assets/images/posts/README/bot.gif)
+
+### How to run the BOT-MMORPG
+
+Things to do before execute our bot-mmorpg:
+1. **Open your  Genshin Impact Game**
+2. **Go infront of  the bridge of Mondstat**
+![title](../assets/images/posts/README/step-0.png)
+3. **Change the time to 12:00**
+![title](../assets/images/posts/README/step-2.png)
+4. **Verify that you are using your a controller.**
+![title](../assets/images/posts/README/step-1.png)
+5. **Run the main()**
+6. **Return to the windows of your game**
+
+To abort the code, go to your command prompt terminal where your notebook where opened, and there you can press **ESC** to abort the program or **T** pause the AI  program.
+
 ### Note developments:
 
 Currently we are using the  **Inception_v3**  model, but we are interested to perform transform learning from the following models:
