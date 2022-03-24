@@ -152,18 +152,18 @@ or
 
 
 
-![](../assets/images/posts/README/bot.gif)
+![](./assets/images/posts/README/bot.gif)
 
 ### How to run the BOT-MMORPG
 
 Things to do before execute our bot-mmorpg:
 1. **Open your  Genshin Impact Game**
 2. **Go infront of  the bridge of Mondstat**
-![title](../assets/images/posts/README/step-0.png)
+![title](./assets/images/posts/README/step-0.png)
 3. **Change the time to 12:00**
-![title](../assets/images/posts/README/step-2.png)
+![title](./assets/images/posts/README/step-2.png)
 4. **Verify that you are using your a controller.**
-![title](../assets/images/posts/README/step-1.png)
+![title](./assets/images/posts/README/step-1.png)
 5. **Run the main()**
 6. **Return to the windows of your game**
 
