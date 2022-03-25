@@ -73,3 +73,10 @@ target/
 versions/0.01/backup/0-collect_data(testing).ipynb
 # backup
 backup/
+#
+remove/
+#logs
+log/
+#experimental
+experimental/
+model_test/
