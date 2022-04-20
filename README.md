@@ -4,7 +4,7 @@
 
 Today I will try to explain how to create a program that will play your favorite **video games**. This is useful when you don't have time to farm and you need to kill moobs and get items. 
 
-If you are interested in joining to this project, you are **welcome** to contribute. You can join to [slack here](https://join.slack.com/share/enQtMjg3MzM0OTY2MDMzNy04NDY5OGE2NzJiNTk4YzkyYjBlMDAyMzBiNzlkZTIyNzllOTA5MmQ5NDkzOTEyYmQ0MTgxZjAyNjM0MWM2NThl)
+If you are interested in joining to this project, you are **welcome** to contribute. 
 
 The **RPG** game that I will choose for this project is [Genshin Impact](https://genshin.mihoyo.com/en/)
 
@@ -203,7 +203,15 @@ And identify  the behavior  with our train and test dataset.
   [Self-Driving-Car-with-Neural-Networks](https://ruslanmv.com/blog/Self-Driving-Car-with-Neural-Networks) 
 * Everyone at [PyGTA5](https://github.com/Sentdex/pygta5) project
 
+## For contributors
 
+If you are already part of the team the official channel in slack is:
+
+[https://aws-ml-group.slack.com/](https://aws-ml-group.slack.com/)
+
+
+
+<img src="assets/images/posts/README/slack.png" alt="image-20220420230327556" style="zoom:80%;" />
 
 ## Contributing
 
