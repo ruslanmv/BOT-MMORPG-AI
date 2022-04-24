@@ -11,6 +11,14 @@ from models import alexnet2
 from random import shuffle
 import matplotlib.pyplot as plt
 from sklearn.model_selection import train_test_split
+###
+import io
+from IPython.display import clear_output, Image, display
+import PIL.Image
+#from matplotlib import pyplot as plt
+from numpy import load
+
+
 WIDTH = 480
 HEIGHT = 270
 
@@ -44,9 +52,14 @@ def cleaning_data(train_data , show=False):
         df = pd.concat([df, temp])
     df=df.reset_index(drop=True)
 
+    
+    
     # Parameters of the cleaning part
-    num_bins = 25
-    samples_per_bin = 100
+    num_bins = 25  
+    # We choose the threshold by choosing the RX diffeerent of zero
+    threshold= (df[13] != 0).astype(int).sum(axis=0)
+    samples_per_bin = threshold    
+    #samples_per_bin = 100
     hist, bins = np.histogram(df[13], num_bins)
     center = (bins[:-1]+ bins[1:]) * 0.5
     
@@ -90,3 +103,16 @@ def cleaning_data(train_data , show=False):
     assert len(df) == len(df_image_clean), "The dimensions are not equal, something is wrong "
     
     return df_image_clean, df
+
+
+def showarray(a, fmt='jpeg'):
+    a_n = np.uint8(np.clip(a, 0, 255))
+    try :
+        f = io.BytesIO()
+        PIL.Image.fromarray(a_n).save(f, fmt)
+        display(Image(data=f.getvalue()))
+    except:
+        #a = a[:, :, ::-1] # convert image from RGB (skimage) to BGR (opencv)
+        # display image   
+        plt.imshow(a)
+        plt.show()  

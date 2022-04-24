@@ -74,9 +74,9 @@ versions/0.01/backup/0-collect_data(testing).ipynb
 # backup
 backup/
 #
-remove/
-#logs
 log/
+remove/
 #experimental
 experimental/
 model_test/
+clean/
