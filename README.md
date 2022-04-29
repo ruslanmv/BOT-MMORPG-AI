@@ -1,6 +1,6 @@
 ## How to create your own Bot with Artificial Intelligence that plays your favorites  RPG or MMORPG games
 
-*Last revision March 2022*
+*Last revision April 2022*
 
 Today I will try to explain how to create a program that will play your favorite **video games**. This is useful when you don't have time to farm and you need to kill moobs and get items. 
 
@@ -120,39 +120,45 @@ The **second experimental** approach  consists to take  the images and filter th
 
 ## How to use BOT-MMORPG
 
-Currently, to use the latest version of this AI, you will need to run first 
+Currently, the stable version of the BOT-MMORPG   is the pre-processed version.
 
-[1-Collect_Data_Preprocessed-rgb.ipynb](./versions/0.01/1-Collect_Data_Preprocessed-rgb.ipynb)
+**Pre-processed version**
 
-or
+In this version, you will need to run first 
 
-[1-collect_data.py](./versions/0.01/1-collect_data.py)
+[1-Collect_Data_Preprocessed-rgb.ipynb](./versions/0.01/1-Collect_Data_Preprocessed-rgb.ipynb)  or [1-collect_data.py](./versions/0.01/1-collect_data.py)
 
 When creating training data, this works when you have the game, in fullscreen mode, 1980x1080 resolution.
 
 You need this for both training and testing.
 
-(An experimental test was apply certain filters like those presented [here](https://github.com/ruslanmv/BOT-MMORPG-AI/blob/master/versions/0.01/0-Way-Identification.ipynb) and then [1-Collect_Data_Processed_single_color](./versions/0.01/1-Collect_Data_Processed_single_color.ipynb)  )
+Next, Train the model . 
 
-Next, Train the model . With the preprocessed data we will consider the  **inception_v3**  model.
+With the preprocessed data we will consider the  **inception_v3**  model.
 
-[2-train_model_preprocessed.ipynb](./versions/0.01/2-train_model_preprocessed.ipynb)
+[2-train_model_preprocessed.ipynb](./versions/0.01/2-train_model_preprocessed.ipynb) or [2-train_model.py](./versions/0.01/2-train_model.py)
 
-or
+Finally, we test our  model in game with
 
-[2-train_model.py](./versions/0.01/2-train_model.py)
-
-Finally, we test our  model in game with 
-
-[3-test_model.ipynb](./versions/0.01/3-test_model.ipynb) 
-
-or
-
-[3-test_model.py](./versions/0.01/3-test_model.py) 
+ [3-test_model.ipynb](./versions/0.01/3-test_model.ipynb) or[3-test_model.py](./versions/0.01/3-test_model.py) 
 
 
 
 ![](./assets/images/posts/README/bot.gif)
+
+
+
+**Processed version**
+
+The processed version is the upcoming version  where we are trying to clean more our data and improve the neural network.
+
+[2-Cleaning-Data.ipynb](./versions/0.01/2-Cleaning-Data.ipynb) 
+
+[2-train_model_cleaned.ipynb](./versions/0.01/2-train_model_cleaned.ipynb) 
+
+[3-test_model-processed.ipynb](./versions/0.01/3-test_model-processed.ipynb) 
+
+(There are some experimental  tests to use filters  [here](https://github.com/ruslanmv/BOT-MMORPG-AI/blob/master/versions/0.01/0-Way-Identification.ipynb) , written in  [1-Collect_Data_Processed_single_color](./versions/0.01/1-Collect_Data_Processed_single_color.ipynb)  )
 
 ### How to run the BOT-MMORPG
 
