@@ -158,7 +158,7 @@ The processed version is the upcoming version  where we are trying to clean more
 
 [3-test_model-processed.ipynb](./versions/0.01/3-test_model-processed.ipynb) 
 
-[<img src="assets/images/posts/README/result.jpg" alt="Results" style="zoom:67%;" />](https://github.com/ruslanmv/BOT-MMORPG-AI/raw/master/assets/images/posts/README/result.jpg)
+[<img src="assets/images/posts/README/acc.jpg" alt="Results" style="zoom:100%;" />](https://github.com/ruslanmv/BOT-MMORPG-AI/raw/master/assets/images/posts/README/result.jpg)
 
 
 
