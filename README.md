@@ -158,6 +158,10 @@ The processed version is the upcoming version  where we are trying to clean more
 
 [3-test_model-processed.ipynb](./versions/0.01/3-test_model-processed.ipynb) 
 
+[<img src="assets/images/posts/README/result.jpg" alt="Results" style="zoom:67%;" />](https://github.com/ruslanmv/BOT-MMORPG-AI/raw/master/assets/images/posts/README/result.jpg)
+
+
+
 (There are some experimental  tests to use filters  [here](https://github.com/ruslanmv/BOT-MMORPG-AI/blob/master/versions/0.01/0-Way-Identification.ipynb) , written in  [1-Collect_Data_Processed_single_color](./versions/0.01/1-Collect_Data_Processed_single_color.ipynb)  )
 
 ### How to run the BOT-MMORPG
