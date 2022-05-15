@@ -26,8 +26,6 @@ We will start with  local development  and some free AWS microservices.
 
  **c) Enjoy coding and pass fun**, one of the important aspects of this project is to learn, enjoy and pass good moments with the **AI Community Gamer**.
 
-
-
 ## Tasks to perform
 
 The first tasks that we want to perform are: 
@@ -49,13 +47,9 @@ we will consider the initial  point **Mondstand** and the Final point **Thousand
 ![](assets/images/posts/README/Image00.png)
 
 
-
-
-
 The time that we will choose is **12:00**
 
 ![](assets/images/posts/README/Image01.jpeg)
-
 
 
 # How to run the BOT-MMORPG program
@@ -73,7 +67,6 @@ The **Type 1**, the non prod, is the self-explanatory program written in **Jupyt
 This help to newcomers introduce the code , and help find bugs. In addition allows write the code type blog.
 
 The **Type 2** is the production program, written in simply python script, without discussions or extra things that are not needed to run the whole program. Here we skip all the analysis of the type 1 and just we  put everything a clean as a possible.
-
 
 
 ## Current Solution
