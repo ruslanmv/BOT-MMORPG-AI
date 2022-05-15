@@ -1,6 +1,6 @@
 ## How to create your own Bot with Artificial Intelligence that plays your favorites  RPG or MMORPG games
 
-*Last revision April 2022*
+*Last revision May 2022*
 
 Today I will try to explain how to create a program that will play your favorite **video games**. This is useful when you don't have time to farm and you need to kill moobs and get items. 
 
