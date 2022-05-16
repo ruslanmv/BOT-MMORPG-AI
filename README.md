@@ -155,7 +155,15 @@ The processed version is the upcoming version  where we are trying to clean more
 
 
 
-(There are some experimental  tests to use filters  [here](https://github.com/ruslanmv/BOT-MMORPG-AI/blob/master/versions/0.01/0-Way-Identification.ipynb) , written in  [1-Collect_Data_Processed_single_color](./versions/0.01/1-Collect_Data_Processed_single_color.ipynb)  )
+(There are some experimental  tests use OpenCV to detect the ways to walk  [here](https://github.com/ruslanmv/BOT-MMORPG-AI/blob/master/versions/0.01/0-Way-Identification.ipynb) , inspired to use U-Net models.
+
+
+
+![](assets/images/posts/README/path.jpg)
+
+
+
+and also we try  [unicolor versions](./versions/0.01/1-Collect_Data_Processed_single_color.ipynb) )
 
 ### How to run the BOT-MMORPG
 
