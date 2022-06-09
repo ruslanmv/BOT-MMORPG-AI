@@ -83,3 +83,7 @@ clean/
 frontend/video_record/keyboard.py
 frontend/video_record/keyboard.py
 frontend/video_record/keyboard.py
+versions/0.01/data_reduced/x_training_data.csv
+versions/0.01/data_reduced/y_training_data.csv
+versions/0.01/data_reduced/undersampling/x_training_data.csv
+versions/0.01/data_reduced/undersampling/y_training_data.csv
