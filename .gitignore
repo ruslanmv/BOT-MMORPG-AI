@@ -79,6 +79,7 @@ remove/
 #experimental
 experimental/
 model_test/
+classes/
 clean/
 frontend/video_record/keyboard.py
 frontend/video_record/keyboard.py
