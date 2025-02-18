@@ -225,7 +225,7 @@ If you are already part of the team the official channel in slack is:
 <img src="assets/images/posts/README/slack.png" alt="image-20220420230327556" style="zoom:80%;" />
 
 ## Contributing
-
+[![Stargazers over time](https://starchart.cc/ruslanmv/BOT-MMORPG-AI.svg?variant=adaptive)](https://starchart.cc/ruslanmv/BOT-MMORPG-AI)
 Please free  to contribute following the standard guidelines for submitting patches and additions or solutions. Feel free to submit issues and enhancement requests.
 
 To more information visit [ruslanmv.com](https://ruslanmv.com/).
