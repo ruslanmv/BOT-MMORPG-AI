@@ -25,6 +25,12 @@ reqwest = { version = "0.11", default-features = false, features = ["json", "rus
 # Needed by reqwest async client + general async tasks in Tauri commands
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
 
+# Unpack the packed python runtime archive (python-runtime.zip) on first launch.
+# Using default-features=false disables `bzip2`/`time`/`deflate64` to keep the
+# binary small; `deflate` is the compression used by Compress-Archive on the
+# build side.
+zip = { version = "0.6", default-features = false, features = ["deflate"] }
+
 [features]
 default = ["custom-protocol"]
 custom-protocol = ["tauri/custom-protocol"]

@@ -158,28 +158,40 @@ if (Test-Path $uiJsPath) {
 # The Tauri app expects these under src-tauri/resources/ so NSIS includes them.
 # If any is missing, the installed app will print "Sidecar API not ready" and
 # "Script not found" — the very bugs users are hitting.
-Write-Info "Checking bundled runtime (python + backend + modelhub + versions)..."
+Write-Info "Checking bundled runtime (python runtime zip + backend + modelhub + versions)..."
 
+# After STEP 6.7 the python runtime is packaged as a single zip file.
+# Older builds shipped the unpacked python/ tree; accept either.
+$bundledZip = Join-Path $root "src-tauri\resources\python-runtime.zip"
 $bundledPython = Join-Path $root "src-tauri\resources\python\python.exe"
-if (Test-Path $bundledPython) {
-    Write-Success "Bundled Python runtime exists: resources/python/python.exe"
-} else {
-    Write-Failure "Bundled Python runtime missing: $bundledPython"
-    $errors += "resources/python/python.exe missing (sidecar cannot start)"
-}
 
-$bundledSitePkgs = Join-Path $root "src-tauri\resources\python\site-packages"
-if (Test-Path $bundledSitePkgs) {
-    $countFiles = (Get-ChildItem -Path $bundledSitePkgs -Recurse -File -ErrorAction SilentlyContinue | Measure-Object).Count
-    if ($countFiles -gt 100) {
-        Write-Success "Bundled site-packages populated: $countFiles files"
+if (Test-Path $bundledZip) {
+    $zipMB = (Get-Item $bundledZip).Length / 1MB
+    if ($zipMB -ge 10) {
+        Write-Success ("Bundled Python runtime archive exists: resources/python-runtime.zip ({0:N1} MB)" -f $zipMB)
     } else {
-        Write-Failure "Bundled site-packages too small: only $countFiles files"
-        $errors += "resources/python/site-packages is empty or incomplete"
+        Write-Failure ("Bundled Python runtime archive too small: {0:N1} MB" -f $zipMB)
+        $errors += "resources/python-runtime.zip is suspiciously small (offline deps missing)"
+    }
+} elseif (Test-Path $bundledPython) {
+    Write-Success "Bundled Python runtime exists (unpacked legacy layout): resources/python/python.exe"
+
+    $bundledSitePkgs = Join-Path $root "src-tauri\resources\python\site-packages"
+    if (Test-Path $bundledSitePkgs) {
+        $countFiles = (Get-ChildItem -Path $bundledSitePkgs -Recurse -File -ErrorAction SilentlyContinue | Measure-Object).Count
+        if ($countFiles -gt 100) {
+            Write-Success "Bundled site-packages populated: $countFiles files"
+        } else {
+            Write-Failure "Bundled site-packages too small: only $countFiles files"
+            $errors += "resources/python/site-packages is empty or incomplete"
+        }
+    } else {
+        Write-Failure "Bundled site-packages missing: $bundledSitePkgs"
+        $errors += "resources/python/site-packages missing (No module named uvicorn/numpy/torch)"
     }
 } else {
-    Write-Failure "Bundled site-packages missing: $bundledSitePkgs"
-    $errors += "resources/python/site-packages missing (No module named uvicorn/numpy/torch)"
+    Write-Failure "Bundled Python runtime missing: expected either $bundledZip or $bundledPython"
+    $errors += "resources/python-runtime.zip and resources/python/ both missing (sidecar cannot start)"
 }
 
 $bundledBackend = Join-Path $root "src-tauri\resources\backend\entry_main.py"
