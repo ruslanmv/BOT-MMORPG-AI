@@ -732,46 +732,68 @@ fn work_dir(app: &AppHandle) -> PathBuf {
 }
 
 /// Resolve scripts in production in this order:
-///  1) Local override:   <install_dir>\content\versions\<ver>\...
-///  2) Bundled resource: resolve_resource("versions/<ver>/<script>")
-///  3) Legacy staging:   <install_dir>\_up_\versions\<ver>\...
+///  1) User-copied override:  <install_dir>\versions\<ver>\<script>
+///                            (matches what users in issues #26/#37/#42 do manually)
+///  2) Content override:      <install_dir>\content\versions\<ver>\<script>
+///  3) Bundled resource:      resolve_resource("versions/<ver>/<script>")
+///  4) Legacy staging:        <install_dir>\_up_\versions\<ver>\<script>
 ///
 /// In debug, fallback to repo tree: <repo>/versions/<ver>/<script>
 fn resolve_script(app: &AppHandle, script_name: &str) -> Result<PathBuf, String> {
     if !cfg!(debug_assertions) {
         let root = ensure_runtime_layout(app);
+        let mut tried: Vec<String> = Vec::new();
 
-        // 1) content override (writable) in installation directory
+        // 1) User-copied: <install_dir>\versions\<ver>\<script>
+        // This is exactly the path users in issues #26/#37/#42 copied files to.
+        let user_candidate = root
+            .join("versions")
+            .join(DEFAULT_VERSION)
+            .join(script_name);
+        tried.push(user_candidate.display().to_string());
+        if user_candidate.exists() {
+            return Ok(user_candidate);
+        }
+
+        // 2) Content override (writable) in installation directory
         let content_candidate = root
             .join("content")
             .join("versions")
             .join(DEFAULT_VERSION)
             .join(script_name);
+        tried.push(content_candidate.display().to_string());
         if content_candidate.exists() {
             return Ok(content_candidate);
         }
 
-        // 2) bundled versions (from resources)
+        // 3) Bundled versions (from resources staged by build_pipeline Step 6.5)
         let rel = format!("versions/{}/{}", DEFAULT_VERSION, script_name);
         if let Some(p) = app.path_resolver().resolve_resource(&rel) {
+            tried.push(p.display().to_string());
             if p.exists() {
                 return Ok(p);
             }
+        } else {
+            tried.push(format!("<bundled> {}", rel));
         }
 
-        // 3) legacy staging (install dir)
+        // 4) Legacy staging (install dir)
         let legacy_up = root
             .join("_up_")
             .join("versions")
             .join(DEFAULT_VERSION)
             .join(script_name);
+        tried.push(legacy_up.display().to_string());
         if legacy_up.exists() {
             return Ok(legacy_up);
         }
 
         return Err(format!(
-            "Script not found. Tried content/, bundled resource {}, and install-dir _up_.",
-            rel
+            "Script '{}' not found. The installer is missing bundled versions/. \
+             Workaround: copy the script into '{}'. Tried: [{}]",
+            script_name,
+            root.join("versions").join(DEFAULT_VERSION).display(),
+            tried.join(" | ")
         ));
     }
 
@@ -997,10 +1019,12 @@ fn start_sidecar_server(app: &AppHandle) -> Result<(SidecarApi, Child), String> 
         Ok(Ok(api)) => Ok((api, child)),
         Ok(Err(e)) => {
             let _ = child.kill();
+            let _ = child.wait(); // reap the zombie
             Err(e)
         }
         Err(_) => {
             let _ = child.kill();
+            let _ = child.wait(); // reap the zombie
             Err("Timed out waiting for sidecar READY line".to_string())
         }
     }
@@ -1022,8 +1046,17 @@ async fn wait_for_sidecar(inner: &Arc<AppStateInner>) -> Result<SidecarApi, Stri
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         }
     }
-    Err("Sidecar API not ready after 5 s — check terminal for startup errors".to_string())
+    Err(
+        "Sidecar API not ready after 5 s. Likely cause: the installer is missing \
+         resources/python, resources/backend, or resources/modelhub. See the terminal \
+         log for [Fatal] Sidecar failed: ... (issues #26, #37, #42)."
+            .to_string(),
+    )
 }
+
+/// Default timeout on every sidecar HTTP call so a hung Python backend
+/// cannot freeze the UI indefinitely.
+const SIDECAR_HTTP_TIMEOUT: Duration = Duration::from_secs(30);
 
 async fn api_get_with(inner: &Arc<AppStateInner>, path: &str) -> Result<Value, String> {
     let api = wait_for_sidecar(inner).await?;
@@ -1033,6 +1066,7 @@ async fn api_get_with(inner: &Arc<AppStateInner>, path: &str) -> Result<Value, S
         .http
         .get(url)
         .header("X-Auth-Token", api.token)
+        .timeout(SIDECAR_HTTP_TIMEOUT)
         .send()
         .await
         .map_err(|e| e.to_string())?;
@@ -1058,6 +1092,7 @@ async fn api_post_with(
         .http
         .post(url)
         .header("X-Auth-Token", api.token)
+        .timeout(SIDECAR_HTTP_TIMEOUT)
         .json(&payload)
         .send()
         .await
@@ -1316,6 +1351,7 @@ async fn ai_chat(
             .http
             .post("https://api.openai.com/v1/chat/completions")
             .bearer_auth(key.trim())
+            .timeout(Duration::from_secs(60))
             .json(&body)
             .send()
             .await
@@ -1361,6 +1397,7 @@ async fn ai_chat(
         .inner
         .http
         .post(url)
+        .timeout(Duration::from_secs(60))
         .json(&body)
         .send()
         .await
@@ -1674,7 +1711,31 @@ fn main() {
                         );
                         let _ = w.emit::<String>(
                             "terminal_update",
-                            "[Hint] In PROD you must bundle: (1) resources/python with embedded Python runtime, (2) resources/backend with entry_main.py, (3) resources/modelhub with Python modules, and (4) resources/wheelhouse with pre-built wheels for offline dependency installation.".to_string(),
+                            "[Hint] The installer is missing required resources. Required layout under the install dir:".to_string(),
+                        );
+                        let _ = w.emit::<String>(
+                            "terminal_update",
+                            "  resources/python/python.exe         (embedded Python 3.10)".to_string(),
+                        );
+                        let _ = w.emit::<String>(
+                            "terminal_update",
+                            "  resources/python/site-packages/...  (fastapi, uvicorn, torch, numpy)".to_string(),
+                        );
+                        let _ = w.emit::<String>(
+                            "terminal_update",
+                            "  resources/backend/entry_main.py     (sidecar entry)".to_string(),
+                        );
+                        let _ = w.emit::<String>(
+                            "terminal_update",
+                            "  resources/modelhub/tauri.py          (HTTP API)".to_string(),
+                        );
+                        let _ = w.emit::<String>(
+                            "terminal_update",
+                            "  resources/versions/0.01/*.py         (ML scripts)".to_string(),
+                        );
+                        let _ = w.emit::<String>(
+                            "terminal_update",
+                            "[Action] Re-run scripts/build_pipeline.ps1 to produce a complete installer, or download the latest GitHub release.".to_string(),
                         );
                     }
                 }

@@ -857,6 +857,56 @@ if (Test-Path $srcModelhub) {
 
 
 # ================================
+# STEP 6.9: Preflight - verify required resources before building installer
+# (Blocks the broken-installer symptom from issues #26/#37/#42)
+# ================================
+Log-Step 6.9 "Preflight: verifying bundled resources"
+
+$preflightErrors = @()
+
+$resReq = @(
+  @{ Path = "src-tauri\resources\python\python.exe";                                 Why = "Sidecar cannot start (issues #26/#37/#42)" },
+  @{ Path = "src-tauri\resources\backend\entry_main.py";                             Why = "Sidecar entry missing"                      },
+  @{ Path = "src-tauri\resources\modelhub\tauri.py";                                 Why = "ModelHub HTTP API missing"                  },
+  @{ Path = "src-tauri\resources\versions\0.01\1-collect_data.py";                   Why = "'Script not found' on Start Recording"     },
+  @{ Path = "src-tauri\resources\versions\0.01\2-train_model.py";                    Why = "'Script not found' on Train"                },
+  @{ Path = "src-tauri\resources\versions\0.01\3-test_model.py";                     Why = "'Script not found' on Start Bot"            }
+)
+
+foreach ($r in $resReq) {
+  $full = Join-Path $root $r.Path
+  if (Test-Path $full) {
+    Log-Ok ("OK: " + $r.Path)
+  } else {
+    Log-Fail ("MISSING: " + $r.Path + " -> " + $r.Why)
+    $preflightErrors += $r.Path
+  }
+}
+
+# site-packages must be populated (not just present)
+$sitePkgsDir = Join-Path $root "src-tauri\resources\python\site-packages"
+if (Test-Path $sitePkgsDir) {
+  $spCount = (Get-ChildItem -Path $sitePkgsDir -Recurse -File -ErrorAction SilentlyContinue | Measure-Object).Count
+  if ($spCount -lt 100) {
+    Log-Fail ("site-packages too small ({0} files) - offline deps missing (would cause 'No module named uvicorn')" -f $spCount)
+    $preflightErrors += "src-tauri\resources\python\site-packages (empty)"
+  } else {
+    Log-Ok ("site-packages populated: {0} files" -f $spCount)
+  }
+} else {
+  Log-Fail "site-packages directory missing entirely - offline deps will not be installed"
+  $preflightErrors += "src-tauri\resources\python\site-packages (missing)"
+}
+
+if ($preflightErrors.Count -gt 0) {
+  Log-Fail ("Preflight failed with {0} missing resource(s). Aborting to prevent shipping a broken installer." -f $preflightErrors.Count)
+  Log-Info "Re-run earlier steps (wheelhouse, Python bundling, site-packages install, Step 6.5/6.6)."
+  exit 1
+}
+
+Log-Ok "Preflight passed - all required resources present"
+
+# ================================
 # STEP 7: Build Tauri
 # ================================
 if (-not $SkipTauri) {
