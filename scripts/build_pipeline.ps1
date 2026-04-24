@@ -857,6 +857,60 @@ if (Test-Path $srcModelhub) {
 
 
 # ================================
+# STEP 6.7: Pack the embedded Python runtime + site-packages into a single zip.
+#
+# Why: Tauri's NSIS bundler iterates every bundled resource file through a
+# handlebars `{{#each resources}}` template. With site-packages holding
+# ~20,000+ files (PyTorch, CUDA libs, numpy, opencv), and `cargo tauri build`
+# defaulting to debug-level `handlebars::render` logging, the job emits
+# hundreds of thousands of log lines and exceeds GitHub Actions' log buffer,
+# killing the job with exit code 1 (this is what broke the v0.2.1 release).
+#
+# By packing the whole runtime tree into ONE zip, Tauri bundles a single file
+# instead of 20k, NSIS compiles in seconds, and the installer is smaller
+# because the zip compresses the tree once rather than LZMA-ing tens of
+# thousands of per-file headers. The Rust app extracts the zip on first launch
+# via main.rs::ensure_python_env -> extract_zip_to().
+# ================================
+Log-Step 6.7 "Packing embedded Python runtime into a single archive"
+
+$pythonDir  = Join-Path $root "src-tauri\resources\python"
+$runtimeZip = Join-Path $root "src-tauri\resources\python-runtime.zip"
+
+if (-not (Test-Path $pythonDir)) {
+  Log-Fail "Cannot pack runtime: $pythonDir does not exist. Earlier STEP 2/3 must run first."
+  exit 1
+}
+
+if (Test-Path $runtimeZip) {
+  Remove-Item -Force $runtimeZip -ErrorAction SilentlyContinue
+}
+
+try {
+  Add-Type -AssemblyName System.IO.Compression.FileSystem
+  [System.IO.Compression.ZipFile]::CreateFromDirectory(
+    $pythonDir,
+    $runtimeZip,
+    [System.IO.Compression.CompressionLevel]::Optimal,
+    $false
+  )
+  $zipSizeMB = [math]::Round((Get-Item $runtimeZip).Length / 1MB, 1)
+  Log-Ok ("Packed runtime into: {0} ({1} MB)" -f $runtimeZip, $zipSizeMB)
+} catch {
+  Log-Fail "Failed to pack runtime: $_"
+  exit 1
+}
+
+# Remove the unpacked python/ tree so Tauri's NSIS bundler only sees the zip.
+# (Leaving the tree in would double-bundle it AND re-trigger the handlebars flood.)
+try {
+  Remove-Item -Recurse -Force $pythonDir -ErrorAction SilentlyContinue
+  Log-Ok "Removed unpacked python/ tree (tauri will bundle python-runtime.zip instead)"
+} catch {
+  Log-Warn "Could not remove $pythonDir ; NSIS bundle may be larger than necessary: $_"
+}
+
+# ================================
 # STEP 6.9: Preflight - verify required resources before building installer
 # (Blocks the broken-installer symptom from issues #26/#37/#42)
 # ================================
@@ -865,7 +919,7 @@ Log-Step 6.9 "Preflight: verifying bundled resources"
 $preflightErrors = @()
 
 $resReq = @(
-  @{ Path = "src-tauri\resources\python\python.exe";                                 Why = "Sidecar cannot start (issues #26/#37/#42)" },
+  @{ Path = "src-tauri\resources\python-runtime.zip";                                Why = "Packed Python runtime missing (sidecar cannot start)" },
   @{ Path = "src-tauri\resources\backend\entry_main.py";                             Why = "Sidecar entry missing"                      },
   @{ Path = "src-tauri\resources\modelhub\tauri.py";                                 Why = "ModelHub HTTP API missing"                  },
   @{ Path = "src-tauri\resources\versions\0.01\1-collect_data.py";                   Why = "'Script not found' on Start Recording"     },
@@ -883,24 +937,22 @@ foreach ($r in $resReq) {
   }
 }
 
-# site-packages must be populated (not just present)
-$sitePkgsDir = Join-Path $root "src-tauri\resources\python\site-packages"
-if (Test-Path $sitePkgsDir) {
-  $spCount = (Get-ChildItem -Path $sitePkgsDir -Recurse -File -ErrorAction SilentlyContinue | Measure-Object).Count
-  if ($spCount -lt 100) {
-    Log-Fail ("site-packages too small ({0} files) - offline deps missing (would cause 'No module named uvicorn')" -f $spCount)
-    $preflightErrors += "src-tauri\resources\python\site-packages (empty)"
+# Sanity-check the runtime zip is a reasonable size (a truly empty runtime
+# would be <1 MB; real runtime is hundreds of MB).
+$runtimeZipPath = Join-Path $root "src-tauri\resources\python-runtime.zip"
+if (Test-Path $runtimeZipPath) {
+  $zipMB = (Get-Item $runtimeZipPath).Length / 1MB
+  if ($zipMB -lt 10) {
+    Log-Fail ("python-runtime.zip suspiciously small: {0:N1} MB (would cause 'No module named uvicorn')" -f $zipMB)
+    $preflightErrors += "python-runtime.zip (too small)"
   } else {
-    Log-Ok ("site-packages populated: {0} files" -f $spCount)
+    Log-Ok ("python-runtime.zip size: {0:N1} MB" -f $zipMB)
   }
-} else {
-  Log-Fail "site-packages directory missing entirely - offline deps will not be installed"
-  $preflightErrors += "src-tauri\resources\python\site-packages (missing)"
 }
 
 if ($preflightErrors.Count -gt 0) {
   Log-Fail ("Preflight failed with {0} missing resource(s). Aborting to prevent shipping a broken installer." -f $preflightErrors.Count)
-  Log-Info "Re-run earlier steps (wheelhouse, Python bundling, site-packages install, Step 6.5/6.6)."
+  Log-Info "Re-run earlier steps (wheelhouse, Python bundling, site-packages install, Step 6.5/6.6/6.7)."
   exit 1
 }
 
@@ -914,9 +966,29 @@ if (-not $SkipTauri) {
 
   Push-Location (Join-Path $root "src-tauri")
   try {
-    Log-Info "Running cargo tauri build..."
-    & cargo tauri build --verbose
-    if ($LASTEXITCODE -ne 0) { throw "Tauri build failed with exit code $LASTEXITCODE" }
+    # CRITICAL: do NOT pass --verbose here and explicitly pin RUST_LOG to
+    # "info". `cargo tauri build --verbose` enables debug-level logging for
+    # the `handlebars` crate that tauri-bundler uses to render the NSIS
+    # template. With ~20k resource files the {{#each resources}} block emits
+    # ~60k "Debug [handlebars::render]" lines, overflows GitHub Actions' log
+    # buffer, and the job dies with exit 1. (That is what broke the v0.2.1
+    # release — build_windows-installer.yml succeeded because it doesn't run
+    # this pipeline; release-windows-installer.yml failed because it does.)
+    $prevRustLog = $env:RUST_LOG
+    $env:RUST_LOG = "info,handlebars=warn,tauri_bundler=info"
+
+    Log-Info "Running cargo tauri build (RUST_LOG=$($env:RUST_LOG))..."
+    & cargo tauri build
+    $tauriExit = $LASTEXITCODE
+
+    # Restore previous RUST_LOG so subsequent steps aren't affected.
+    if ($null -eq $prevRustLog) {
+      Remove-Item Env:\RUST_LOG -ErrorAction SilentlyContinue
+    } else {
+      $env:RUST_LOG = $prevRustLog
+    }
+
+    if ($tauriExit -ne 0) { throw "Tauri build failed with exit code $tauriExit" }
     Log-Ok "Tauri build completed successfully"
   } catch {
     Log-Fail "Tauri build failed: $_"

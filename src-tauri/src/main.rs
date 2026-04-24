@@ -333,6 +333,77 @@ fn bundled_python_dir(app: &AppHandle) -> Option<PathBuf> {
     None
 }
 
+/// Locate a packed python runtime archive. The build pipeline packs the entire
+/// embedded python tree + site-packages into a single zip so Tauri's NSIS
+/// bundler doesn't have to iterate tens of thousands of files (which floods
+/// handlebars debug logs and kills the GitHub Actions job with exit 1).
+fn bundled_python_archive(app: &AppHandle) -> Option<PathBuf> {
+    let candidates = [
+        "python-runtime.zip",
+        "resources/python-runtime.zip",
+        "resources\\python-runtime.zip",
+    ];
+    for rel in candidates {
+        if let Some(p) = app.path_resolver().resolve_resource(rel) {
+            if p.exists() {
+                return Some(p);
+            }
+        }
+    }
+    if let Some(rd) = app.path_resolver().resource_dir() {
+        let p = rd.join("python-runtime.zip");
+        if p.exists() {
+            return Some(p);
+        }
+        let p2 = rd.join("resources").join("python-runtime.zip");
+        if p2.exists() {
+            return Some(p2);
+        }
+    }
+    None
+}
+
+/// Extract every entry of a zip archive into `dst`. Used on first launch to
+/// unpack the bundled python runtime.
+fn extract_zip_to(archive: &Path, dst: &Path) -> Result<(), String> {
+    use std::io::{Read, Write};
+    let file = fs::File::open(archive)
+        .map_err(|e| format!("cannot open {}: {}", archive.display(), e))?;
+    let mut zip = zip::ZipArchive::new(file)
+        .map_err(|e| format!("cannot read zip {}: {}", archive.display(), e))?;
+    fs::create_dir_all(dst).map_err(|e| e.to_string())?;
+    for i in 0..zip.len() {
+        let mut entry = zip
+            .by_index(i)
+            .map_err(|e| format!("zip entry {}: {}", i, e))?;
+        let out_rel = match entry.enclosed_name() {
+            Some(p) => p.to_path_buf(),
+            None => continue, // skip unsafe/zip-slip entries
+        };
+        let out_path = dst.join(out_rel);
+        if entry.is_dir() {
+            fs::create_dir_all(&out_path).map_err(|e| e.to_string())?;
+            continue;
+        }
+        if let Some(parent) = out_path.parent() {
+            fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        let mut out_file =
+            fs::File::create(&out_path).map_err(|e| format!("create {}: {}", out_path.display(), e))?;
+        let mut buf = [0u8; 64 * 1024];
+        loop {
+            let n = entry.read(&mut buf).map_err(|e| e.to_string())?;
+            if n == 0 {
+                break;
+            }
+            out_file
+                .write_all(&buf[..n])
+                .map_err(|e| format!("write {}: {}", out_path.display(), e))?;
+        }
+    }
+    Ok(())
+}
+
 fn bundled_wheelhouse_dir(app: &AppHandle) -> Option<PathBuf> {
     // Expected (recommended) layout:
     // resources/wheelhouse/<tag>/wheels/*.whl and requirements.lock.txt
@@ -481,40 +552,75 @@ fn ensure_python_env(app: &AppHandle, window: &Window) -> Result<PathBuf, String
 
     // 1) Ensure embedded python runtime copied to LocalAppData (install OR repair)
     if !base_py_candidate.exists() || needs_repair_recopy {
-        let bundled_dir = bundled_python_dir(app).ok_or_else(|| {
-            "Bundled Python runtime not found in installed resources. Expected resources/python."
-                .to_string()
-        })?;
+        // Prefer the packed archive (python-runtime.zip) - this is what the
+        // build pipeline ships. Fall back to an unpacked resources/python dir
+        // for dev builds or legacy installers.
+        let archive = bundled_python_archive(app);
 
-        let _ = window.emit(
-            "terminal_update",
-            format!("[System] Bundled Python dir: {}", bundled_dir.display()),
-        );
-
-        if needs_repair_recopy {
+        if let Some(archive_path) = archive.as_ref() {
             let _ = window.emit(
                 "terminal_update",
-                "[System] Detected stale/corrupt install (python exists but site-packages empty) -> repairing by recopying bundled runtime..."
-                    .to_string(),
+                format!("[System] Bundled runtime archive: {}", archive_path.display()),
             );
+
+            if needs_repair_recopy {
+                let _ = window.emit(
+                    "terminal_update",
+                    "[System] Detected stale/corrupt install (python exists but site-packages empty) -> repairing by extracting bundled runtime..."
+                        .to_string(),
+                );
+            } else {
+                let _ = window.emit(
+                    "terminal_update",
+                    format!(
+                        "[System] Extracting bundled Python runtime -> {}",
+                        local_py_dir.display()
+                    ),
+                );
+            }
+
+            // Clean destination first to avoid partial/stale installs
+            let _ = fs::remove_dir_all(&local_py_dir);
+            fs::create_dir_all(&local_py_dir).map_err(|e| e.to_string())?;
+
+            extract_zip_to(archive_path, &local_py_dir)
+                .map_err(|e| format!("Failed to extract bundled python: {}", e))?;
         } else {
+            let bundled_dir = bundled_python_dir(app).ok_or_else(|| {
+                "Bundled Python runtime not found in installed resources. \
+                 Expected either resources/python-runtime.zip (preferred) or resources/python/."
+                    .to_string()
+            })?;
+
             let _ = window.emit(
                 "terminal_update",
-                format!(
-                    "[System] Installing bundled Python runtime -> {}",
-                    local_py_dir.display()
-                ),
+                format!("[System] Bundled Python dir: {}", bundled_dir.display()),
             );
+
+            if needs_repair_recopy {
+                let _ = window.emit(
+                    "terminal_update",
+                    "[System] Detected stale/corrupt install (python exists but site-packages empty) -> repairing by recopying bundled runtime..."
+                        .to_string(),
+                );
+            } else {
+                let _ = window.emit(
+                    "terminal_update",
+                    format!(
+                        "[System] Installing bundled Python runtime -> {}",
+                        local_py_dir.display()
+                    ),
+                );
+            }
+
+            let _ = fs::remove_dir_all(&local_py_dir);
+            fs::create_dir_all(&local_py_dir).map_err(|e| e.to_string())?;
+
+            copy_dir_all(&bundled_dir, &local_py_dir)
+                .map_err(|e| format!("Failed to copy bundled python: {}", e))?;
         }
 
-        // Clean destination first to avoid partial/stale installs
-        let _ = fs::remove_dir_all(&local_py_dir);
-        fs::create_dir_all(&local_py_dir).map_err(|e| e.to_string())?;
-
-        copy_dir_all(&bundled_dir, &local_py_dir)
-            .map_err(|e| format!("Failed to copy bundled python: {}", e))?;
-
-        // IMPORTANT: after recopy, also ensure target_dir exists (it might be inside the bundle or external)
+        // IMPORTANT: ensure target_dir exists (may be inside or outside the bundle)
         let _ = fs::create_dir_all(&target_dir);
     }
 
