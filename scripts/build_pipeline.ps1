@@ -46,10 +46,14 @@ function Log-Info([string]$msg) { Write-Host "[INFO] $msg" -ForegroundColor Cyan
 function Log-Warn([string]$msg) { Write-Host "[WARN] $msg" -ForegroundColor Yellow }
 function Log-Fail([string]$msg) { Write-Host "[FAIL] $msg" -ForegroundColor Red }
 
-function Log-Step([int]$step, [string]$msg) {
+function Log-Step($step, [string]$msg) {
+  # `$step` is untyped on purpose: callers pass 6.5, 6.6, 6.7, 6.9 as
+  # sub-steps. Typing as [int] would silently truncate/round those to 6/7
+  # and make the log say "STEP 7: Preflight" three times. Accept anything
+  # and stringify it.
   Write-Host ""
   Write-Host "======================================"
-  Write-Host (" STEP {0}: {1}" -f $step, $msg)
+  Write-Host (" STEP {0}: {1}" -f ([string]$step), $msg)
   Write-Host "======================================"
 }
 
@@ -79,6 +83,14 @@ function Test-Command-Runnable([string]$name) {
 }
 
 function Ensure-Uv {
+  # Install strategy (in priority order):
+  #   1. Already on PATH? -> done.
+  #   2. Official astral.sh PowerShell installer (adds %USERPROFILE%\.local\bin
+  #      to PATH correctly — this is what `pip install --user uv` fails at).
+  #   3. `pip install --user uv` as last-resort fallback, with explicit PATH
+  #      augmentation so the pipeline can still use it in this session.
+  #   4. Give up cleanly. The pipeline already has a pip fallback code path.
+
   Refresh-Path
   if (Test-Command-Runnable "uv") {
     $uvVersion = & uv --version 2>&1
@@ -86,23 +98,64 @@ function Ensure-Uv {
     return $true
   }
 
-  Log-Warn "uv not found. Installing uv (Python package installer)..."
+  # (2) Official installer — production-grade, handles PATH + shims.
+  Log-Info "uv not found. Installing via the official Astral installer..."
   try {
-    & python -m pip install --user uv --quiet
-    if ($LASTEXITCODE -ne 0) { throw "uv installation failed with exit code $LASTEXITCODE" }
-
-    Refresh-Path
-    if (Test-Command-Runnable "uv") {
-      $uvVersion = & uv --version 2>&1
-      Log-Ok "uv installed: $uvVersion"
-      return $true
+    $prevEP = $env:PSExecutionPolicyPreference
+    try {
+      # `irm | iex` is the documented bootstrap. We scope it with a subshell-ish
+      # pwsh invocation so its side effects on $env:PATH take immediate effect.
+      $installerUrl = "https://astral.sh/uv/install.ps1"
+      $script = Invoke-RestMethod -Uri $installerUrl -UseBasicParsing
+      Invoke-Expression $script
+    } finally {
+      $env:PSExecutionPolicyPreference = $prevEP
     }
 
-    Log-Warn "uv installed but not in PATH. May need terminal restart."
+    # astral.sh installer puts uv.exe in %USERPROFILE%\.local\bin by default.
+    $uvCargoBin = Join-Path $env:USERPROFILE ".local\bin"
+    if (Test-Path $uvCargoBin) {
+      if ($env:Path -notlike "*$uvCargoBin*") { $env:Path = "$uvCargoBin;$env:Path" }
+    }
+    Refresh-Path
+
+    if (Test-Command-Runnable "uv") {
+      $uvVersion = & uv --version 2>&1
+      Log-Ok "uv installed via astral installer: $uvVersion"
+      return $true
+    }
+    Log-Warn "astral installer ran but uv still not runnable; trying pip fallback..."
+  } catch {
+    Log-Warn "Astral installer failed: $_"
+    Log-Info "Falling back to pip..."
+  }
+
+  # (3) Pip fallback — last resort. Note this installs into the user scripts
+  # dir which is frequently not on PATH; we splice it in ourselves.
+  try {
+    & python -m pip install --user uv --quiet
+    if ($LASTEXITCODE -ne 0) { throw "pip install uv failed (exit=$LASTEXITCODE)" }
+
+    # python -m site --user-base gives us a reliable Scripts dir.
+    $userBase = & python -m site --user-base 2>&1
+    if ($LASTEXITCODE -eq 0 -and $userBase) {
+      $userScripts = Join-Path ($userBase.Trim()) "Scripts"
+      if (Test-Path $userScripts) {
+        if ($env:Path -notlike "*$userScripts*") { $env:Path = "$userScripts;$env:Path" }
+      }
+    }
+    Refresh-Path
+
+    if (Test-Command-Runnable "uv") {
+      $uvVersion = & uv --version 2>&1
+      Log-Ok "uv installed via pip fallback: $uvVersion"
+      return $true
+    }
+    Log-Warn "uv installed via pip but not runnable in this session."
     return $false
   } catch {
-    Log-Warn "Failed to install uv: $_"
-    Log-Info "Falling back to pip"
+    Log-Warn "uv pip fallback failed: $_"
+    Log-Info "Continuing without uv (pipeline has a pip code path)."
     return $false
   }
 }
@@ -807,7 +860,21 @@ if (Test-Path $modelsScriptSrc) {
 }
 
 
-Log-Step 6.5 "Bundling versions into resources"
+Log-Step 6.5 "Bundling versions into resources (runtime files only)"
+
+# We only ship what the installed app actually runs. The source `versions/0.01/`
+# contains research notebooks (*.ipynb), screenshots (*.png/*.jpg), datasets,
+# and a Windows-only `pyvjoy/` driver folder. Including any of those would:
+#   (a) bloat the installer by hundreds of MB,
+#   (b) ship a file with a space in its name (`numpy analsis.ipynb`) which
+#       breaks the NSIS `File /oname=` directive and fails the release build
+#       on line 254 (the failure we are fixing here),
+#   (c) ship installer-unrelated assets that were never meant for end users.
+#
+# Allow-list:
+#   - *.py  (the ML scripts themselves, incl. helper modules like grabscreen.py)
+#   - *.txt (requirements lock, etc.)
+#   - *.dll / *.lib (vJoy interop libs consumed by pyvjoy.py at runtime)
 
 $srcVersions = Join-Path $root "versions"
 $dstVersions = Join-Path $root "src-tauri\resources\versions"
@@ -819,40 +886,159 @@ if (Test-Path $dstVersions) {
 }
 New-Item -ItemType Directory -Force -Path $dstVersions | Out-Null
 
-Copy-Item -Recurse -Force (Join-Path $srcVersions "*") $dstVersions
-Log-Ok "Versions copied to: $dstVersions"
+$allowedExt = @(".py", ".txt", ".dll", ".lib")
+$copied = 0
+$skipped = 0
+$skippedSpaceNames = @()
 
+Get-ChildItem -Path $srcVersions -Recurse -File -ErrorAction SilentlyContinue | ForEach-Object {
+  $ext = $_.Extension.ToLowerInvariant()
+  $shouldCopy = $allowedExt -contains $ext
 
-Log-Step 6.6 "Bundling backend and modelhub into resources"
-
-# Copy backend directory
-$srcBackend = Join-Path $root "backend"
-$dstBackend = Join-Path $root "src-tauri\resources\backend"
-
-if (Test-Path $srcBackend) {
-  if (Test-Path $dstBackend) {
-    Remove-Item $dstBackend -Recurse -Force -ErrorAction SilentlyContinue
+  # Defense in depth: refuse any filename with a space, even if the extension
+  # is allowed. An unquoted /oname= in NSIS cannot handle spaces. If we ever
+  # need such a file at runtime, rename it in-repo.
+  if ($_.Name -match '\s') {
+    $shouldCopy = $false
+    $skippedSpaceNames += $_.FullName
   }
-  New-Item -ItemType Directory -Force -Path $dstBackend | Out-Null
-  Copy-Item -Recurse -Force (Join-Path $srcBackend "*") $dstBackend
-  Log-Ok "Backend copied to: $dstBackend"
-} else {
-  Log-Warn "Backend folder not found: $srcBackend"
+
+  if ($shouldCopy) {
+    $rel = $_.FullName.Substring($srcVersions.Length).TrimStart('\','/')
+    $dst = Join-Path $dstVersions $rel
+    $dstDir = Split-Path -Parent $dst
+    if (-not (Test-Path $dstDir)) { New-Item -ItemType Directory -Force -Path $dstDir | Out-Null }
+    Copy-Item -Force $_.FullName $dst
+    $copied++
+  } else {
+    $skipped++
+  }
 }
 
-# Copy modelhub directory
-$srcModelhub = Join-Path $root "modelhub"
-$dstModelhub = Join-Path $root "src-tauri\resources\modelhub"
+Log-Ok ("Versions staged: {0} files copied, {1} skipped (notebooks/images/datasets/space-in-name)" -f $copied, $skipped)
+if ($skippedSpaceNames.Count -gt 0) {
+  Log-Warn ("Skipped {0} file(s) with spaces in the name (would break NSIS):" -f $skippedSpaceNames.Count)
+  foreach ($n in $skippedSpaceNames) { Log-Warn ("  - " + $n) }
+}
 
-if (Test-Path $srcModelhub) {
-  if (Test-Path $dstModelhub) {
-    Remove-Item $dstModelhub -Recurse -Force -ErrorAction SilentlyContinue
+# Sanity: require the three primary scripts to have made it through.
+$mustExist = @(
+  "0.01\1-collect_data.py",
+  "0.01\2-train_model.py",
+  "0.01\3-test_model.py"
+)
+foreach ($rel in $mustExist) {
+  $full = Join-Path $dstVersions $rel
+  if (-not (Test-Path $full)) {
+    throw "versions staging failed: required file missing -> $full"
   }
-  New-Item -ItemType Directory -Force -Path $dstModelhub | Out-Null
-  Copy-Item -Recurse -Force (Join-Path $srcModelhub "*") $dstModelhub
-  Log-Ok "ModelHub copied to: $dstModelhub"
-} else {
-  Log-Warn "ModelHub folder not found: $srcModelhub"
+}
+Log-Ok "Versions staging verified: primary scripts present"
+
+
+Log-Step 6.6 "Bundling backend and modelhub into resources (filtered)"
+
+# Reusable filter: stage a Python source tree into the bundle while rejecting
+# local editor/OS junk that commonly sneaks into working copies and would
+# either (a) bloat the installer or (b) contain whitespace in the filename and
+# break NSIS's `File /oname=` directive (the same failure mode we fixed for
+# versions/ in STEP 6.5).
+#
+# Allow-list of extensions a Python runtime actually needs:
+#   .py  .pyi  .json  .txt  .yaml  .yml  .toml  .cfg
+# Everything else (e.g. "session_manager copy.py" doesn't match because of
+# the space; .ipynb/.png/.pyc/.DS_Store/~$* get filtered out by extension or
+# the whitespace check below).
+function Copy-PythonTreeFiltered {
+  param(
+    [Parameter(Mandatory=$true)][string]$SrcDir,
+    [Parameter(Mandatory=$true)][string]$DstDir,
+    [Parameter(Mandatory=$true)][string]$Label
+  )
+
+  if (-not (Test-Path $SrcDir)) {
+    Log-Warn ("{0} folder not found: {1}" -f $Label, $SrcDir)
+    return
+  }
+
+  if (Test-Path $DstDir) {
+    Remove-Item $DstDir -Recurse -Force -ErrorAction SilentlyContinue
+  }
+  New-Item -ItemType Directory -Force -Path $DstDir | Out-Null
+
+  $allowedExt = @('.py', '.pyi', '.json', '.txt', '.yaml', '.yml', '.toml', '.cfg')
+  $junkDirs   = @('__pycache__', '.pytest_cache', '.mypy_cache', '.ruff_cache', '.venv', 'node_modules')
+
+  $copied = 0; $skipped = 0
+  $skippedSpace = @(); $skippedDir = @(); $skippedExt = @()
+
+  Get-ChildItem -Path $SrcDir -Recurse -File -ErrorAction SilentlyContinue | ForEach-Object {
+    $rel = $_.FullName.Substring($SrcDir.Length).TrimStart('\','/')
+    $relNorm = $rel -replace '\\','/'
+
+    # Drop anything under junk directories (__pycache__ etc.)
+    if ($junkDirs | Where-Object { $relNorm -match "(^|/)$([Regex]::Escape($_))(/|$)" }) {
+      $skippedDir += $rel; $skipped++; return
+    }
+
+    # Reject whitespace anywhere in the full relative path (NSIS /oname hazard).
+    if ($_.Name -match '\s') {
+      $skippedSpace += $rel; $skipped++; return
+    }
+
+    # Reject OS cruft (~$file, .DS_Store, Thumbs.db).
+    if ($_.Name -match '^~\$' -or $_.Name -eq '.DS_Store' -or $_.Name -eq 'Thumbs.db') {
+      $skippedSpace += $rel; $skipped++; return
+    }
+
+    $ext = $_.Extension.ToLowerInvariant()
+    if (-not ($allowedExt -contains $ext)) {
+      $skippedExt += $rel; $skipped++; return
+    }
+
+    $dst = Join-Path $DstDir $rel
+    $dstParent = Split-Path -Parent $dst
+    if (-not (Test-Path $dstParent)) { New-Item -ItemType Directory -Force -Path $dstParent | Out-Null }
+    Copy-Item -Force $_.FullName $dst
+    $copied++
+  }
+
+  Log-Ok ("{0} staged: {1} files copied, {2} skipped" -f $Label, $copied, $skipped)
+  if ($skippedSpace.Count -gt 0) {
+    Log-Warn ("  {0}: rejected {1} file(s) with whitespace / OS-cruft names:" -f $Label, $skippedSpace.Count)
+    foreach ($n in $skippedSpace) { Log-Warn ("    - " + $n) }
+  }
+  if ($skippedDir.Count -gt 0) {
+    Log-Info ("  {0}: skipped {1} file(s) under cache/venv dirs" -f $Label, $skippedDir.Count)
+  }
+  if ($skippedExt.Count -gt 0 -and $skippedExt.Count -le 10) {
+    Log-Info ("  {0}: skipped {1} non-runtime extension file(s):" -f $Label, $skippedExt.Count)
+    foreach ($n in $skippedExt) { Log-Info ("    - " + $n) }
+  } elseif ($skippedExt.Count -gt 10) {
+    Log-Info ("  {0}: skipped {1} non-runtime extension file(s)" -f $Label, $skippedExt.Count)
+  }
+}
+
+Copy-PythonTreeFiltered `
+  -SrcDir (Join-Path $root "backend") `
+  -DstDir (Join-Path $root "src-tauri\resources\backend") `
+  -Label "Backend"
+
+Copy-PythonTreeFiltered `
+  -SrcDir (Join-Path $root "modelhub") `
+  -DstDir (Join-Path $root "src-tauri\resources\modelhub") `
+  -Label "ModelHub"
+
+# Belt-and-suspenders sanity: the two entrypoints must exist after staging.
+$mustExistPy = @(
+  "src-tauri\resources\backend\entry_main.py",
+  "src-tauri\resources\modelhub\tauri.py"
+)
+foreach ($rel in $mustExistPy) {
+  $full = Join-Path $root $rel
+  if (-not (Test-Path $full)) {
+    throw "Backend/ModelHub staging failed: required file missing -> $full"
+  }
 }
 
 
@@ -950,8 +1136,51 @@ if (Test-Path $runtimeZipPath) {
   }
 }
 
+# ----------------------------------------------------------------
+# Hardening: catch the failure modes that broke previous releases
+# BEFORE we spend ~5 minutes compiling Rust + linking the bundler.
+# ----------------------------------------------------------------
+
+# (a) NSIS template quoting. When `/oname=...` is unquoted, a single resource
+# filename with a space explodes makensis on line 254 with
+# "Usage: File ..." and `os error 2`. We check the template we ship, and the
+# copy tauri bundler will render, both require the quoted form.
+$nsisTemplate = Join-Path $root "installer\nsis_template.nsi"
+if (Test-Path $nsisTemplate) {
+  $tmpl = Get-Content -Raw $nsisTemplate
+  # Bad pattern: `File /a /oname=<handlebars>` without surrounding quotes.
+  if ($tmpl -match 'File\s+/a\s+/oname=\{\{') {
+    Log-Fail ("NSIS template has UNQUOTED /oname= (file names with spaces will break makensis). " +
+              "Required form: File /a ""/oname={{this.[1]}}"" ""{{@key}}""")
+    $preflightErrors += "installer/nsis_template.nsi (unquoted /oname=)"
+  } else {
+    Log-Ok "NSIS template /oname= is correctly quoted"
+  }
+}
+
+# (b) Any staged bundle resource whose filename contains whitespace will break
+# the unquoted-oname path even if we fixed the template (belt + braces —
+# some NSIS versions also choke on whitespace even when quoted due to
+# downstream File /r expansions). Scan everything tauri will bundle.
+$stagedRoots = @(
+  (Join-Path $root "src-tauri\resources"),
+  (Join-Path $root "src-tauri\drivers")
+)
+$badSpaceFiles = @()
+foreach ($sr in $stagedRoots) {
+  if (-not (Test-Path $sr)) { continue }
+  Get-ChildItem -Path $sr -Recurse -File -ErrorAction SilentlyContinue | ForEach-Object {
+    if ($_.Name -match '\s') { $badSpaceFiles += $_.FullName }
+  }
+}
+if ($badSpaceFiles.Count -gt 0) {
+  Log-Fail ("Found {0} bundle file(s) with spaces in the name. Rename them in-repo or exclude from staging:" -f $badSpaceFiles.Count)
+  foreach ($f in $badSpaceFiles) { Log-Fail ("  - " + $f) }
+  $preflightErrors += "bundle contains filename(s) with whitespace"
+}
+
 if ($preflightErrors.Count -gt 0) {
-  Log-Fail ("Preflight failed with {0} missing resource(s). Aborting to prevent shipping a broken installer." -f $preflightErrors.Count)
+  Log-Fail ("Preflight failed with {0} issue(s). Aborting to prevent shipping a broken installer." -f $preflightErrors.Count)
   Log-Info "Re-run earlier steps (wheelhouse, Python bundling, site-packages install, Step 6.5/6.6/6.7)."
   exit 1
 }

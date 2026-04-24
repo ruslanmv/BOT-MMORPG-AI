@@ -143,9 +143,19 @@ $wheelDir  = Join-Path $wheelRoot "wheels"
 $targetRoot = Join-Path $root "third_party\python\portable_site_packages"
 $targetDir  = Join-Path $targetRoot $TargetTag
 
-if ($RebuildTarget -and (Test-Path $targetDir)) { 
+if ($RebuildTarget -and (Test-Path $targetDir)) {
     Info "Cleaning old target directory: $targetDir"
-    Remove-Item -Recurse -Force $targetDir 
+    Remove-Item -Recurse -Force $targetDir
+}
+
+# When -RebuildTarget is requested, also clean the wheelhouse itself. Without
+# this, `pip wheel` accumulates multiple versions of the same package across
+# runs (e.g. anyio-4.12.1 AND anyio-4.13.0), and the subsequent `pip install -r
+# install_manifest.txt` refuses to install both with a ResolutionImpossible
+# error. A full rebuild has to mean a full rebuild.
+if ($RebuildTarget -and (Test-Path $wheelDir)) {
+    Info "Cleaning old wheelhouse: $wheelDir"
+    Remove-Item -Recurse -Force $wheelDir
 }
 
 New-Item -ItemType Directory -Force -Path $targetDir | Out-Null
@@ -193,6 +203,59 @@ if ($LASTEXITCODE -ne 0) {
 
 # Clean up any leftover source files (we only want wheels)
 Get-ChildItem -Path $wheelDir -Include *.tar.gz, *.zip -Recurse | Remove-Item -Force
+
+# -------------------------
+# 6a. DEDUPLICATE WHEELS
+# -------------------------
+# `pip wheel` only adds wheels; it never removes old ones. If a dependency's
+# version was bumped since a previous run, both the old and the new wheel live
+# side by side, and Step 7's `pip install -r install_manifest.txt` will fail
+# with ResolutionImpossible ("Cannot install anyio 4.12.1 and anyio 4.13.0").
+# Group wheels by canonical package name, keep the highest version only, and
+# delete the rest. This makes repeat builds self-healing.
+Info "Deduplicating wheelhouse (keep latest version per package)..."
+$wheelFiles = Get-ChildItem -Path $wheelDir -Filter "*.whl" -File
+$groups = @{}
+foreach ($w in $wheelFiles) {
+    # PEP 427: <distribution>-<version>[-<build>]-<python>-<abi>-<platform>.whl
+    # Use the first two '-' separated chunks as (name, version). Lowercase name
+    # and normalize dashes->underscores for robust grouping.
+    $parts = $w.BaseName -split '-'
+    if ($parts.Length -lt 2) { continue }
+    $name = $parts[0].ToLowerInvariant().Replace('_', '-')
+    $ver  = $parts[1]
+    if (-not $groups.ContainsKey($name)) { $groups[$name] = @() }
+    $groups[$name] += [pscustomobject]@{ File = $w; Version = $ver }
+}
+
+$removed = 0
+foreach ($name in $groups.Keys) {
+    $entries = $groups[$name]
+    if ($entries.Count -le 1) { continue }
+    # Sort by version using System.Version when possible, fall back to string.
+    $sorted = $entries | Sort-Object -Property @{
+        Expression = {
+            try {
+                # Strip pre-release/post/dev suffixes to keep System.Version happy.
+                $v = ($_.Version -replace '[^0-9\.].*$', '').TrimEnd('.')
+                if ([string]::IsNullOrWhiteSpace($v)) { [System.Version]"0.0" }
+                else { [System.Version]$v }
+            } catch { [System.Version]"0.0" }
+        }
+        Descending = $true
+    }, @{ Expression = "Version"; Descending = $true }
+    $keep = $sorted[0]
+    foreach ($e in $sorted[1..($sorted.Count - 1)]) {
+        Warn ("Removing old wheel (keeping {0} {1}): {2}" -f $name, $keep.Version, $e.File.Name)
+        Remove-Item -Force $e.File.FullName
+        $removed++
+    }
+}
+if ($removed -gt 0) {
+    Ok ("Deduplicated wheelhouse: removed {0} older wheel(s)." -f $removed)
+} else {
+    Info "Wheelhouse already had a single version per package (no duplicates)."
+}
 
 $totalWheels = (Get-ChildItem -Path $wheelDir -Filter "*.whl").Count
 Ok "Wheelhouse populated with $totalWheels wheels."
