@@ -91,9 +91,13 @@ Section "BOT MMORPG AI (UI + Backend)" SecCore
   {{/if}}
 
   ; App files packaged by Tauri (resources, sidecars, etc.)
+  ; IMPORTANT: `/oname=...` MUST be quoted. Without quotes, resource
+  ; filenames that contain a space cause NSIS to parse the rest of the
+  ; directive as extra arguments and print `Usage: File ...`, aborting the
+  ; build on line 254. This matches the canonical Tauri 1.x NSIS template.
   {{#each resources}}
   CreateDirectory "$INSTDIR\\{{this.[0]}}"
-  File /a /oname={{this.[1]}} "{{@key}}"
+  File /a "/oname={{this.[1]}}" "{{@key}}"
   {{/each}}
 
   ; Create resource subdirectories
