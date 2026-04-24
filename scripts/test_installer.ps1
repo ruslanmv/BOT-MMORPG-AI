@@ -25,19 +25,19 @@ param(
 $ErrorActionPreference = "Stop"
 
 function Write-Success($msg) {
-    Write-Host "✓ $msg" -ForegroundColor Green
+    Write-Host "[OK]   $msg" -ForegroundColor Green
 }
 
 function Write-Failure($msg) {
-    Write-Host "✗ $msg" -ForegroundColor Red
+    Write-Host "[FAIL] $msg" -ForegroundColor Red
 }
 
 function Write-Info($msg) {
-    Write-Host "ℹ $msg" -ForegroundColor Cyan
+    Write-Host "[INFO] $msg" -ForegroundColor Cyan
 }
 
 function Write-Warning($msg) {
-    Write-Host "⚠ $msg" -ForegroundColor Yellow
+    Write-Host "[WARN] $msg" -ForegroundColor Yellow
 }
 
 $root = Resolve-Path "$(Split-Path -Parent $MyInvocation.MyCommand.Path)\.." | % Path
@@ -184,14 +184,14 @@ Write-Host ""
 
 Write-Host "Passed Tests: $($testResults.Passed.Count)" -ForegroundColor Green
 foreach ($test in $testResults.Passed) {
-    Write-Host "  ✓ $test" -ForegroundColor Green
+    Write-Host "  [OK]   $test" -ForegroundColor Green
 }
 
 if ($testResults.Warnings.Count -gt 0) {
     Write-Host ""
     Write-Host "Warnings: $($testResults.Warnings.Count)" -ForegroundColor Yellow
     foreach ($warning in $testResults.Warnings) {
-        Write-Host "  ⚠ $warning" -ForegroundColor Yellow
+        Write-Host "  [WARN] $warning" -ForegroundColor Yellow
     }
 }
 
@@ -199,7 +199,7 @@ if ($testResults.Failed.Count -gt 0) {
     Write-Host ""
     Write-Host "Failed Tests: $($testResults.Failed.Count)" -ForegroundColor Red
     foreach ($failure in $testResults.Failed) {
-        Write-Host "  ✗ $failure" -ForegroundColor Red
+        Write-Host "  [FAIL] $failure" -ForegroundColor Red
     }
     Write-Host ""
     Write-Host "======================================"
