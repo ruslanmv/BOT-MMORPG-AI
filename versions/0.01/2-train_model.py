@@ -398,7 +398,12 @@ def main(argv=None) -> int:
     parser.add_argument("--out", default="artifacts/model", help="Folder to save model")
     parser.add_argument("--model", default="efficientnet_lstm", help="Model architecture")
     parser.add_argument("--epochs", type=int, default=10, help="Number of epochs")
-    parser.add_argument("--batch-size", type=int, default=16, help="Batch size")
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=8,
+        help="Batch size. Default 8 to fit 8 GB GPUs (issue #27). Raise to 16/32 for more VRAM.",
+    )
     parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate")
     parser.add_argument("--seq-len", type=int, default=4, help="Sequence length for temporal models")
     parser.add_argument("--num-actions", type=int, default=29, help="Number of output actions")

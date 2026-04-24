@@ -154,6 +154,66 @@ if (Test-Path $uiJsPath) {
     $errors += "Missing UI main.js"
 }
 
+# Check 7: Bundled runtime (root cause of issues #26/#37/#42)
+# The Tauri app expects these under src-tauri/resources/ so NSIS includes them.
+# If any is missing, the installed app will print "Sidecar API not ready" and
+# "Script not found" — the very bugs users are hitting.
+Write-Info "Checking bundled runtime (python + backend + modelhub + versions)..."
+
+$bundledPython = Join-Path $root "src-tauri\resources\python\python.exe"
+if (Test-Path $bundledPython) {
+    Write-Success "Bundled Python runtime exists: resources/python/python.exe"
+} else {
+    Write-Failure "Bundled Python runtime missing: $bundledPython"
+    $errors += "resources/python/python.exe missing (sidecar cannot start)"
+}
+
+$bundledSitePkgs = Join-Path $root "src-tauri\resources\python\site-packages"
+if (Test-Path $bundledSitePkgs) {
+    $countFiles = (Get-ChildItem -Path $bundledSitePkgs -Recurse -File -ErrorAction SilentlyContinue | Measure-Object).Count
+    if ($countFiles -gt 100) {
+        Write-Success "Bundled site-packages populated: $countFiles files"
+    } else {
+        Write-Failure "Bundled site-packages too small: only $countFiles files"
+        $errors += "resources/python/site-packages is empty or incomplete"
+    }
+} else {
+    Write-Failure "Bundled site-packages missing: $bundledSitePkgs"
+    $errors += "resources/python/site-packages missing (No module named uvicorn/numpy/torch)"
+}
+
+$bundledBackend = Join-Path $root "src-tauri\resources\backend\entry_main.py"
+if (Test-Path $bundledBackend) {
+    Write-Success "Bundled backend entry exists: resources/backend/entry_main.py"
+} else {
+    Write-Failure "Bundled backend missing: $bundledBackend"
+    $errors += "resources/backend/entry_main.py missing (sidecar cannot start)"
+}
+
+$bundledModelhub = Join-Path $root "src-tauri\resources\modelhub\tauri.py"
+if (Test-Path $bundledModelhub) {
+    Write-Success "Bundled modelhub exists: resources/modelhub/tauri.py"
+} else {
+    Write-Failure "Bundled modelhub missing: $bundledModelhub"
+    $errors += "resources/modelhub/tauri.py missing (HTTP API cannot serve)"
+}
+
+$bundledVersions = Join-Path $root "src-tauri\resources\versions\0.01\1-collect_data.py"
+if (Test-Path $bundledVersions) {
+    Write-Success "Bundled collect_data script exists: resources/versions/0.01/1-collect_data.py"
+} else {
+    Write-Failure "Bundled collect_data script missing: $bundledVersions"
+    $errors += "resources/versions/0.01/1-collect_data.py missing (recording will fail with 'Script not found')"
+}
+
+$bundledTrain = Join-Path $root "src-tauri\resources\versions\0.01\2-train_model.py"
+if (Test-Path $bundledTrain) {
+    Write-Success "Bundled train script exists: resources/versions/0.01/2-train_model.py"
+} else {
+    Write-Failure "Bundled train script missing: $bundledTrain"
+    $errors += "resources/versions/0.01/2-train_model.py missing (training will fail)"
+}
+
 # Summary
 Write-Host ""
 Write-Host "======================================"

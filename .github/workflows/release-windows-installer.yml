@@ -21,8 +21,34 @@ env:
   CARGO_TERM_COLOR: "always"
 
 jobs:
+  # Gate the release on the Python test suite so a tag push with broken code
+  # can never ship an installer to users.
+  test-before-release:
+    name: Run tests before building installer
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          version: "latest"
+
+      - name: Install dev deps
+        run: uv pip install --system -e ".[dev]"
+
+      - name: Run pytest
+        run: python -m pytest -q
+
   create-release:
     name: Create Release
+    needs: test-before-release
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.get_version.outputs.version }}
@@ -145,6 +171,13 @@ jobs:
       - name: Build installer (PyInstaller + Tauri + NSIS)
         shell: pwsh
         run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build_pipeline.ps1
+
+      # Post-build verification. Fails the release if resources/python,
+      # resources/backend, resources/modelhub, or resources/versions are
+      # missing — the root cause of issues #26, #37, #42 on v0.1.8/v0.2.0.
+      - name: Verify installer contents
+        shell: pwsh
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify_installer.ps1
 
       - name: Find NSIS installer EXE
         id: installer
