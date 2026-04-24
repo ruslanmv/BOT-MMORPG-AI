@@ -16,16 +16,27 @@
 
 $ErrorActionPreference = "Stop"
 
+# IMPORTANT: keep this file ASCII-only. The release workflow spawns
+# `powershell -File scripts/verify_installer.ps1` which is Windows
+# PowerShell 5.1, not pwsh. PS 5.1 decodes source files per the system
+# ANSI codepage unless the file has a UTF-8 BOM. UTF-8 symbols like
+# the old check-mark glyph get mis-decoded as CP-1252, the function
+# body's string literal fails to parse, Write-* helpers never
+# register, and later calls fail with
+# "The term 'Write-Info' is not recognized as the name of a cmdlet".
+# That is the exact failure we are fixing here. Use [OK] / [FAIL] /
+# [INFO] sentinels instead of Unicode glyphs.
+
 function Write-Success($msg) {
-    Write-Host "✓ $msg" -ForegroundColor Green
+    Write-Host "[OK]   $msg" -ForegroundColor Green
 }
 
 function Write-Failure($msg) {
-    Write-Host "✗ $msg" -ForegroundColor Red
+    Write-Host "[FAIL] $msg" -ForegroundColor Red
 }
 
 function Write-Info($msg) {
-    Write-Host "ℹ $msg" -ForegroundColor Cyan
+    Write-Host "[INFO] $msg" -ForegroundColor Cyan
 }
 
 $root = Resolve-Path "$(Split-Path -Parent $MyInvocation.MyCommand.Path)\.." | % Path
@@ -157,7 +168,7 @@ if (Test-Path $uiJsPath) {
 # Check 7: Bundled runtime (root cause of issues #26/#37/#42)
 # The Tauri app expects these under src-tauri/resources/ so NSIS includes them.
 # If any is missing, the installed app will print "Sidecar API not ready" and
-# "Script not found" — the very bugs users are hitting.
+# "Script not found" -- the very bugs users are hitting.
 Write-Info "Checking bundled runtime (python runtime zip + backend + modelhub + versions)..."
 
 # After STEP 6.7 the python runtime is packaged as a single zip file.
@@ -241,7 +252,7 @@ if ($errors.Count -eq 0) {
     Write-Failure "Verification failed with $($errors.Count) error(s):"
     Write-Host ""
     foreach ($error in $errors) {
-        Write-Host "  • $error" -ForegroundColor Yellow
+        Write-Host "  - $error" -ForegroundColor Yellow
     }
     Write-Host ""
     Write-Info "Please run the build pipeline again: .\scripts\build_pipeline.ps1"

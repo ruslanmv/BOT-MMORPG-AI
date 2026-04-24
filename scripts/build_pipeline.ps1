@@ -86,7 +86,7 @@ function Ensure-Uv {
   # Install strategy (in priority order):
   #   1. Already on PATH? -> done.
   #   2. Official astral.sh PowerShell installer (adds %USERPROFILE%\.local\bin
-  #      to PATH correctly — this is what `pip install --user uv` fails at).
+  #      to PATH correctly -- this is what `pip install --user uv` fails at).
   #   3. `pip install --user uv` as last-resort fallback, with explicit PATH
   #      augmentation so the pipeline can still use it in this session.
   #   4. Give up cleanly. The pipeline already has a pip fallback code path.
@@ -98,7 +98,7 @@ function Ensure-Uv {
     return $true
   }
 
-  # (2) Official installer — production-grade, handles PATH + shims.
+  # (2) Official installer -- production-grade, handles PATH + shims.
   Log-Info "uv not found. Installing via the official Astral installer..."
   try {
     $prevEP = $env:PSExecutionPolicyPreference
@@ -130,7 +130,7 @@ function Ensure-Uv {
     Log-Info "Falling back to pip..."
   }
 
-  # (3) Pip fallback — last resort. Note this installs into the user scripts
+  # (3) Pip fallback -- last resort. Note this installs into the user scripts
   # dir which is frequently not on PATH; we splice it in ourselves.
   try {
     & python -m pip install --user uv --quiet
@@ -1159,7 +1159,7 @@ if (Test-Path $nsisTemplate) {
 }
 
 # (b) Any staged bundle resource whose filename contains whitespace will break
-# the unquoted-oname path even if we fixed the template (belt + braces —
+# the unquoted-oname path even if we fixed the template (belt + braces --
 # some NSIS versions also choke on whitespace even when quoted due to
 # downstream File /r expansions). Scan everything tauri will bundle.
 $stagedRoots = @(
@@ -1201,7 +1201,7 @@ if (-not $SkipTauri) {
     # template. With ~20k resource files the {{#each resources}} block emits
     # ~60k "Debug [handlebars::render]" lines, overflows GitHub Actions' log
     # buffer, and the job dies with exit 1. (That is what broke the v0.2.1
-    # release — build_windows-installer.yml succeeded because it doesn't run
+    # release -- build_windows-installer.yml succeeded because it doesn't run
     # this pipeline; release-windows-installer.yml failed because it does.)
     $prevRustLog = $env:RUST_LOG
     $env:RUST_LOG = "info,handlebars=warn,tauri_bundler=info"
