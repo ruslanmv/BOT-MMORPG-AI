@@ -1253,8 +1253,12 @@ if (-not $SkipTauri) {
       #     "Error failed to parse config to merge: key must be a string"
       # when tauri sees `{ package: { version: ... } }` (unquoted keys).
       # A temp-file path side-steps PS's quote handling completely.
-      if ($Version -notmatch '^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.\-]+)?$') {
-        throw "Invalid -Version '$Version' (must be semver like 0.2.2 or 0.2.2-nightly.abc1234)"
+      # Strict SemVer 2.0.0 regex. Critically, this rejects numeric pre-release
+      # identifiers with leading zeroes (e.g. '0378990'), which Tauri's parser
+      # also rejects with "Error `package > version` must be a semver string".
+      $semverRe = '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-((0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(\.(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*))?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$'
+      if ($Version -notmatch $semverRe) {
+        throw "Invalid -Version '$Version' (must be semver like 0.2.2 or 0.2.2-nightly.gabc1234; numeric identifiers must not have leading zeroes)"
       }
       $tmpCfgFile = Join-Path $env:TEMP ("tauri-cfg-override-{0}.json" -f ([guid]::NewGuid().ToString("N")))
       # ConvertTo-Json on a hashtable produces canonical, well-quoted JSON.

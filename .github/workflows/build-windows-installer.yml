@@ -31,10 +31,16 @@ jobs:
 
       # Compute the semver injected into tauri's package.version. Driver:
       #   tag push      -> 0.2.2          (from refs/tags/v0.2.2)
-      #   master push   -> 0.0.0-nightly.<utc>.<sha>   (semver pre-release)
-      #   develop push  -> 0.0.0-dev.<utc>.<sha>
-      #   pull_request  -> 0.0.0-pr.<n>.<sha>
+      #   master push   -> 0.0.0-nightly.<utc>.g<sha>   (semver pre-release)
+      #   develop push  -> 0.0.0-dev.<utc>.g<sha>
+      #   pull_request  -> 0.0.0-pr.<n>.g<sha>
       # Pre-release identifiers contain only [0-9A-Za-z.-] (no '+').
+      # The short SHA is prefixed with 'g' (git-describe convention) so the
+      # identifier is alphanumeric. Without the prefix, an all-digit SHA that
+      # starts with 0 (e.g. "0378990") is a purely numeric pre-release
+      # identifier, which semver §9 forbids ("MUST NOT include leading
+      # zeroes") -- Tauri then rejects it with
+      # "Error `package > version` must be a semver string".
       - name: Compute build semver
         id: ver
         shell: bash
@@ -46,16 +52,19 @@ jobs:
             v="${GITHUB_REF#refs/tags/}"
             v="${v#v}"
           elif [ "${{ github.event_name }}" = "pull_request" ]; then
-            v="0.0.0-pr.${{ github.event.pull_request.number }}.${short}"
+            v="0.0.0-pr.${{ github.event.pull_request.number }}.g${short}"
           elif [[ "${GITHUB_REF}" == refs/heads/master ]]; then
-            v="0.0.0-nightly.${stamp}.${short}"
+            v="0.0.0-nightly.${stamp}.g${short}"
           elif [[ "${GITHUB_REF}" == refs/heads/develop ]]; then
-            v="0.0.0-dev.${stamp}.${short}"
+            v="0.0.0-dev.${stamp}.g${short}"
           else
-            v="0.0.0-ci.${stamp}.${short}"
+            v="0.0.0-ci.${stamp}.g${short}"
           fi
 
-          if ! [[ "$v" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.+-]+)?$ ]]; then
+          # Strict semver check (SemVer 2.0.0): rejects leading zeroes in
+          # numeric identifiers, which is the bug we just fixed above.
+          semver_re='^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-((0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(\.(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*))?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$'
+          if ! [[ "$v" =~ $semver_re ]]; then
             echo "::error::Computed version '$v' is not valid semver."
             exit 1
           fi
