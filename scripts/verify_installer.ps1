@@ -47,22 +47,13 @@ Write-Info "Root directory: $root"
 Write-Host ""
 
 # Check 1: Backend sidecar binary
-Write-Info "Checking backend sidecar binary..."
-$target = "x86_64-pc-windows-msvc"
-$sidecarPath = Join-Path $root "src-tauri\binaries\main-backend-$target.exe"
-
-if (Test-Path $sidecarPath) {
-    $size = (Get-Item $sidecarPath).Length / 1MB
-    if ($size -gt 1) {
-        Write-Success "Backend sidecar exists: $([math]::Round($size, 2)) MB"
-    } else {
-        Write-Failure "Backend sidecar is too small: $([math]::Round($size, 2)) MB"
-        $errors += "Backend sidecar file size is suspiciously small"
-    }
-} else {
-    Write-Failure "Backend sidecar not found: $sidecarPath"
-    $errors += "Missing backend sidecar binary"
-}
+# Architecture changed: we no longer build a PyInstaller-frozen
+# main-backend.exe. The Tauri app spawns the embedded Python runtime
+# from resources/runtime/python-runtime.zip and runs backend/entry_main.py
+# directly. The presence of those bundled assets is verified by
+# Check 7 below ("Bundled runtime"); the old sidecar binary check would
+# always fail and was masking the real verification result.
+Write-Info "Skipping legacy PyInstaller sidecar check (architecture moved to embedded Python runtime)."
 
 # Check 2: Driver installers
 Write-Info "Checking driver installers..."
@@ -251,8 +242,12 @@ if ($errors.Count -eq 0) {
 } else {
     Write-Failure "Verification failed with $($errors.Count) error(s):"
     Write-Host ""
-    foreach ($error in $errors) {
-        Write-Host "  - $error" -ForegroundColor Yellow
+    # NOTE: do NOT name the loop variable `$error` -- that's a PowerShell
+    # automatic, read-only variable. Doing so used to abort the whole
+    # script with "Cannot overwrite variable Error because it is read-only
+    # or constant" before the failures could even be printed.
+    foreach ($err in $errors) {
+        Write-Host "  - $err" -ForegroundColor Yellow
     }
     Write-Host ""
     Write-Info "Please run the build pipeline again: .\scripts\build_pipeline.ps1"

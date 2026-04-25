@@ -39,23 +39,11 @@ jobs:
       # a BOM (symbols like check-marks become CP-1252 mojibake, the string
       # parser chokes, function definitions never register, and later calls
       # fail with "Write-Info is not recognized"). Keep every .ps1 ASCII-only.
-      - name: PowerShell scripts must be ASCII
-        shell: bash
-        run: |
-          set -e
-          bad=$(find scripts -type f \( -name "*.ps1" -o -name "*.psm1" \) -print0 \
-                | xargs -0 grep -lP '[^\x00-\x7f]' || true)
-          if [ -n "$bad" ]; then
-            echo "::error::Non-ASCII content in PowerShell scripts. Windows PowerShell 5.1 cannot reliably parse UTF-8 without a BOM; use ASCII sentinels like [OK]/[FAIL]/[INFO] instead of Unicode glyphs."
-            echo "Offending files:"
-            echo "$bad"
-            for f in $bad; do
-              echo "--- $f ---"
-              grep -nP '[^\x00-\x7f]' "$f" | head -5
-            done
-            exit 1
-          fi
-          echo "All PowerShell scripts are ASCII-clean."
+      # The same logic also catches non-ASCII inside `run: |` PowerShell
+      # blocks in workflow YAMLs, while explicitly allowing release-note
+      # bodies (`body: |`) since GitHub renders those as Markdown.
+      - name: ASCII guard for PowerShell + workflow run-blocks
+        run: python3 scripts/lint_ascii_powershell.py
 
       - name: Run Ruff (lint)
         run: uv run ruff check src/ tests/ --output-format=github

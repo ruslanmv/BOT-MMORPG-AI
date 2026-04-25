@@ -133,7 +133,15 @@ if (-not $hasPip) {
 }
 
 Info "Upgrading build tools (including hatchling build backend)..."
-& $pyExe -m pip install --upgrade pip setuptools wheel hatchling --quiet
+# IMPORTANT: pin setuptools < 82.
+# PyTorch 2.x ships a distutils shim that breaks on setuptools >= 82
+# (which removed `distutils`). Letting `pip install --upgrade setuptools`
+# fetch 82.x makes pip print a hard-to-spot warning AND, more painfully,
+# breaks `import torch` at runtime in the bundled site-packages.
+# torch's own metadata declares `requires-python` setuptools<82, so we
+# match. wheel + hatchling are still pinned to "latest" because they
+# don't have a current upper-bound conflict.
+& $pyExe -m pip install --upgrade pip "setuptools<82" wheel hatchling --quiet
 
 # -------------------------
 # 4. Preparing Directories

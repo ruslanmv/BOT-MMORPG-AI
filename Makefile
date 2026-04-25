@@ -16,6 +16,36 @@ else
 	IS_WINDOWS := 0
 endif
 
+# -----------------------------------------------------------------------------
+# Installer version
+# -----------------------------------------------------------------------------
+# `make artifact` (and friends) need a version to inject into tauri so the
+# bundled .exe is named BOT-MMORPG-AI_<version>_x64-setup.exe instead of the
+# static "1.0.0" hard-coded in tauri.conf.json. Resolution order:
+#
+#   1. VERSION=<x> on the command line:    make artifact VERSION=0.2.2
+#   2. The latest reachable git tag (with leading `v` stripped). On a tagged
+#      commit you get exactly that tag. Off the tag you get e.g.
+#      `0.2.1-3-g4a5b6c7` -- still a valid semver pre-release identifier
+#      that tauri/NSIS accept.
+#   3. `0.0.0-dev` if neither is available (fresh tree, no tags, no override).
+#
+# To pin a release locally:                  make artifact VERSION=0.2.2
+# To build a "current branch" build:         make artifact   (uses git describe)
+# CI always passes VERSION via the env so this fallback never fires there.
+ifeq ($(strip $(VERSION)),)
+  # Resolve via the Python helper instead of shell + sed + grep -- on
+  # Windows, GNU make often invokes cmd.exe for $(shell ...) and that has
+  # neither sed nor grep, which is why earlier `make artifact` runs on
+  # Windows always fell back to the static "1.0.0" baked into
+  # tauri.conf.json. Python is already a build prerequisite.
+  VERSION := $(shell $(SYS_PYTHON) scripts/version.py 2>/dev/null)
+  ifeq ($(strip $(VERSION)),)
+    # Even the python fallback failed (somehow). Hardcode a safe default.
+    VERSION := 0.0.0-dev
+  endif
+endif
+
 ##@ General
 
 help: ## Display this help message
@@ -299,25 +329,40 @@ artifact: build-installer verify-installer ## Build Windows installer artifact (
 	@echo "========================================"
 	@echo " Installer Build Complete!"
 	@echo "========================================"
+	@echo "Version:            $(VERSION)"
 	@echo "Installer location: src-tauri/target/release/bundle/nsis/"
+	@echo "Expected filename:  BOT-MMORPG-AI_$(VERSION)_x64-setup.exe"
 	@echo ""
 	@echo "Next steps:"
 	@echo "  1. Test installer: make test-installer"
 	@echo "  2. Test on Windows VM"
-	@echo "  3. Create release: git tag v1.0.0 && git push origin v1.0.0"
+	@echo "  3. Create release: git tag v$(VERSION) && git push origin v$(VERSION)"
 	@echo ""
 
-build-installer: ## Build the Windows installer
+build-installer: ## Build the installer (Windows: NSIS .exe; Linux: portable .tar.gz). Override version with VERSION=0.2.2.
 ifeq ($(IS_WINDOWS),1)
 	@echo "========================================"
 	@echo " Building Windows Installer"
 	@echo "========================================"
+	@echo "Version: $(VERSION)"
+	@echo ""
 	@echo "This will:"
-	@echo "  1. Build Python backend with PyInstaller"
-	@echo "  2. Build Tauri desktop application"
+	@echo "  1. Bundle embedded Python + ML site-packages"
+	@echo "  2. Build Tauri desktop application with --config version override"
 	@echo "  3. Create NSIS installer package"
 	@echo ""
-	@powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build_pipeline.ps1
+	@powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build_pipeline.ps1 -Version "$(VERSION)"
+else ifeq ($(shell uname -s),Linux)
+	@echo "========================================"
+	@echo " Building Linux Bundle"
+	@echo "========================================"
+	@echo "Version: $(VERSION)"
+	@echo ""
+	@echo "Tauri 1.x's GTK shell is not packaged for Ubuntu 24.04 (webkit2gtk-4.0)"
+	@echo "so the Linux artifact is the portable runtime tarball, not a .deb/.AppImage."
+	@echo "Smoke-tests record (synthetic) -> train -> inference end-to-end."
+	@echo ""
+	@VERSION='$(VERSION)' bash ./scripts/linux_smoke_and_bundle.sh
 else
 	@echo "========================================"
 	@echo " Windows Installer Build"
@@ -337,12 +382,26 @@ else
 	@exit 1
 endif
 
-verify-installer: ## Verify installer was built correctly
+verify-installer: ## Verify installer was built correctly (asserts the bundled .exe filename matches $(VERSION))
 ifeq ($(IS_WINDOWS),1)
 	@echo "========================================"
 	@echo " Verifying Installer Build"
 	@echo "========================================"
+	@echo "Expected version in installer filename: $(VERSION)"
 	@powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify_installer.ps1
+	@powershell -NoProfile -ExecutionPolicy Bypass -Command \
+	  "$$exe = Get-ChildItem -Path 'src-tauri/target/release/bundle/nsis' -Filter '*.exe' -ErrorAction SilentlyContinue | Select-Object -First 1; \
+	   if (-not $$exe) { Write-Error 'No installer .exe under src-tauri/target/release/bundle/nsis -- did the build fail?'; exit 1 }; \
+	   if ($$exe.Name -notmatch [Regex]::Escape('$(VERSION)')) { \
+	     Write-Error ('[FAIL] Installer filename ''' + $$exe.Name + ''' does not contain expected version ''$(VERSION)''. The -Version override did not flow through the build pipeline.'); \
+	     exit 1 \
+	   }; \
+	   $$sizeMB = [math]::Round($$exe.Length / 1MB, 1); \
+	   if ($$sizeMB -lt 50) { \
+	     Write-Error ('[FAIL] Installer is suspiciously small (' + $$sizeMB + ' MB). Expected >= 50 MB. Did the embedded python runtime get bundled?'); \
+	     exit 1 \
+	   }; \
+	   Write-Host ('[OK] Installer filename matches version: ' + $$exe.Name + ' (' + $$sizeMB + ' MB)')"
 else
 	@echo "========================================"
 	@echo " Installer Verification"

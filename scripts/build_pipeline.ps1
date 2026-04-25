@@ -36,7 +36,13 @@ param(
   [switch]$Clean,
   [switch]$Verify,
   [switch]$SkipRustInstall,
-  [switch]$SkipTauriCliInstall
+  [switch]$SkipTauriCliInstall,
+  # Override the version baked into the installer filename and the app's
+  # internal package.version. CI passes the release tag (with the leading
+  # `v` stripped); local builds can omit this and the version stays as
+  # whatever tauri.conf.json says (currently 1.0.0).
+  # MUST be a valid semver: 0.2.2, 0.2.2-nightly.abc1234, 1.0.0-rc.1, etc.
+  [string]$Version = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -457,8 +463,10 @@ function Ensure-BundledSitePackages {
   $pipLog = Join-Path $RootDir "build_pip_step99.log"
   Log-Info "Pip log: $pipLog"
 
+  # See note in prepare_python_from_pyproject_embed310_target.ps1: pin
+  # setuptools<82 so PyTorch 2.x's distutils shim doesn't break.
   Invoke-Checked -FilePath $hostPy -Arguments @(
-    "-m","pip","install","--upgrade","pip","setuptools","wheel",
+    "-m","pip","install","--upgrade","pip","setuptools<82","wheel",
     "--disable-pip-version-check","--no-python-version-warning",
     "--log",$pipLog
   ) -ErrorMessage "Failed to upgrade host pip/setuptools/wheel"
@@ -1060,8 +1068,16 @@ foreach ($rel in $mustExistPy) {
 # ================================
 Log-Step 6.7 "Packing embedded Python runtime into a single archive"
 
-$pythonDir  = Join-Path $root "src-tauri\resources\python"
-$runtimeZip = Join-Path $root "src-tauri\resources\python-runtime.zip"
+$pythonDir   = Join-Path $root "src-tauri\resources\python"
+# IMPORTANT: keep the zip inside a subdirectory of resources/, NOT at the
+# root. Tauri 1.x's `resources/**` glob in tauri.conf.json walks
+# subdirectories but does NOT match files that live at the root of the
+# resources/ directory. Putting python-runtime.zip directly under
+# src-tauri/resources/ silently produced a stub installer (~0.7 MB instead
+# of ~600 MB) because NSIS never saw it. Subdirectory it is.
+$runtimeDir  = Join-Path $root "src-tauri\resources\runtime"
+$runtimeZip  = Join-Path $runtimeDir "python-runtime.zip"
+New-Item -ItemType Directory -Force -Path $runtimeDir | Out-Null
 
 if (-not (Test-Path $pythonDir)) {
   Log-Fail "Cannot pack runtime: $pythonDir does not exist. Earlier STEP 2/3 must run first."
@@ -1105,7 +1121,7 @@ Log-Step 6.9 "Preflight: verifying bundled resources"
 $preflightErrors = @()
 
 $resReq = @(
-  @{ Path = "src-tauri\resources\python-runtime.zip";                                Why = "Packed Python runtime missing (sidecar cannot start)" },
+  @{ Path = "src-tauri\resources\runtime\python-runtime.zip";                        Why = "Packed Python runtime missing (sidecar cannot start)" },
   @{ Path = "src-tauri\resources\backend\entry_main.py";                             Why = "Sidecar entry missing"                      },
   @{ Path = "src-tauri\resources\modelhub\tauri.py";                                 Why = "ModelHub HTTP API missing"                  },
   @{ Path = "src-tauri\resources\versions\0.01\1-collect_data.py";                   Why = "'Script not found' on Start Recording"     },
@@ -1125,7 +1141,7 @@ foreach ($r in $resReq) {
 
 # Sanity-check the runtime zip is a reasonable size (a truly empty runtime
 # would be <1 MB; real runtime is hundreds of MB).
-$runtimeZipPath = Join-Path $root "src-tauri\resources\python-runtime.zip"
+$runtimeZipPath = Join-Path $root "src-tauri\resources\runtime\python-runtime.zip"
 if (Test-Path $runtimeZipPath) {
   $zipMB = (Get-Item $runtimeZipPath).Length / 1MB
   if ($zipMB -lt 10) {
@@ -1193,6 +1209,21 @@ Log-Ok "Preflight passed - all required resources present"
 if (-not $SkipTauri) {
   Log-Step 7 "Building Tauri Application"
 
+  # Clean any previous installer .exe files in the bundle dir before running
+  # cargo tauri build. Otherwise running this script twice (e.g. once at
+  # 1.0.0 and once at 0.2.2) leaves both versions on disk and the verify
+  # step can't tell which one is the new build. This is also why the user
+  # saw both BOT-MMORPG-AI_0.1.5_x64-setup.exe AND _1.0.0_ listed in the
+  # bundle dir after a single make artifact run.
+  $installerDir = Join-Path $root "src-tauri\target\release\bundle\nsis"
+  if (Test-Path $installerDir) {
+    Get-ChildItem -Path $installerDir -Filter "*.exe" -ErrorAction SilentlyContinue |
+      ForEach-Object {
+        Log-Info ("Removing previous installer: " + $_.Name)
+        Remove-Item -Force $_.FullName -ErrorAction SilentlyContinue
+      }
+  }
+
   Push-Location (Join-Path $root "src-tauri")
   try {
     # CRITICAL: do NOT pass --verbose here and explicitly pin RUST_LOG to
@@ -1206,8 +1237,40 @@ if (-not $SkipTauri) {
     $prevRustLog = $env:RUST_LOG
     $env:RUST_LOG = "info,handlebars=warn,tauri_bundler=info"
 
+    # Build the cargo tauri argument list. When -Version is provided, override
+    # tauri.conf.json's package.version so the installer filename and the
+    # baked-in app version both match the release tag (otherwise tauri uses
+    # the static "1.0.0" from tauri.conf.json and ships
+    # BOT-MMORPG-AI_1.0.0_x64-setup.exe regardless of the tag).
+    $tauriArgs = @('tauri', 'build')
+    $tmpCfgFile = $null
+    if ($Version -ne "") {
+      # tauri 1.x's --config accepts EITHER inline JSON OR a path to a JSON
+      # file. We use a temp file: passing inline JSON via PowerShell 5.1
+      # native-command argument splatting is unreliable -- PS sometimes
+      # strips the inner double-quotes before they reach `cargo.exe`,
+      # producing
+      #     "Error failed to parse config to merge: key must be a string"
+      # when tauri sees `{ package: { version: ... } }` (unquoted keys).
+      # A temp-file path side-steps PS's quote handling completely.
+      if ($Version -notmatch '^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.\-]+)?$') {
+        throw "Invalid -Version '$Version' (must be semver like 0.2.2 or 0.2.2-nightly.abc1234)"
+      }
+      $tmpCfgFile = Join-Path $env:TEMP ("tauri-cfg-override-{0}.json" -f ([guid]::NewGuid().ToString("N")))
+      # ConvertTo-Json on a hashtable produces canonical, well-quoted JSON.
+      # Encoded as ASCII to avoid any BOM that might trip a strict parser.
+      @{ package = @{ version = $Version } } |
+        ConvertTo-Json -Depth 4 -Compress |
+        Set-Content -Path $tmpCfgFile -Encoding ASCII
+      $tauriArgs += '--config'
+      $tauriArgs += $tmpCfgFile
+      Log-Info ("Overriding tauri package.version -> {0} (via {1})" -f $Version, $tmpCfgFile)
+    } else {
+      Log-Info "No -Version override; using tauri.conf.json default."
+    }
+
     Log-Info "Running cargo tauri build (RUST_LOG=$($env:RUST_LOG))..."
-    & cargo tauri build
+    & cargo @tauriArgs
     $tauriExit = $LASTEXITCODE
 
     # Restore previous RUST_LOG so subsequent steps aren't affected.
@@ -1222,26 +1285,53 @@ if (-not $SkipTauri) {
   } catch {
     Log-Fail "Tauri build failed: $_"
     Pop-Location
+    if ($null -ne $tmpCfgFile -and (Test-Path $tmpCfgFile)) {
+      Remove-Item -Force $tmpCfgFile -ErrorAction SilentlyContinue
+    }
     exit 1
   } finally {
     Pop-Location
+    if ($null -ne $tmpCfgFile -and (Test-Path $tmpCfgFile)) {
+      Remove-Item -Force $tmpCfgFile -ErrorAction SilentlyContinue
+    }
   }
 
-  $installerDir = Join-Path $root "src-tauri\target\release\bundle\nsis"
   if (Test-Path $installerDir) {
-    $installers = Get-ChildItem -Path $installerDir -Filter "*.exe" -ErrorAction SilentlyContinue
-    if ($installers.Count -gt 0) {
-      Write-Host ""
-      Log-Ok "NSIS installer(s) created:"
-      foreach ($inst in $installers) {
-        $s = [math]::Round(($inst.Length / 1MB), 2)
-        Write-Host ("  - {0} ({1} MB)" -f $inst.Name, $s)
-      }
-    } else {
-      Log-Warn "No installer executables found in $installerDir"
+    $installers = @(Get-ChildItem -Path $installerDir -Filter "*.exe" -ErrorAction SilentlyContinue)
+    if ($installers.Count -eq 0) {
+      Log-Fail "No installer executables produced in $installerDir"
+      exit 1
+    }
+    if ($installers.Count -gt 1) {
+      Log-Fail ("Expected exactly one installer in {0}, found {1}:" -f $installerDir, $installers.Count)
+      foreach ($i in $installers) { Log-Fail ("  - " + $i.Name) }
+      exit 1
+    }
+
+    $installer = $installers[0]
+    $sizeMB    = [math]::Round(($installer.Length / 1MB), 2)
+    Log-Ok ("NSIS installer created: {0} ({1} MB)" -f $installer.Name, $sizeMB)
+
+    # Filename must contain the version we asked tauri to bake in. Catches
+    # the case where -Version was empty / didn't flow through.
+    if ($Version -ne "" -and ($installer.Name -notmatch [Regex]::Escape($Version))) {
+      Log-Fail ("Installer filename '{0}' does not contain the expected version '{1}'." -f $installer.Name, $Version)
+      Log-Fail "The -Version override did not reach `cargo tauri build`. Check the Makefile / CI plumbing."
+      exit 1
+    }
+
+    # Sanity size check. A real installer (with embedded Python + ML deps)
+    # is hundreds of MB. Anything under 50 MB means the resources didn't
+    # actually get bundled (the Tauri-glob bug we just fixed produced
+    # ~0.7 MB stubs). Hard-fail rather than silently shipping a broken exe.
+    if ($sizeMB -lt 50) {
+      Log-Fail ("Installer is suspiciously small ({0} MB). Expected >= 50 MB once the python-runtime.zip is bundled." -f $sizeMB)
+      Log-Fail "Likely cause: tauri's resources/** glob is not picking up python-runtime.zip. Confirm the zip is under src-tauri\resources\runtime\, not at the resources root."
+      exit 1
     }
   } else {
-    Log-Warn "Installer directory not found: $installerDir"
+    Log-Fail "Installer directory not found: $installerDir"
+    exit 1
   }
 } else {
   Log-Warn "Skipping Tauri build"

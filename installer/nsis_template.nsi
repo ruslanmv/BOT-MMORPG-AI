@@ -82,8 +82,25 @@ Section "BOT MMORPG AI (UI + Backend)" SecCore
   ; Display what we're installing
   DetailPrint "Installing BOT MMORPG AI core application..."
 
-  ; Install main application executable
-  File "{{app_exe_source}}"
+  ; Install main application executable.
+  ; IMPORTANT: use /oname so the file lands at $INSTDIR\<main_binary_name>.exe
+  ; (e.g. BOT-MMORPG-AI.exe). Without /oname, NSIS uses the source basename
+  ; (bot-mmorpg-ai.exe -- lowercase from cargo's package.name), but every
+  ; other line in this template references {{main_binary_name}}.exe.
+  ; That mismatch is what caused the installed dir to contain
+  ; English.nsh + installer.nsi + Uninstall.exe but NO main exe on the
+  ; user's run -- NSIS happily wrote bot-mmorpg-ai.exe AND placed the
+  ; template artifacts because the case-only difference confused something.
+  File "/oname={{main_binary_name}}.exe" "{{app_exe_source}}"
+
+  ; Defensive cleanup: scrub leftover NSIS build artifacts that some
+  ; tauri-bundler 1.x revisions copy into $INSTDIR by mistake. They're
+  ; harmless but they pollute the install dir and confuse our verifier.
+  Delete "$INSTDIR\installer.nsi"
+  Delete "$INSTDIR\English.nsh"
+  Delete "$INSTDIR\nsis-output.exe"
+  Delete "$INSTDIR\bot-mmorpg-ai.exe"
+  Delete "$INSTDIR\bot_mmorpg_ai.exe"
 
   ; Install WebView2 bootstrapper if needed
   {{#if install_webview2_mode}}
