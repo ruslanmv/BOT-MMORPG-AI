@@ -91,7 +91,24 @@ Section "BOT MMORPG AI (UI + Backend)" SecCore
   ; English.nsh + installer.nsi + Uninstall.exe but NO main exe on the
   ; user's run -- NSIS happily wrote bot-mmorpg-ai.exe AND placed the
   ; template artifacts because the case-only difference confused something.
+  ;
+  ; tauri-bundler renamed the source variable across 1.x patch levels:
+  ; older revisions exposed `{{app_exe_source}}`, tauri-cli >= 1.6
+  ; exposes `{{main_binary_path}}`. Referencing only one resolves the
+  ; other to an empty string, which makes NSIS see
+  ;   File "/oname=BOT-MMORPG-AI.exe" ""
+  ; and abort with:
+  ;   Usage: File ... /oname=outfile one_file_only
+  ;   Error failed to bundle project: `The system cannot find the file
+  ;   specified. (os error 2)`
+  ; That is exactly the failure on the master nightly at 7218345 / line
+  ; 91 of the rendered installer.nsi. Probe both names so any tauri-cli
+  ; 1.x patch level renders cleanly.
+  {{#if main_binary_path}}
+  File "/oname={{main_binary_name}}.exe" "{{main_binary_path}}"
+  {{else}}
   File "/oname={{main_binary_name}}.exe" "{{app_exe_source}}"
+  {{/if}}
 
   ; Defensive cleanup: scrub leftover NSIS build artifacts that some
   ; tauri-bundler 1.x revisions copy into $INSTDIR by mistake. They're
