@@ -6,12 +6,33 @@
 
 !include "MUI2.nsh"
 !include "Sections.nsh"
+!include "FileFunc.nsh"
+!include "LogicLib.nsh"
 
 ; Use LZMA solid compression to handle large file counts efficiently.
 ; SOLID mode compresses all data as a single stream, reducing both
 ; installer size and NSIS compile-time memory issues with many files.
 SetCompressor /SOLID lzma
 SetDatablockOptimize on
+
+; -----------------------------------------------------------------------------
+; Canonical tauri-bundler 1.6.x defines.
+;
+; MAINBINARYSRCPATH: source path of the freshly built Rust binary, injected by
+; the bundler. Using this two-step indirection (rather than inlining
+; {{main_binary_path}} into a quoted File argument) is the pattern used by the
+; official tauri-v1.6.6 installer.nsi (lines 29-30, 541-542). The direct-inline
+; form passes raw Windows paths through Handlebars without unescape-dollar-sign
+; and can produce a string NSIS parses oddly.
+;
+; MAINBINARYNAME: forced UPPERCASE here. tauri-bundler derives the handlebars
+; var {{main_binary_name}} from Cargo.toml's name (lowercase: "bot-mmorpg-ai"),
+; not from productName ("BOT-MMORPG-AI"). Every shortcut, registry key, and
+; MUI_FINISHPAGE_RUN below references ${MAINBINARYNAME}.exe and we want them
+; all to land on BOT-MMORPG-AI.exe consistently.
+; -----------------------------------------------------------------------------
+!define MAINBINARYNAME "BOT-MMORPG-AI"
+!define MAINBINARYSRCPATH "{{main_binary_path}}"
 
 Name "{{product_name}}"
 OutFile "{{out_file}}"
@@ -43,7 +64,7 @@ RequestExecutionLevel admin
 ; Custom text for finish page
 !define MUI_FINISHPAGE_TITLE "Installation Complete"
 !define MUI_FINISHPAGE_TEXT "BOT MMORPG AI has been installed successfully.$\r$\n$\r$\nYou can now launch the application from your Start Menu or Desktop.$\r$\n$\r$\nThank you for choosing BOT MMORPG AI!"
-!define MUI_FINISHPAGE_RUN "$INSTDIR\\{{main_binary_name}}.exe"
+!define MUI_FINISHPAGE_RUN "$INSTDIR\${MAINBINARYNAME}.exe"
 !define MUI_FINISHPAGE_RUN_TEXT "Launch BOT MMORPG AI"
 
 ; --- Wizard Pages ---
@@ -79,45 +100,33 @@ Section "BOT MMORPG AI (UI + Backend)" SecCore
 
   SetOutPath "$INSTDIR"
 
+  ; Per-machine install: write shortcuts to the All Users Start Menu /
+  ; Desktop instead of the current user's folders. Without this,
+  ; $SMPROGRAMS and $DESKTOP resolve to %APPDATA%\Microsoft\Windows\
+  ; Start Menu\... and %USERPROFILE%\Desktop\..., which is wrong for an
+  ; admin-elevated per-machine installer (and any other admin user
+  ; logging into the same machine wouldn't see the shortcuts).
+  SetShellVarContext all
+
   ; Display what we're installing
   DetailPrint "Installing BOT MMORPG AI core application..."
 
-  ; Install main application executable.
-  ; IMPORTANT: use /oname so the file lands at $INSTDIR\<main_binary_name>.exe
-  ; (e.g. BOT-MMORPG-AI.exe). Without /oname, NSIS uses the source basename
-  ; (bot-mmorpg-ai.exe -- lowercase from cargo's package.name), but every
-  ; other line in this template references {{main_binary_name}}.exe.
-  ; That mismatch is what caused the installed dir to contain
-  ; English.nsh + installer.nsi + Uninstall.exe but NO main exe on the
-  ; user's run -- NSIS happily wrote bot-mmorpg-ai.exe AND placed the
-  ; template artifacts because the case-only difference confused something.
-  ;
-  ; tauri-bundler renamed the source variable across 1.x patch levels:
-  ; older revisions exposed `{{app_exe_source}}`, tauri-cli >= 1.6
-  ; exposes `{{main_binary_path}}`. Referencing only one resolves the
-  ; other to an empty string, which makes NSIS see
-  ;   File "/oname=BOT-MMORPG-AI.exe" ""
-  ; and abort with:
-  ;   Usage: File ... /oname=outfile one_file_only
-  ;   Error failed to bundle project: `The system cannot find the file
-  ;   specified. (os error 2)`
-  ; That is exactly the failure on the master nightly at 7218345 / line
-  ; 91 of the rendered installer.nsi. Probe both names so any tauri-cli
-  ; 1.x patch level renders cleanly.
-  {{#if main_binary_path}}
-  File "/oname={{main_binary_name}}.exe" "{{main_binary_path}}"
-  {{else}}
-  File "/oname={{main_binary_name}}.exe" "{{app_exe_source}}"
-  {{/if}}
+  ; Install main application executable from the bundler-provided source path.
+  ; Use /oname to force the canonical UPPERCASE filename regardless of what
+  ; cargo's package.name renders to.
+  File "/oname=${MAINBINARYNAME}.exe" "${MAINBINARYSRCPATH}"
 
-  ; Defensive cleanup: scrub leftover NSIS build artifacts that some
-  ; tauri-bundler 1.x revisions copy into $INSTDIR by mistake. They're
-  ; harmless but they pollute the install dir and confuse our verifier.
-  Delete "$INSTDIR\installer.nsi"
-  Delete "$INSTDIR\English.nsh"
-  Delete "$INSTDIR\nsis-output.exe"
-  Delete "$INSTDIR\bot-mmorpg-ai.exe"
-  Delete "$INSTDIR\bot_mmorpg_ai.exe"
+  ; Fail loud if the File directive silently produced nothing. NSIS does not
+  ; abort the install just because /oname extracted zero bytes -- it would
+  ; merrily continue, write Uninstall.exe, and the user ends up with an
+  ; install dir containing English.nsh + installer.nsi + Uninstall.exe but
+  ; NO main exe. That is precisely the failure this template now guards
+  ; against. Steam/AAA installers all do this -- silent partial installs
+  ; are the worst possible user experience.
+  IfFileExists "$INSTDIR\${MAINBINARYNAME}.exe" main_exe_ok
+    MessageBox MB_OK|MB_ICONSTOP "FATAL: ${MAINBINARYNAME}.exe was not extracted to $INSTDIR.$\r$\nThe installer is corrupt; please re-download."
+    Abort
+  main_exe_ok:
 
   ; Install WebView2 bootstrapper if needed
   {{#if install_webview2_mode}}
@@ -128,16 +137,39 @@ Section "BOT MMORPG AI (UI + Backend)" SecCore
   ; IMPORTANT: `/oname=...` MUST be quoted. Without quotes, resource
   ; filenames that contain a space cause NSIS to parse the rest of the
   ; directive as extra arguments and print `Usage: File ...`, aborting the
-  ; build on line 254. This matches the canonical Tauri 1.x NSIS template.
+  ; build. The unescape-dollar-sign helper is required because raw Windows
+  ; source paths can contain `$` which NSIS would otherwise misinterpret as
+  ; a variable reference. This matches the canonical tauri-v1.6.6 NSIS
+  ; template (line 548).
+
+  ; Defense-in-depth for re-install over an existing install:
+  ; (1) Try to remove driver-installer payloads that are commonly held
+  ;     open by Windows Defender real-time scanning or by a previously
+  ;     loaded Interception/vJoy helper. If the Delete itself fails
+  ;     (because the file is locked), it fails silently -- that's fine,
+  ;     the SetOverwrite try below handles the actual extraction.
+  ; (2) Switch to SetOverwrite try for the bundled-resources loop so a
+  ;     locked destination file is left in place rather than triggering
+  ;     the "Error opening file for writing" Abort/Retry/Ignore dialog.
+  ;     This is the canonical NSIS pattern for files that may be locked
+  ;     by AV / running helpers. The pre-existing copy is the same
+  ;     binary content (oblitum/Interception releases are stable), so
+  ;     leaving it in place is correct behavior.
+  Delete "$INSTDIR\drivers\interception\install-interception.exe"
+  Delete "$INSTDIR\drivers\vjoy\vJoySetup.exe"
+
+  SetOverwrite try
   {{#each resources}}
-  CreateDirectory "$INSTDIR\\{{this.[0]}}"
-  File /a "/oname={{this.[1]}}" "{{@key}}"
+  CreateDirectory "$INSTDIR\{{this.[0]}}"
+  File /a "/oname={{this.[1]}}" "{{unescape-dollar-sign @key}}"
   {{/each}}
+  ; Restore default overwrite mode for any subsequent File directives.
+  SetOverwrite on
 
   ; Create resource subdirectories
   {{#if resources_dirs}}
   {{#each resources_dirs}}
-  CreateDirectory "$INSTDIR\\{{this}}"
+  CreateDirectory "$INSTDIR\{{this}}"
   {{/each}}
   {{/if}}
 
@@ -149,7 +181,7 @@ Section "BOT MMORPG AI (UI + Backend)" SecCore
   ; Add to Windows Programs list
   WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\BOT-MMORPG-AI" "DisplayName" "BOT MMORPG AI"
   WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\BOT-MMORPG-AI" "UninstallString" "$INSTDIR\Uninstall.exe"
-  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\BOT-MMORPG-AI" "DisplayIcon" "$INSTDIR\\{{main_binary_name}}.exe"
+  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\BOT-MMORPG-AI" "DisplayIcon" "$INSTDIR\${MAINBINARYNAME}.exe"
   WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\BOT-MMORPG-AI" "Publisher" "BOT MMORPG AI Team"
   WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\BOT-MMORPG-AI" "DisplayVersion" "{{version}}"
   WriteRegDWORD HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\BOT-MMORPG-AI" "NoModify" 1
@@ -158,9 +190,9 @@ Section "BOT MMORPG AI (UI + Backend)" SecCore
   ; --- Shortcuts ---
   DetailPrint "Creating shortcuts..."
   CreateDirectory "$SMPROGRAMS\BOT-MMORPG-AI"
-  CreateShortCut "$SMPROGRAMS\BOT-MMORPG-AI\BOT-MMORPG-AI.lnk" "$INSTDIR\\{{main_binary_name}}.exe" "" "$INSTDIR\\{{main_binary_name}}.exe" 0
+  CreateShortCut "$SMPROGRAMS\BOT-MMORPG-AI\BOT-MMORPG-AI.lnk" "$INSTDIR\${MAINBINARYNAME}.exe" "" "$INSTDIR\${MAINBINARYNAME}.exe" 0
   CreateShortCut "$SMPROGRAMS\BOT-MMORPG-AI\Uninstall.lnk" "$INSTDIR\Uninstall.exe" "" "$INSTDIR\Uninstall.exe" 0
-  CreateShortCut "$DESKTOP\BOT-MMORPG-AI.lnk" "$INSTDIR\\{{main_binary_name}}.exe" "" "$INSTDIR\\{{main_binary_name}}.exe" 0
+  CreateShortCut "$DESKTOP\BOT-MMORPG-AI.lnk" "$INSTDIR\${MAINBINARYNAME}.exe" "" "$INSTDIR\${MAINBINARYNAME}.exe" 0
 
   ; --- Driver installers ---
   ; Interception
@@ -170,13 +202,39 @@ Section "BOT MMORPG AI (UI + Backend)" SecCore
     DetailPrint "Interception install step finished."
 
   ; vJoy
-  IfFileExists "$INSTDIR\drivers\vjoy\vJoySetup.exe" 0 +4
-    DetailPrint "Installing vJoy driver..."
-    ExecWait '"$INSTDIR\drivers\vjoy\vJoySetup.exe" /S'
-    DetailPrint "vJoy install step finished."
+  ; The build pipeline writes a 12-byte placeholder when the real installer
+  ; is unavailable. Running that placeholder would do nothing yet exit 0,
+  ; making NSIS report success for a no-op step. Gate on a real-size check
+  ; (>= 1 MB) instead of just IfFileExists.
+  ${If} ${FileExists} "$INSTDIR\drivers\vjoy\vJoySetup.exe"
+    ${GetSize} "$INSTDIR\drivers\vjoy" "/M=vJoySetup.exe /S=0B" $0 $1 $2
+    ${If} $0 >= 1048576
+      DetailPrint "Installing vJoy driver..."
+      ExecWait '"$INSTDIR\drivers\vjoy\vJoySetup.exe" /S'
+      DetailPrint "vJoy install step finished."
+    ${Else}
+      DetailPrint "Skipping vJoy: installer is a placeholder ($0 bytes). Install manually if needed."
+    ${EndIf}
+  ${EndIf}
 
   ; --- Uninstaller ---
   WriteUninstaller "$INSTDIR\Uninstall.exe"
+
+  ; Defensive cleanup: scrub leftover NSIS build artifacts that some
+  ; tauri-bundler 1.x revisions copy into $INSTDIR. These Deletes run AFTER
+  ; WriteUninstaller (and again from .onInstSuccess) so we catch the case
+  ; where the bundler stages them late in the extraction order.
+  ;
+  ; CRITICAL: do NOT delete bot-mmorpg-ai.exe here. Windows NTFS is
+  ; case-insensitive by default, so Delete "$INSTDIR\bot-mmorpg-ai.exe"
+  ; matches AND DELETES the canonical $INSTDIR\BOT-MMORPG-AI.exe that
+  ; the File /oname=... directive just created. That was the cause of
+  ; the previous "Uninstall.exe is present but main exe is missing"
+  ; failure mode -- the install completed cleanly, then the main exe
+  ; got wiped right before .onInstSuccess.
+  Delete "$INSTDIR\installer.nsi"
+  Delete "$INSTDIR\English.nsh"
+  Delete "$INSTDIR\nsis-output.exe"
 
   DetailPrint "Core application installed successfully!"
 SectionEnd
@@ -255,9 +313,28 @@ SectionEnd
   !insertmacro MUI_DESCRIPTION_TEXT ${SecDevTools} "Tools and resources for developers who want to create custom AI models. Includes sample datasets, model templates, and documentation. Only install this if you plan to develop custom models."
 !insertmacro MUI_FUNCTION_DESCRIPTION_END
 
+; --- Post-install cleanup ---
+; .onInstSuccess fires once the entire install completes. This is the
+; correct place to scrub bundler-staged artifacts (English.nsh,
+; installer.nsi) because by definition every File directive has already
+; finished executing -- there's no extraction order ambiguity here.
+;
+; CRITICAL: do NOT delete bot-mmorpg-ai.exe here. See the matching
+; comment in SecCore. Windows NTFS is case-insensitive, so deleting
+; the lowercase variant wipes the canonical BOT-MMORPG-AI.exe.
+Function .onInstSuccess
+  Delete "$INSTDIR\installer.nsi"
+  Delete "$INSTDIR\English.nsh"
+  Delete "$INSTDIR\nsis-output.exe"
+FunctionEnd
+
 ; --- Uninstaller Section ---
 Section "Uninstall"
   DetailPrint "Removing BOT MMORPG AI..."
+
+  ; Match the install-time shell-var context so $SMPROGRAMS / $DESKTOP
+  ; resolve to the All Users folders where the shortcuts actually live.
+  SetShellVarContext all
 
   ; Remove shortcuts
   Delete "$DESKTOP\BOT-MMORPG-AI.lnk"
@@ -267,8 +344,13 @@ Section "Uninstall"
   Delete "$SMPROGRAMS\BOT-MMORPG-AI\Developer Tools.lnk"
   RMDir "$SMPROGRAMS\BOT-MMORPG-AI"
 
-  ; Ask user if they want to keep their models and data
-  MessageBox MB_YESNO|MB_ICONQUESTION "Do you want to keep your AI models and custom data?$\r$\n$\r$\nSelect 'No' to remove everything (clean uninstall).$\r$\nSelect 'Yes' to keep your models and data for future installations." IDYES keep_data
+  ; Ask user if they want to keep their models and data.
+  ; /SD IDNO: in silent uninstall (e.g. our verify_installer.ps1 dry-run, or
+  ; an unattended upgrade), default to "remove everything" so $INSTDIR is
+  ; fully cleaned up. Without this the silent uninstall would fall through
+  ; the MessageBox without taking the IDYES jump and behave non-deterministically
+  ; across NSIS versions.
+  MessageBox MB_YESNO|MB_ICONQUESTION "Do you want to keep your AI models and custom data?$\r$\n$\r$\nSelect 'No' to remove everything (clean uninstall).$\r$\nSelect 'Yes' to keep your models and data for future installations." /SD IDNO IDYES keep_data
 
   ; Remove everything
   DetailPrint "Performing clean uninstall..."
@@ -278,7 +360,7 @@ Section "Uninstall"
   keep_data:
     DetailPrint "Keeping user data and models..."
     ; Remove application files but keep models and dev folders
-    Delete "$INSTDIR\\{{main_binary_name}}.exe"
+    Delete "$INSTDIR\${MAINBINARYNAME}.exe"
     Delete "$INSTDIR\Uninstall.exe"
     RMDir /r "$INSTDIR\drivers"
     RMDir /r "$INSTDIR\resources"

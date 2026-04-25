@@ -118,6 +118,13 @@ binaries/
 !frontend/input_record/install-interception.exe
 !src-tauri/drivers/**/*.exe
 
+# Whitelist Interception driver runtime libraries shipped with the
+# installer (oblitum/Interception v1.0.1). The default *.dll ignore
+# above would otherwise drop them from version control.
+!src-tauri/drivers/interception/library/**/*.dll
+!src-tauri/drivers/interception/library/**/*.lib
+!src-tauri/drivers/interception/library/**/*.h
+
 # ==========================================
 # Project Specific (Data & Recordings)
 # ==========================================
