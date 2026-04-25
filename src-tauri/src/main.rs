@@ -337,8 +337,21 @@ fn bundled_python_dir(app: &AppHandle) -> Option<PathBuf> {
 /// embedded python tree + site-packages into a single zip so Tauri's NSIS
 /// bundler doesn't have to iterate tens of thousands of files (which floods
 /// handlebars debug logs and kills the GitHub Actions job with exit 1).
+///
+/// IMPORTANT: the zip lives in a *subdirectory* of resources (`runtime/`),
+/// not at the root, because Tauri 1.x's `resources/**` glob in tauri.conf
+/// does not match files that sit directly under resources/. The earlier
+/// (pre-fix) layout silently produced a 0.7 MB stub installer because NSIS
+/// never saw the zip. We still probe a couple of legacy locations so an
+/// older installer continues to work for users who upgraded in place.
 fn bundled_python_archive(app: &AppHandle) -> Option<PathBuf> {
     let candidates = [
+        // New layout (Tauri-glob safe).
+        "runtime/python-runtime.zip",
+        "runtime\\python-runtime.zip",
+        "resources/runtime/python-runtime.zip",
+        "resources\\runtime\\python-runtime.zip",
+        // Legacy layout (kept so a re-installed-over-old build still works).
         "python-runtime.zip",
         "resources/python-runtime.zip",
         "resources\\python-runtime.zip",
@@ -351,13 +364,16 @@ fn bundled_python_archive(app: &AppHandle) -> Option<PathBuf> {
         }
     }
     if let Some(rd) = app.path_resolver().resource_dir() {
-        let p = rd.join("python-runtime.zip");
-        if p.exists() {
-            return Some(p);
-        }
-        let p2 = rd.join("resources").join("python-runtime.zip");
-        if p2.exists() {
-            return Some(p2);
+        for rel in &[
+            "runtime/python-runtime.zip",
+            "resources/runtime/python-runtime.zip",
+            "python-runtime.zip",
+            "resources/python-runtime.zip",
+        ] {
+            let p = rd.join(rel);
+            if p.exists() {
+                return Some(p);
+            }
         }
     }
     None
@@ -1724,6 +1740,211 @@ async fn modelhub_run_offline_evaluation(
     .await
 }
 
+// ---------------------------
+// MISSING COMMANDS the UI invokes
+// ---------------------------
+// Audit (this branch): tauri-ui/main.js was calling list_monitors,
+// get_screen_preview, generate_dataset_name, list_datasets, delete_dataset
+// without those handlers ever being registered, so every related UI
+// interaction (Teach tab loading, Refresh preview, Auto dataset name,
+// Train tab dataset list, Del button) silently failed with
+// "command not found" and left the panel empty. Implementations below.
+
+/// Pure-Rust dataset-name generator. Does NOT need the python sidecar to
+/// be alive, so the "Auto" button works on a fresh install before the
+/// runtime is unpacked. Format: <game>_<task>_<UTCdate>_<UTCtime>.
+#[tauri::command]
+fn generate_dataset_name(game_id: Option<String>, task: Option<String>) -> String {
+    let gid = normalize_game_id(game_id);
+    let task = task
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("general")
+        .to_lowercase()
+        .replace(|c: char| !c.is_ascii_alphanumeric(), "_");
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    // Tiny home-grown UTC formatter (avoids pulling chrono just for this).
+    let secs = now % 86_400;
+    let days = now / 86_400;
+    // 1970-01-01 was Thursday; we just use Unix epoch days since we only
+    // need a unique-ish stamp, not a calendar date for humans.
+    let h = secs / 3600;
+    let m = (secs / 60) % 60;
+    let s = secs % 60;
+    format!("{}_{}_{:08}_{:02}{:02}{:02}", gid, task, days, h, m, s)
+}
+
+/// Lightweight monitor list. We don't pull a display-info crate yet (would
+/// add 10+ deps for a single feature); instead return a single entry that
+/// covers the primary monitor. Real multi-monitor support is tracked but
+/// not blocking. Callers should still render the dropdown with one option
+/// rather than fail.
+#[derive(Serialize)]
+struct MonitorInfo {
+    id: u32,
+    name: String,
+    is_primary: bool,
+    width: u32,
+    height: u32,
+}
+
+#[tauri::command]
+fn list_monitors() -> Vec<MonitorInfo> {
+    vec![MonitorInfo {
+        id: 0,
+        name: "Primary".to_string(),
+        is_primary: true,
+        // 0/0 tells the UI "unknown" — it falls back to a sensible default.
+        width: 0,
+        height: 0,
+    }]
+}
+
+/// Forward to the python sidecar's /capture/preview endpoint when the
+/// sidecar is available; otherwise return a structured "backend missing"
+/// response so the UI can show an actionable message instead of a blank
+/// preview pane.
+#[tauri::command]
+async fn get_screen_preview(
+    state: tauri::State<'_, AppState>,
+    monitor_id: Option<u32>,
+) -> Result<Value, String> {
+    let mid = monitor_id.unwrap_or(0);
+    match api_post_with(
+        &state.inner,
+        "/capture/preview",
+        json!({ "monitor_id": mid }),
+    )
+    .await
+    {
+        Ok(v) => Ok(v),
+        // Surface a friendly payload instead of a hard error so the UI's
+        // catch block can render "Backend not installed" rather than
+        // command-not-found noise.
+        Err(e) => Ok(json!({
+            "ok": false,
+            "error": format!("Screen preview unavailable: {}", e),
+            "hint": "Reinstall v0.2.2+ from GitHub releases to get the embedded backend."
+        })),
+    }
+}
+
+/// Forward to the sidecar's dataset listing. Same graceful-error pattern.
+#[tauri::command]
+async fn list_datasets(
+    state: tauri::State<'_, AppState>,
+    game_id: Option<String>,
+) -> Result<Value, String> {
+    let gid = normalize_game_id(game_id);
+    match api_get_with(
+        &state.inner,
+        &format!("/modelhub/datasets?game_id={}", urlencoding::encode(&gid)),
+    )
+    .await
+    {
+        Ok(v) => Ok(v),
+        Err(e) => Ok(json!({
+            "ok": false,
+            "datasets": [],
+            "error": format!("Dataset list unavailable: {}", e),
+            "hint": "Reinstall v0.2.2+ from GitHub releases to get the embedded backend."
+        })),
+    }
+}
+
+/// Delete a dataset via the sidecar.
+#[tauri::command]
+async fn delete_dataset(
+    state: tauri::State<'_, AppState>,
+    game_id: Option<String>,
+    dataset_id: String,
+    path: Option<String>,
+) -> Result<Value, String> {
+    let gid = normalize_game_id(game_id);
+    api_post_with(
+        &state.inner,
+        "/modelhub/datasets/delete",
+        json!({
+            "game_id": gid,
+            "dataset_id": dataset_id,
+            "path": path.unwrap_or_default(),
+        }),
+    )
+    .await
+}
+
+// ---------------------------
+// INSTALL-HEALTH probe
+// ---------------------------
+// Returns a small JSON describing whether this installation has every piece
+// the app needs to function. The UI calls this on startup and shows a red
+// banner with reinstall instructions when something is missing — exactly
+// the v0.2.0 case the user reported (no python-runtime.zip, no scripts).
+#[tauri::command]
+async fn install_health(
+    state: tauri::State<'_, AppState>,
+    app: AppHandle,
+) -> Result<Value, String> {
+    let install_dir = installation_dir();
+
+    // Sidecar reachable?
+    let sidecar_ok = state.inner.sidecar.lock().unwrap().is_some();
+
+    // Python runtime present (either the new packed zip OR the legacy
+    // unpacked dir OR an already-extracted one in LocalAppData).
+    let runtime_archive = bundled_python_archive(&app).is_some();
+    let runtime_unpacked = bundled_python_dir(&app).is_some();
+    let runtime_extracted = managed_embedded_python_dir(&app)
+        .join(if is_windows() { "python.exe" } else { "bin/python3" })
+        .exists();
+    let python_ok = runtime_archive || runtime_unpacked || runtime_extracted;
+
+    // ML scripts present (either bundled or user-copied).
+    let bundled_scripts = app
+        .path_resolver()
+        .resolve_resource("versions/0.01/1-collect_data.py")
+        .map(|p| p.exists())
+        .unwrap_or(false);
+    let user_copied_scripts = install_dir
+        .join("versions")
+        .join("0.01")
+        .join("1-collect_data.py")
+        .exists();
+    let scripts_ok = bundled_scripts || user_copied_scripts;
+
+    let healthy = sidecar_ok && python_ok && scripts_ok;
+    let issues: Vec<&str> = [
+        (!sidecar_ok, "sidecar HTTP API not running"),
+        (!python_ok, "embedded Python runtime missing (python-runtime.zip)"),
+        (!scripts_ok, "ML scripts missing (versions/0.01/*.py)"),
+    ]
+    .iter()
+    .filter_map(|(bad, msg)| if *bad { Some(*msg) } else { None })
+    .collect();
+
+    Ok(json!({
+        "healthy": healthy,
+        "sidecar_ok": sidecar_ok,
+        "python_ok": python_ok,
+        "scripts_ok": scripts_ok,
+        "issues": issues,
+        "install_dir": install_dir.display().to_string(),
+        "remediation": if healthy {
+            "All systems go.".to_string()
+        } else {
+            "This install is incomplete (likely the legacy v0.2.0 stub). \
+             Reinstall the latest installer from \
+             https://github.com/ruslanmv/BOT-MMORPG-AI/releases/latest \
+             which bundles the embedded Python runtime and ML scripts."
+                .to_string()
+        }
+    }))
+}
+
 #[tauri::command]
 fn install_drivers(app: tauri::AppHandle) -> Value {
     #[cfg(target_os = "windows")]
@@ -1864,7 +2085,15 @@ fn main() {
             mh_delete_model,
             modelhub_validate_model,
             modelhub_run_offline_evaluation,
-            install_drivers
+            install_drivers,
+            // Previously missing handlers the UI was already invoking
+            // (every Teach-tab interaction silently failed without these):
+            generate_dataset_name,
+            list_monitors,
+            get_screen_preview,
+            list_datasets,
+            delete_dataset,
+            install_health,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

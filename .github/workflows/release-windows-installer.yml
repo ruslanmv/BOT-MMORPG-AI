@@ -51,7 +51,14 @@ jobs:
     needs: test-before-release
     runs-on: ubuntu-latest
     outputs:
+      # `version` is the user-facing tag form (e.g. v0.2.2). Used for the
+      # GitHub release tag_name and the artifact zip name.
       version: ${{ steps.get_version.outputs.version }}
+      # `semver` is the strict-semver form (e.g. 0.2.2). Used to override
+      # tauri.conf.json's package.version so the installer filename embeds
+      # the real release version (BOT-MMORPG-AI_0.2.2_x64-setup.exe) instead
+      # of the static "1.0.0" baked into tauri.conf.json.
+      semver: ${{ steps.get_version.outputs.semver }}
 
     steps:
       - name: Checkout repository
@@ -67,13 +74,22 @@ jobs:
             VERSION="${GITHUB_REF#refs/tags/}"
           fi
 
-          # Ensure it starts with "v"
+          # User-facing form keeps the leading v
           if [[ "$VERSION" != v* ]]; then
             VERSION="v$VERSION"
           fi
 
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "Version: $VERSION"
+          # Tauri's package.version expects strict semver (no leading v).
+          SEMVER="${VERSION#v}"
+          if ! [[ "$SEMVER" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.+-]+)?$ ]]; then
+            echo "::error::Tag '$VERSION' does not yield a valid semver ('$SEMVER'). Use vMAJOR.MINOR.PATCH[-prerelease][+build]."
+            exit 1
+          fi
+
+          echo "version=$VERSION"  >> "$GITHUB_OUTPUT"
+          echo "semver=$SEMVER"    >> "$GITHUB_OUTPUT"
+          echo "Tag version: $VERSION"
+          echo "Semver: $SEMVER"
 
       # No deprecated set-output warnings (uses modern action)
       - name: Create/Update Release
@@ -167,17 +183,38 @@ jobs:
         shell: pwsh
         run: cargo install tauri-cli --version "^1.0" --force
 
-      # Build everything using your existing pipeline script (PyInstaller + Tauri + NSIS)
-      - name: Build installer (PyInstaller + Tauri + NSIS)
+      # Build everything using the pipeline script. -Version is injected so
+      # the installer filename and the app's package.version both reflect the
+      # release tag (e.g. v0.2.2 -> BOT-MMORPG-AI_0.2.2_x64-setup.exe).
+      - name: Build installer (Tauri + NSIS)
         shell: pwsh
-        run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build_pipeline.ps1
+        env:
+          BOT_RELEASE_SEMVER: ${{ needs.create-release.outputs.semver }}
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build_pipeline.ps1 -Version "$env:BOT_RELEASE_SEMVER"
 
       # Post-build verification. Fails the release if resources/python,
       # resources/backend, resources/modelhub, or resources/versions are
-      # missing — the root cause of issues #26, #37, #42 on v0.1.8/v0.2.0.
+      # missing -- the root cause of issues #26, #37, #42 on v0.1.8/v0.2.0.
       - name: Verify installer contents
         shell: pwsh
         run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify_installer.ps1
+
+      # Sanity check: the bundled NSIS exe filename must contain the semver.
+      # Catches any future regression in the version-injection chain.
+      - name: Assert installer filename contains release version
+        shell: pwsh
+        env:
+          BOT_RELEASE_SEMVER: ${{ needs.create-release.outputs.semver }}
+        run: |
+          $expected = $env:BOT_RELEASE_SEMVER
+          $exe = Get-ChildItem -Path "src-tauri/target/release/bundle/nsis" -Filter "*.exe" | Select-Object -First 1
+          if (-not $exe) { throw "No installer EXE found in bundle dir" }
+          if ($exe.Name -notmatch [Regex]::Escape($expected)) {
+            throw ("Installer filename '$($exe.Name)' does not contain the expected release version '$expected'. " +
+                   "Did the -Version override flow break?")
+          }
+          Write-Host "[OK] Installer filename matches release version: $($exe.Name)"
 
       - name: Find NSIS installer EXE
         id: installer
@@ -194,7 +231,7 @@ jobs:
 
           Write-Host "Installer: $($installer.FullName)"
 
-      # ✅ This makes the installer show up as an EXE under Release -> Assets
+      # This makes the installer show up as an EXE under Release -> Assets
       - name: Upload installer EXE to GitHub Release
         uses: softprops/action-gh-release@v2
         with:

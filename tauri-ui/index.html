@@ -428,6 +428,40 @@
   </aside>
 
   <main class="main-area">
+    <!--
+      Install-health banner. Hidden by default. main.js polls the
+      install_health Tauri command on startup; if any subsystem is missing
+      (sidecar, embedded Python, ML scripts) we render this with a clear
+      reinstall instruction. This catches the v0.2.0 case where the
+      installer shipped without the runtime and every button silently
+      failed with "Sidecar API not ready" / "Script not found".
+    -->
+    <div id="install-health-banner" style="display:none; margin:0 0 12px 0; padding:14px 18px;
+         border-radius:10px; background:linear-gradient(90deg,#7a1f1f,#a02929);
+         color:#fff; font-weight:600; box-shadow:0 4px 14px rgba(0,0,0,0.25);">
+      <div style="display:flex; align-items:flex-start; gap:14px;">
+        <span style="font-size:22px; line-height:1;">!</span>
+        <div style="flex:1;">
+          <div style="font-size:14px; margin-bottom:4px;" id="install-health-title">
+            Backend installation is incomplete
+          </div>
+          <div style="font-size:12px; font-weight:400; opacity:.95;" id="install-health-detail"></div>
+          <div style="font-size:12px; font-weight:400; opacity:.95; margin-top:6px;">
+            <a href="https://github.com/ruslanmv/BOT-MMORPG-AI/releases/latest"
+               target="_blank" rel="noreferrer"
+               style="color:#fff; text-decoration:underline;">
+              Download the latest installer
+            </a>
+            and reinstall to restore Recording / Training / Run Bot.
+          </div>
+        </div>
+        <button type="button" id="install-health-dismiss"
+                style="background:transparent; border:1px solid rgba(255,255,255,0.5);
+                       color:#fff; padding:4px 10px; border-radius:6px;
+                       font-size:11px; cursor:pointer;">Dismiss</button>
+      </div>
+    </div>
+
     <header class="header">
       <h1 class="page-title" id="page-title">Dashboard</h1>
       <div class="profile-chip">

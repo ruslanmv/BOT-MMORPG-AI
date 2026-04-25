@@ -47,15 +47,29 @@ class vJoy(object):
         self.handle = None
         try:
             self.dll = ctypes.CDLL( CONST_DLL_VJOY )
-        except OSError:
-            print("===============================================================")
-            print("CRITICAL ERROR: vJoy Driver NOT FOUND")
-            print("===============================================================")
-            print(f"Target DLL: vJoyInterface.dll")
-            print(f"Checked paths in: {os.environ.get('ProgramFiles')}\\vJoy\\")
-            print("Solution: Run 'make download-drivers' or install vJoy manually.")
-            print("===============================================================")
-            sys.exit(1)
+        except OSError as e:
+            # Raise instead of sys.exit(1). vjoy2.py is imported at the
+            # top of 3-test_model.py and used by tests that run on Linux
+            # too (the inference path doesn't actually need vJoy when
+            # --no-gamepad is set). sys.exit on import-time DLL miss
+            # makes that whole code path unrunnable on non-Windows.
+            # Callers wrap the import in try/except so a hard-fail here
+            # was being swallowed too -- they expect ImportError-flavored
+            # errors. Wrap the OSError in ImportError for that contract,
+            # and keep the same human-readable diagnostic on stderr.
+            sys.stderr.write(
+                "===============================================================\n"
+                "vJoy Driver NOT FOUND\n"
+                "===============================================================\n"
+                f"Target DLL: vJoyInterface.dll\n"
+                f"Checked paths under: {os.environ.get('ProgramFiles')}\\vJoy\\\n"
+                "Solution: install vJoy on Windows, or run with --no-gamepad on\n"
+                "non-Windows hosts (inference still works without vJoy).\n"
+                "===============================================================\n"
+            )
+            raise ImportError(
+                "vJoyInterface.dll not loadable: " + str(e)
+            ) from e
             
         self.reference = reference
         self.acquired = False
@@ -143,7 +157,48 @@ class vJoy(object):
         return False
                 
 
-vj = vJoy()
+class _NullVJoyDLL(object):
+    """Stub used when vJoyInterface.dll is not loadable.
+
+    Every method silently returns 0 (the failure return code vJoy uses).
+    Lets the dozens of public helpers below (gamepad_lt, button_A, ...)
+    keep their existing structure -- they just become no-ops on hosts
+    without the vJoy driver, which is what `3-test_model.py --no-gamepad`
+    callers want.
+    """
+    def __getattr__(self, _name):
+        def _noop(*_a, **_k):
+            return 0
+        return _noop
+
+
+class _NullVJoy(object):
+    """Drop-in for vJoy when the driver is missing.
+
+    Any attribute access (open / close / update / setButton /
+    generateJoystickPosition / etc.) returns a callable that does
+    nothing. This keeps every helper in this module a no-op on hosts
+    without the vJoy driver.
+    """
+    def __init__(self):
+        self.handle = None
+        self.dll = _NullVJoyDLL()
+        self.reference = 1
+
+    def __getattr__(self, _name):
+        def _noop(*_a, **_k):
+            return 0
+        return _noop
+
+
+try:
+    vj = vJoy()
+except ImportError:
+    # No vJoy driver here (typical on non-Windows or when the user has
+    # not installed vJoy yet). Substitute a quiet no-op so every helper
+    # below (`vj.update(...)` / `vj.setButton(...)` / `vj.dll.SetBtn(...)`)
+    # keeps working without callers having to special-case `is None`.
+    vj = _NullVJoy()
 
 # valueX, valueY between -1.0 and 1.0
 # scale between 0 and 16000

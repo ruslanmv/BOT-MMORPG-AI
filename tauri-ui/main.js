@@ -1007,6 +1007,12 @@ document.addEventListener("DOMContentLoaded", async () => {
     }).catch((err) => logToTerminal(`Config Load Warning: ${err}`, "warning"));
 
     await refreshModelhubAvailability();
+
+    // Health probe: detect a broken install (the v0.2.0 case where the
+    // installer shipped without python-runtime.zip and ML scripts) so the
+    // user sees an actionable banner instead of clicking "Start Recording"
+    // and getting "Script not found" with no idea what to do about it.
+    await checkInstallHealth();
   } else {
     updateBackendStatus("Offline", "Running in Offline Mode");
     logToTerminal("Running in offline mode - using default configurations", "warning");
@@ -1019,6 +1025,41 @@ document.addEventListener("DOMContentLoaded", async () => {
   wireEvents();
   wireDashboardButtons();
 });
+
+async function checkInstallHealth() {
+  if (!invoke) return;
+  try {
+    const h = await invoke("install_health");
+    const banner   = document.getElementById("install-health-banner");
+    const detailEl = document.getElementById("install-health-detail");
+    const dismiss  = document.getElementById("install-health-dismiss");
+    if (!banner || !detailEl) return;
+
+    if (h.healthy) {
+      banner.style.display = "none";
+      logToTerminal("Install health: OK", "success");
+      return;
+    }
+
+    const issues = (h.issues || []).map(s => `• ${s}`).join("<br>");
+    detailEl.innerHTML = (h.remediation || "")
+      + (issues ? `<br><br><strong>Detected:</strong><br>${issues}` : "");
+    banner.style.display = "block";
+    logToTerminal(
+      "Install health: INCOMPLETE -- " + (h.issues || []).join("; "),
+      "error"
+    );
+
+    if (dismiss) {
+      dismiss.onclick = () => { banner.style.display = "none"; };
+    }
+  } catch (e) {
+    // If the install_health command itself isn't registered we silently
+    // skip -- this only happens on legacy app builds that predate the
+    // probe being added. The user has bigger problems in that case.
+    console.warn("install_health probe failed:", e);
+  }
+}
 
 // Wire Dashboard Quick Action cards to navigate to tabs
 function wireDashboardButtons() {
