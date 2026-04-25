@@ -38,8 +38,8 @@ jobs:
       # The short SHA is prefixed with 'g' (git-describe convention) so the
       # identifier is alphanumeric. Without the prefix, an all-digit SHA that
       # starts with 0 (e.g. "0378990") is a purely numeric pre-release
-      # identifier, which semver §9 forbids ("MUST NOT include leading
-      # zeroes") -- Tauri then rejects it with
+      # identifier, which SemVer 2.0.0 section 9 forbids ("MUST NOT include
+      # leading zeroes") -- Tauri then rejects it with
       # "Error `package > version` must be a semver string".
       - name: Compute build semver
         id: ver
