@@ -158,20 +158,32 @@ Section "BOT MMORPG AI (UI + Backend)" SecCore
   Delete "$INSTDIR\drivers\interception\install-interception.exe"
   Delete "$INSTDIR\drivers\vjoy\vJoySetup.exe"
 
+  ; --- Bundled resources (Tauri 1.x canonical pattern) ---
+  ;
+  ; Two separate loops, exactly matching tauri-bundler 1.7.4's own
+  ; installer.nsi template. The first loop CreateDirectory's every
+  ; parent dir from the resources_dirs set; the second loop runs the
+  ; File directive against each resource's destination path (the
+  ; second tuple element). Parent dir creation is the job of the
+  ; first loop, not of the resources loop.
+  ;
+  ; Backslash rule (CRITICAL): inside an NSIS path string, when a
+  ; backslash directly precedes a handlebars expression, write TWO
+  ; backslashes in the source. handlebars-rust interprets a single
+  ; backslash before a double-curly-open as an escape that suppresses
+  ; expression parsing -- which is what produced literal-text
+  ; subfolder names in the previously broken build. Doubling the
+  ; backslash emits one literal backslash followed by a parsed
+  ; expression, which is what NSIS needs.
+  {{#each resources_dirs}}
+  CreateDirectory "$INSTDIR\\{{this}}"
+  {{/each}}
+
   SetOverwrite try
   {{#each resources}}
-  CreateDirectory "$INSTDIR\{{this.[0]}}"
   File /a "/oname={{this.[1]}}" "{{unescape-dollar-sign @key}}"
   {{/each}}
-  ; Restore default overwrite mode for any subsequent File directives.
   SetOverwrite on
-
-  ; Create resource subdirectories
-  {{#if resources_dirs}}
-  {{#each resources_dirs}}
-  CreateDirectory "$INSTDIR\{{this}}"
-  {{/each}}
-  {{/if}}
 
   ; Remember install location (useful for upgrades)
   SetRegView 64

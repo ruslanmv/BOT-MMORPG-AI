@@ -222,6 +222,20 @@ def create_app(token: str):
 
     @app.exception_handler(Exception)
     async def _unhandled_exception_handler(request: Request, exc: Exception):
+        # Non-invasive observation: capture into the diagnostic ring buffer
+        # before the response is built. This is read-only -- the response
+        # below is unchanged from the pre-diagnostic version.
+        try:
+            from .diagnostics import collector as _diag_collector
+            _diag_collector.capture_exception(
+                exc,
+                source="sidecar",
+                request_path=str(request.url.path),
+                request_method=request.method,
+            )
+        except Exception:  # noqa: BLE001
+            # Never let the diagnostic layer break error handling.
+            pass
         return JSONResponse(status_code=500, content={"ok": False, "error": str(exc)})
 
     @app.get("/health")
@@ -504,6 +518,33 @@ def create_app(token: str):
         profile = mh_load_json(profile_path)
         ok, msg = mh_validate_compatibility(blueprint, profile)
         return {"ok": True, "result": {"ok": ok, "message": msg}}
+
+    # ─────────────────────────────────────────────────────────────────
+    # AI debug-loop diagnostics (non-invasive observation layer).
+    #
+    # The router below exposes /diagnostics/recent, /diagnostics/recent/ai,
+    # /diagnostics/recent/markdown, and DELETE /diagnostics/recent for the
+    # Settings -> System Tools UI. The error-capture side already happened
+    # in `_unhandled_exception_handler` above. Mounted last so route
+    # registration order is irrelevant -- every prior router takes priority.
+    #
+    # Wrapped in try/except: if the diagnostics module fails to import for
+    # any reason (missing file in a custom build), the sidecar still runs
+    # without the debug routes. Belt-and-suspenders given how new this is.
+    try:
+        from .diagnostics.routes import make_router as _make_diag_router
+        # Pass repo_root so the formatter can produce repo-relative paths.
+        # In production it's the resource root's parent (-> install dir);
+        # in dev mode it's the repo root.
+        _diag_repo_root = os.environ.get(
+            "BOT_REPO_ROOT",
+            str((RESOURCE_ROOT.parent if RESOURCE_ROOT else Path("."))),
+        )
+        app.include_router(_make_diag_router(expected_token=token, repo_root=_diag_repo_root))
+    except Exception as _diag_err:  # noqa: BLE001
+        # Soft fail. Print to stderr so a developer can see it but the
+        # sidecar starts regardless.
+        print(f"[Sidecar] diagnostics router not mounted: {_diag_err}", flush=True)
 
     return app
 

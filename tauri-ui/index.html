@@ -201,12 +201,96 @@
       position: relative; overflow: hidden;
       box-shadow: var(--shadow-soft);
     }
+    /* Compact variant for the AAA dashboard's status row -- the hero CTA
+       below it is the real visual anchor, so the status itself can be
+       slim. */
+    .hero-status.compact { padding: 18px 22px; margin-bottom: 16px; }
+    .hero-status.compact::after { width: 3px; }
+    .hero-status.compact .hero-text h2 { font-size: 17px; margin-bottom: 2px; }
+    .hero-status.compact .hero-text p  { font-size: 12px; }
     .hero-status::after {
       content: ''; position: absolute; top: 0; left: 0; width: 4px; height: 100%;
       background: var(--secondary); box-shadow: 0 0 15px var(--secondary);
     }
     .hero-text h2 { margin-bottom: 5px; font-size: 24px; }
     .hero-text p { color: var(--text-dim); }
+
+    /* Hero CTA card -- the primary "what should I do next" anchor. */
+    .dash-hero-cta {
+      position: relative; overflow: hidden;
+      background: linear-gradient(135deg, rgba(187,134,252,0.14), rgba(3,218,198,0.06));
+      border: 1px solid rgba(187,134,252,0.28);
+      border-radius: 16px; padding: 22px 26px; margin-bottom: 18px;
+      display: flex; justify-content: space-between; align-items: center; gap: 20px;
+      box-shadow: 0 10px 28px rgba(187,134,252,0.12), inset 0 1px 0 rgba(255,255,255,0.04);
+    }
+    .dash-hero-cta::before {
+      content: ''; position: absolute; top: 0; right: -40px; width: 220px; height: 220px;
+      background: radial-gradient(closest-side, rgba(3,218,198,0.18), transparent 70%);
+      pointer-events: none;
+    }
+    .dash-hero-cta h2 { font-size: 20px; margin-bottom: 4px; display: flex; align-items: center; gap: 8px; }
+    .dash-hero-cta p  { color: var(--text-dim); font-size: 13px; }
+    .dash-hero-cta-actions { display: flex; gap: 10px; flex-shrink: 0; flex-wrap: wrap; z-index: 1; }
+    .dash-hero-cta-actions .btn { padding: 12px 22px; font-size: 14px; }
+
+    /* Two-column dashboard middle section. Left = games, right = actions.
+       Collapses to one column on narrow widths so nothing overflows. */
+    .dash-two-col {
+      display: grid; grid-template-columns: 1.25fr 1fr;
+      gap: 16px; margin-bottom: 18px;
+    }
+    @media (max-width: 1180px) {
+      .dash-two-col { grid-template-columns: 1fr; }
+    }
+    .dash-two-col .card { cursor: default; height: 100%; }
+    .dash-two-col h3 {
+      display: flex; align-items: center; gap: 8px;
+      margin: 0 0 14px;
+    }
+
+    /* Scroll-contain the games list so it doesn't push the rest of the
+       page when many presets ship. AAA UX: this list reads as a
+       "browse" surface, not a runaway block of buttons. */
+    .dash-game-list-wrap {
+      max-height: 320px; overflow-y: auto;
+      padding-right: 6px;
+      /* Subtle inset shadow so users notice the scroll affordance. */
+      mask-image: linear-gradient(180deg, #000 calc(100% - 28px), transparent);
+      -webkit-mask-image: linear-gradient(180deg, #000 calc(100% - 28px), transparent);
+    }
+    .dash-game-list-wrap::-webkit-scrollbar { width: 8px; }
+    .dash-game-list-wrap::-webkit-scrollbar-thumb {
+      background: rgba(255,255,255,0.08); border-radius: 4px;
+    }
+
+    /* Compact action button grid (4 buttons, 2x2). */
+    .dash-quick-action-grid {
+      display: grid; grid-template-columns: 1fr 1fr;
+      gap: 10px;
+    }
+    .dash-quick-btn {
+      display: flex; flex-direction: column; align-items: flex-start; gap: 4px;
+      padding: 14px 14px; cursor: pointer;
+      background: rgba(255,255,255,0.03);
+      border: 1px solid rgba(255,255,255,0.06);
+      border-radius: 10px;
+      color: var(--text-main); font: inherit; text-align: left;
+      transition: transform 0.15s, border-color 0.15s, background 0.15s, box-shadow 0.15s;
+    }
+    .dash-quick-btn:hover {
+      transform: translateY(-2px);
+      border-color: var(--primary);
+      background: rgba(255,255,255,0.05);
+      box-shadow: 0 8px 18px rgba(0,0,0,0.20);
+    }
+    .dash-qb-icon  { font-size: 22px; line-height: 1; margin-bottom: 4px; }
+    .dash-qb-label { font-size: 13px; font-weight: 700; }
+    .dash-qb-sub   { font-size: 11px; color: var(--text-dim); }
+
+    /* Context card for the currently-selected game. */
+    .dash-game-info { margin-bottom: 18px; cursor: default; }
+    .dash-game-info h3 { display: flex; align-items: center; gap: 8px; margin: 0 0 12px; }
 
     .grid-container {
       display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
@@ -254,9 +338,35 @@
       box-shadow: inset 0 0 20px rgba(0,0,0,0.5);
       white-space: pre-wrap;
       min-height: 300px;
+      /* The global `* { user-select: none }` at the top of this stylesheet
+         disables text selection everywhere by default (AAA-game convention
+         to prevent accidental drag-selects on buttons / labels). The log
+         console is the one place that NEEDS selection: users paste error
+         messages into GitHub issues, Discord, support chat. Re-enable it
+         here and on every descendant so the global rule doesn't win on
+         the .log-entry / .log-time spans inside. */
+      user-select: text; -webkit-user-select: text; cursor: text;
+      position: relative;
     }
+    .terminal-window * { user-select: text; -webkit-user-select: text; }
     .log-entry { margin-bottom: 5px; opacity: 0.85; word-wrap: break-word; }
     .log-time { color: #666; margin-right: 10px; }
+
+    /* Subtle "Copy logs" button anchored top-right inside the terminal.
+       Pointer-events on the button only; the rest is clickable-through
+       so selection in the log area still works seamlessly. */
+    .terminal-copy-btn {
+      position: absolute; top: 8px; right: 8px;
+      background: rgba(0, 0, 0, 0.55);
+      color: #9aa0a6; border: 1px solid rgba(255,255,255,0.08);
+      border-radius: 6px; padding: 4px 9px;
+      font: inherit; font-size: 11px; font-family: inherit;
+      cursor: pointer; opacity: 0.55; transition: opacity 0.15s, color 0.15s;
+      user-select: none; -webkit-user-select: none;
+      z-index: 2;
+    }
+    .terminal-copy-btn:hover  { opacity: 1; color: #fff; }
+    .terminal-copy-btn.copied { color: #4ade80; opacity: 1; }
 
     .game-placeholder {
       flex: 1;
@@ -345,29 +455,233 @@
 
     .modal {
       background: linear-gradient(180deg, rgba(255,255,255,0.04), rgba(255,255,255,0.02));
-      width: 560px;
+      width: 880px; max-width: calc(100vw - 48px); max-height: calc(100vh - 64px);
       border-radius: 18px;
       border: 1px solid rgba(255,255,255,0.08);
-      padding: 28px;
+      padding: 0;
       transform: translateY(16px) scale(0.98);
       transition: transform 0.28s ease;
       box-shadow: var(--shadow);
       position: relative;
       overflow: hidden;
+      display: flex; flex-direction: column;
     }
     .modal-overlay.open .modal { transform: translateY(0) scale(1); }
 
     .modal-header {
       display: flex; justify-content: space-between; align-items: center;
-      margin-bottom: 18px; border-bottom: 1px solid rgba(255,255,255,0.08); padding-bottom: 12px;
+      margin: 0; padding: 18px 28px;
+      border-bottom: 1px solid rgba(255,255,255,0.08);
       position: relative; z-index: 2;
     }
     .modal-title { font-size: 18px; font-weight: 900; color: var(--text-main); display: flex; align-items: center; gap: 10px; }
     .close-modal { background: none; border: none; color: var(--text-dim); cursor: pointer; font-size: 24px; }
     .close-modal:hover { color: var(--accent); }
 
-    .modal-body { position: relative; z-index: 2; }
-    .modal-footer { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-top: 22px; position: relative; z-index: 2; }
+    /* AAA settings layout: vertical tab rail on the left, content panel on
+       the right. Mirrors Cyberpunk / Witcher / Diablo settings menus. */
+    .settings-shell { display: flex; min-height: 480px; max-height: calc(100vh - 200px); }
+    .settings-rail {
+      width: 220px; flex-shrink: 0;
+      border-right: 1px solid rgba(255,255,255,0.06);
+      padding: 16px 8px; overflow-y: auto;
+      background: rgba(0,0,0,0.18);
+    }
+    .settings-rail-btn {
+      display: flex; align-items: center; gap: 10px; width: 100%;
+      padding: 10px 14px; margin-bottom: 4px;
+      background: transparent; border: none; border-radius: 8px;
+      color: var(--text-dim); font: inherit; font-size: 13px; font-weight: 600;
+      text-align: left; cursor: pointer;
+      transition: background 0.15s, color 0.15s;
+    }
+    .settings-rail-btn:hover { background: rgba(255,255,255,0.04); color: var(--text-main); }
+    .settings-rail-btn.active {
+      background: linear-gradient(90deg, rgba(187,134,252,0.16), rgba(187,134,252,0.04));
+      color: var(--text-main);
+      border-left: 3px solid var(--accent);
+      padding-left: 11px;
+    }
+    .settings-rail-btn .rail-icon { font-size: 16px; width: 22px; text-align: center; }
+    .settings-rail-divider { height: 1px; background: rgba(255,255,255,0.06); margin: 12px 6px; }
+    .settings-rail-section { font-size: 10px; font-weight: 700; letter-spacing: 0.08em;
+      text-transform: uppercase; color: var(--text-dim); padding: 6px 14px 4px; opacity: 0.7; }
+
+    .settings-panel { flex: 1; padding: 22px 28px; overflow-y: auto; min-width: 0; }
+    .settings-section { display: none; }
+    .settings-section.active { display: block; }
+    .settings-section h3 { font-size: 14px; font-weight: 700; margin: 0 0 14px;
+      color: var(--text-main); letter-spacing: 0.02em; }
+    .settings-section h3:not(:first-child) { margin-top: 22px; }
+    .settings-row { display: flex; justify-content: space-between; align-items: center;
+      padding: 10px 0; border-bottom: 1px solid rgba(255,255,255,0.04); font-size: 13px; gap: 12px; }
+    .settings-row:last-child { border-bottom: none; }
+    .settings-row-label { color: var(--text-dim); }
+    .settings-row-value { color: var(--text-main); font-weight: 600; text-align: right;
+      max-width: 60%; word-break: break-all; }
+
+    /* Diagnosis panel rows */
+    .diag-row { display: grid; grid-template-columns: 28px 1fr auto; align-items: start;
+      gap: 12px; padding: 10px 12px; border-radius: 8px; margin-bottom: 4px;
+      background: rgba(255,255,255,0.02); border: 1px solid rgba(255,255,255,0.04); }
+    .diag-row .diag-icon { font-size: 16px; line-height: 1.2; }
+    .diag-row.ok    .diag-icon { color: #4ade80; }
+    .diag-row.warn  .diag-icon { color: #facc15; }
+    .diag-row.error .diag-icon { color: #f87171; }
+    .diag-row.error { border-color: rgba(248,113,113,0.25); background: rgba(248,113,113,0.06); }
+    .diag-row.warn  { border-color: rgba(250,204,21,0.20); }
+    .diag-row .diag-label { font-size: 13px; font-weight: 600; color: var(--text-main); }
+    .diag-row .diag-msg   { font-size: 11px; color: var(--text-dim); margin-top: 3px; word-break: break-word; }
+    .diag-row .diag-status { font-size: 10px; font-weight: 700; text-transform: uppercase;
+      padding: 3px 8px; border-radius: 999px; }
+    .diag-row.ok    .diag-status { background: rgba(74,222,128,0.14); color: #4ade80; }
+    .diag-row.warn  .diag-status { background: rgba(250,204,21,0.14); color: #facc15; }
+    .diag-row.error .diag-status { background: rgba(248,113,113,0.14); color: #f87171; }
+
+    .diag-verdict {
+      display: inline-flex; align-items: center; gap: 8px;
+      padding: 6px 12px; border-radius: 999px;
+      font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em;
+    }
+    .diag-verdict.ready   { background: rgba(74,222,128,0.14); color: #4ade80; }
+    .diag-verdict.warning { background: rgba(250,204,21,0.14); color: #facc15; }
+    .diag-verdict.error   { background: rgba(248,113,113,0.14); color: #f87171; }
+
+    .settings-health-dot {
+      width: 8px; height: 8px; border-radius: 50%; background: #f87171;
+      box-shadow: 0 0 8px rgba(248,113,113,0.6);
+      margin-left: auto;
+    }
+
+    .modal-body { position: relative; z-index: 2; padding: 0; }
+    .modal-footer { display: flex; justify-content: space-between; align-items: center;
+      gap: 10px; padding: 14px 28px; border-top: 1px solid rgba(255,255,255,0.08);
+      position: relative; z-index: 2; }
+    .modal-footer .footer-left  { display: flex; gap: 8px; }
+    .modal-footer .footer-right { display: flex; gap: 8px; }
+
+    /* --------------------------------------------------------------------
+       Notification system (AAA-launcher style).
+
+       Two surfaces:
+         .notification-card  - persistent banner inside the main area.
+                               Used for blocking issues (incomplete install)
+                               and for major events (Update Available).
+         .toast              - transient slide-in card stacked top-right.
+                               Used for non-blocking events (driver install
+                               OK, training started, recording failed, etc.).
+
+       Five severities, each with its own gradient + icon color:
+         .error    - red,    persistent, must be dismissed
+         .warning  - amber,  user-dismissable
+         .success  - green,  auto-dismiss (3.5s)
+         .info     - cyan,   auto-dismiss (4.5s)
+         .update   - purple, persistent (matches brand accent)
+       -------------------------------------------------------------------- */
+
+    /* The HTML `hidden` attribute normally hides elements via the
+       user-agent stylesheet rule `[hidden] { display: none }`. But
+       any element rule that sets an explicit `display` (e.g. flex,
+       inline-flex, grid) AFTER the UA stylesheet wins on cascade
+       order, so `.hidden = true` silently does nothing on those
+       elements. This was the cause of the install-health banner X
+       and "Later" buttons appearing to do nothing -- the JS set
+       .hidden but the card stayed rendered.
+
+       A single high-specificity rule re-asserts display:none for
+       any element with the hidden attribute. Use !important so it
+       always wins over the per-component `display` rules below. */
+    [hidden] { display: none !important; }
+
+    .notification-card {
+      position: relative;
+      display: flex; gap: 14px; align-items: stretch;
+      padding: 16px 18px; margin: 0 0 14px;
+      border-radius: 14px;
+      border: 1px solid rgba(255,255,255,0.06);
+      background: linear-gradient(135deg, rgba(255,255,255,0.04), rgba(255,255,255,0.01));
+      box-shadow: 0 8px 24px rgba(0,0,0,0.28), inset 0 1px 0 rgba(255,255,255,0.04);
+      animation: notif-slide-in 0.32s cubic-bezier(.2,.9,.3,1);
+      overflow: hidden;
+    }
+    .notification-card::before {
+      content: ''; position: absolute; left: 0; top: 0; bottom: 0;
+      width: 4px; border-radius: 14px 0 0 14px;
+    }
+    .notification-card.error   { border-color: rgba(248,113,113,0.30);
+      background: linear-gradient(135deg, rgba(248,113,113,0.10), rgba(122,31,31,0.10)); }
+    .notification-card.error::before   { background: linear-gradient(180deg, #f87171, #b91c1c); }
+    .notification-card.warning { border-color: rgba(250,204,21,0.30);
+      background: linear-gradient(135deg, rgba(250,204,21,0.08), rgba(120,80,0,0.08)); }
+    .notification-card.warning::before { background: linear-gradient(180deg, #facc15, #b45309); }
+    .notification-card.success { border-color: rgba(74,222,128,0.30);
+      background: linear-gradient(135deg, rgba(74,222,128,0.08), rgba(20,80,40,0.08)); }
+    .notification-card.success::before { background: linear-gradient(180deg, #4ade80, #15803d); }
+    .notification-card.info    { border-color: rgba(56,189,248,0.30);
+      background: linear-gradient(135deg, rgba(56,189,248,0.08), rgba(12,74,110,0.08)); }
+    .notification-card.info::before    { background: linear-gradient(180deg, #38bdf8, #0369a1); }
+    .notification-card.update  { border-color: rgba(187,134,252,0.35);
+      background: linear-gradient(135deg, rgba(187,134,252,0.10), rgba(3,218,198,0.06));
+      box-shadow: 0 8px 28px rgba(187,134,252,0.18), inset 0 1px 0 rgba(255,255,255,0.05); }
+    .notification-card.update::before  { background: linear-gradient(180deg, var(--accent), var(--secondary)); }
+
+    .notification-icon {
+      flex: 0 0 44px; height: 44px; border-radius: 12px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 22px; line-height: 1;
+      background: rgba(0,0,0,0.25);
+      border: 1px solid rgba(255,255,255,0.04);
+    }
+    .notification-card.error   .notification-icon { color: #fca5a5; box-shadow: 0 0 18px rgba(248,113,113,0.25); }
+    .notification-card.warning .notification-icon { color: #fde68a; box-shadow: 0 0 18px rgba(250,204,21,0.20); }
+    .notification-card.success .notification-icon { color: #86efac; box-shadow: 0 0 18px rgba(74,222,128,0.25); }
+    .notification-card.info    .notification-icon { color: #7dd3fc; box-shadow: 0 0 18px rgba(56,189,248,0.20); }
+    .notification-card.update  .notification-icon { color: #d8b4fe; box-shadow: 0 0 22px rgba(187,134,252,0.35); }
+
+    .notification-body  { flex: 1; min-width: 0; color: var(--text-main); }
+    .notification-title { font-size: 14px; font-weight: 800; margin: 0 0 4px; letter-spacing: 0.01em; }
+    .notification-msg   { font-size: 12px; color: var(--text-dim); line-height: 1.5; word-break: break-word; }
+    .notification-msg ul { margin: 6px 0 0 20px; padding: 0; }
+    .notification-msg li { margin: 2px 0; }
+    .notification-actions { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
+    .notification-actions .btn { padding: 7px 14px; font-size: 12px; }
+    .notification-close {
+      position: absolute; top: 10px; right: 12px;
+      background: transparent; border: none; cursor: pointer;
+      color: var(--text-dim); font-size: 18px; line-height: 1;
+      padding: 4px 8px; border-radius: 6px;
+    }
+    .notification-close:hover { background: rgba(255,255,255,0.06); color: var(--text-main); }
+
+    /* Toast stack (top-right of the main area). */
+    .toast-container {
+      position: fixed; top: 18px; right: 18px;
+      display: flex; flex-direction: column; gap: 10px;
+      z-index: 1000; pointer-events: none;
+      max-width: 380px; width: calc(100vw - 36px);
+    }
+    .toast { pointer-events: auto;
+      animation: toast-slide-in 0.34s cubic-bezier(.2,.9,.3,1);
+      transform-origin: 100% 50%;
+    }
+    .toast.dismissing { animation: toast-slide-out 0.26s cubic-bezier(.4,0,1,1) forwards; }
+    .toast .notification-card { margin: 0; padding: 14px 16px; }
+    .toast .notification-icon { width: 36px; height: 36px; flex-basis: 36px; font-size: 18px; }
+    .toast .notification-title { font-size: 13px; }
+    .toast .notification-msg   { font-size: 11px; }
+
+    @keyframes notif-slide-in {
+      from { opacity: 0; transform: translateY(-8px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+    @keyframes toast-slide-in {
+      from { opacity: 0; transform: translateX(28px) scale(0.96); }
+      to   { opacity: 1; transform: translateX(0) scale(1); }
+    }
+    @keyframes toast-slide-out {
+      from { opacity: 1; transform: translateX(0); }
+      to   { opacity: 0; transform: translateX(28px); }
+    }
   </style>
 </head>
 
@@ -415,51 +729,107 @@
         <span>⭐ Star on GitHub</span>
       </a>
 
-      <!-- ✅ FIX: remove inline onclick, add id -->
+      <!-- AAA convention: gear icon + "Settings", with a small red dot when
+           install_health reports any error-severity check. The dot is hidden
+           by default and toggled by main.js#checkInstallHealth. -->
       <button type="button" id="btn-open-settings" class="btn-sidebar-settings">
-        <span>⚙️</span> Configure Neural Link
+        <span class="settings-gear" aria-hidden="true">⚙️</span>
+        <span>Settings</span>
+        <span id="settings-health-dot" class="settings-health-dot" hidden></span>
       </button>
 
-      <div style="margin-top: 10px;">
-        <span class="status-dot"></span> <span id="backend-status-text">System Online</span><br>
-        <span style="opacity: 0.6;">v0.1.8 | Stable</span>
+      <!-- Sidebar status + version block.
+           Three lines:
+             1. live backend status (driven by main.js#updateBackendStatus)
+             2. installed version + channel (populated by app_info)
+             3. latest version + "Update available" hint (only shown
+                when checkForUpdate confirms one). Hidden by default;
+                the universal `[hidden]` rule keeps it suppressed
+                until the update probe enables it.
+           Replaces the previous misleading "v0.1.8 | Stable" string
+           that had no relationship to the actual app version. -->
+      <div class="sidebar-version" style="margin-top: 10px; line-height: 1.5;">
+        <div>
+          <span class="status-dot"></span>
+          <span id="backend-status-text">System Online</span>
+        </div>
+        <div style="font-size: 11px; opacity: 0.7;">
+          <span style="color: var(--text-dim);">Installed:</span>
+          <span id="sv-installed-version" style="font-weight: 600; color: var(--text-main);">—</span>
+          <span id="sv-installed-channel" style="opacity: 0.65;"></span>
+        </div>
+        <div id="sv-update-row"
+             style="font-size: 11px; opacity: 0.85; color: var(--accent);"
+             hidden>
+          <span style="color: var(--text-dim);">Latest:</span>
+          <span id="sv-latest-version" style="font-weight: 700;">—</span>
+          <span style="opacity: 0.7;">— update available</span>
+        </div>
       </div>
     </div>
   </aside>
 
   <main class="main-area">
     <!--
-      Install-health banner. Hidden by default. main.js polls the
-      install_health Tauri command on startup; if any subsystem is missing
-      (sidecar, embedded Python, ML scripts) we render this with a clear
-      reinstall instruction. This catches the v0.2.0 case where the
-      installer shipped without the runtime and every button silently
-      failed with "Sidecar API not ready" / "Script not found".
+      Banner stack. Two persistent slots that the JS notification
+      system drives:
+        #install-health-banner : red error card surfaced when
+          install_health reports missing core resources.
+        #update-banner         : purple/cyan card surfaced when
+          check_for_update reports a newer GitHub release.
+      Both use the .notification-card primitive (same paddings, gradients,
+      icons, animations) so they're visually consistent. Transient
+      events render into #toast-container further down.
     -->
-    <div id="install-health-banner" style="display:none; margin:0 0 12px 0; padding:14px 18px;
-         border-radius:10px; background:linear-gradient(90deg,#7a1f1f,#a02929);
-         color:#fff; font-weight:600; box-shadow:0 4px 14px rgba(0,0,0,0.25);">
-      <div style="display:flex; align-items:flex-start; gap:14px;">
-        <span style="font-size:22px; line-height:1;">!</span>
-        <div style="flex:1;">
-          <div style="font-size:14px; margin-bottom:4px;" id="install-health-title">
-            Backend installation is incomplete
-          </div>
-          <div style="font-size:12px; font-weight:400; opacity:.95;" id="install-health-detail"></div>
-          <div style="font-size:12px; font-weight:400; opacity:.95; margin-top:6px;">
-            <a href="https://github.com/ruslanmv/BOT-MMORPG-AI/releases/latest"
-               target="_blank" rel="noreferrer"
-               style="color:#fff; text-decoration:underline;">
-              Download the latest installer
-            </a>
-            and reinstall to restore Recording / Training / Run Bot.
-          </div>
+    <div id="install-health-banner" class="notification-card error" hidden>
+      <div class="notification-icon">⚠</div>
+      <div class="notification-body">
+        <div class="notification-title" id="install-health-title">
+          Backend installation is incomplete
         </div>
-        <button type="button" id="install-health-dismiss"
-                style="background:transparent; border:1px solid rgba(255,255,255,0.5);
-                       color:#fff; padding:4px 10px; border-radius:6px;
-                       font-size:11px; cursor:pointer;">Dismiss</button>
+        <div class="notification-msg" id="install-health-detail"></div>
+        <div class="notification-actions">
+          <button type="button" class="btn" id="install-health-open-diagnosis">
+            ▶ Run Diagnosis
+          </button>
+          <a class="btn btn-secondary"
+             href="https://github.com/ruslanmv/BOT-MMORPG-AI/releases/latest"
+             target="_blank" rel="noreferrer"
+             style="text-decoration:none;">
+            ⬇ Download Latest Installer
+          </a>
+        </div>
       </div>
+      <button class="notification-close" id="install-health-dismiss"
+              aria-label="Dismiss">×</button>
+    </div>
+
+    <div id="update-banner" class="notification-card update" hidden>
+      <div class="notification-icon">🔄</div>
+      <div class="notification-body">
+        <div class="notification-title">
+          Update available <span id="update-version-pill"
+            style="font-size:11px; font-weight:600; opacity:.85; margin-left:6px;"></span>
+        </div>
+        <div class="notification-msg" id="update-banner-msg">
+          A newer release of BOT-MMORPG-AI is published on GitHub.
+        </div>
+        <div class="notification-actions">
+          <a class="btn" id="btn-update-now"
+             href="https://github.com/ruslanmv/BOT-MMORPG-AI/releases/latest"
+             target="_blank" rel="noreferrer"
+             style="text-decoration:none;">
+            ⬇ Update Now
+          </a>
+          <button type="button" class="btn btn-secondary" id="btn-update-notes">
+            📝 View Patch Notes
+          </button>
+          <button type="button" class="btn btn-secondary" id="btn-update-later">
+            Later
+          </button>
+        </div>
+      </div>
+      <button class="notification-close" id="update-close" aria-label="Dismiss">×</button>
     </div>
 
     <header class="header">
@@ -472,25 +842,96 @@
       </div>
     </header>
 
-    <!-- DASHBOARD -->
+    <!-- DASHBOARD -- AAA-launcher landing layout.
+         Vertical flow:
+           1. Compact status strip       (System Ready + active game pill)
+           2. Hero CTA                   (the visual anchor: "Ready to Start?")
+           3. Two-column grid            (left: scrollable game list,
+                                          right: 2x2 quick-action buttons)
+           4. Selected-game context card (resolution / actions / model)
+           5. Stats bar                  (datasets / models / active model)
+
+         IDs preserved for backwards compat with main.js:
+           active-game-pill, game-preset-grid, game-preset-info,
+           stat-datasets, stat-models, stat-active. -->
     <div id="tab-dashboard" class="tab-content active">
-      <div class="hero-status">
+      <!-- 1. Compact status strip -->
+      <div class="hero-status compact">
         <div class="hero-text">
-          <h2 style="color: var(--secondary)">System Ready</h2>
+          <h2 style="color: var(--secondary)">🟢 System Ready</h2>
           <p>Active Game: <strong id="active-game-pill" style="transition: color 0.3s;">⚔️ Genshin Impact</strong></p>
         </div>
-        <button class="btn" type="button" onclick="window.showTab && window.showTab('wizard')">⚡ Quick Start</button>
+        <button class="btn btn-secondary" type="button"
+                onclick="window.showTab && window.showTab('wizard')">⚡ Quick Start</button>
       </div>
 
-      <!-- Game Preset Selector -->
-      <div class="card" style="cursor:default; margin-bottom:20px; background: linear-gradient(135deg, rgba(187,134,252,0.08), rgba(3,218,198,0.04));">
-        <h3 style="margin-bottom:12px; display:flex; align-items:center; gap:10px;">
-          <span>🎮</span> Select Your Game
-          <span style="font-size:11px; color:var(--text-dim); font-weight:normal; margin-left:auto;">Auto-configures optimal settings</span>
-        </h3>
-        <div id="game-preset-grid" style="display:grid; grid-template-columns:repeat(auto-fill, minmax(140px, 1fr)); gap:10px; margin-bottom:14px;">
-          <!-- Game cards populated by JS -->
+      <!-- 2. Hero CTA -- "what should I do next?" -->
+      <div class="dash-hero-cta">
+        <div>
+          <h2><span>🚀</span> Ready to Start?</h2>
+          <p>Run your trained AI bot, or set up a new game in seconds.</p>
         </div>
+        <div class="dash-hero-cta-actions">
+          <button class="btn" type="button"
+                  onclick="window.showTab && window.showTab('run')">▶ Run Bot</button>
+          <button class="btn btn-secondary" type="button"
+                  onclick="window.showTab && window.showTab('wizard')">⚡ Quick Setup</button>
+        </div>
+      </div>
+
+      <!-- 3. Two-column grid: games (left) + actions (right) -->
+      <div class="dash-two-col">
+        <div class="card dash-games">
+          <h3>
+            <span>🎮</span> Select Game
+            <span style="font-size:11px; color:var(--text-dim); font-weight:normal; margin-left:auto;">
+              Auto-configures optimal settings
+            </span>
+          </h3>
+          <div class="dash-game-list-wrap">
+            <div id="game-preset-grid"
+                 style="display:grid; grid-template-columns:repeat(auto-fill, minmax(140px, 1fr)); gap:10px;">
+              <!-- Game cards populated by JS -->
+            </div>
+          </div>
+        </div>
+
+        <div class="card dash-actions">
+          <h3><span>⚡</span> Quick Actions</h3>
+          <div class="dash-quick-action-grid">
+            <button type="button" class="dash-quick-btn"
+                    onclick="window.showTab && window.showTab('teach')">
+              <span class="dash-qb-icon" style="color:#FF5252;">🎥</span>
+              <span class="dash-qb-label">Create Route</span>
+              <span class="dash-qb-sub">Record gameplay</span>
+            </button>
+            <button type="button" class="dash-quick-btn"
+                    onclick="window.showTab && window.showTab('train')">
+              <span class="dash-qb-icon" style="color:#FFB74D;">🧠</span>
+              <span class="dash-qb-label">Train Model</span>
+              <span class="dash-qb-sub">Stream training logs</span>
+            </button>
+            <button type="button" class="dash-quick-btn"
+                    onclick="window.showTab && window.showTab('models')">
+              <span class="dash-qb-icon" style="color:#69F0AE;">📚</span>
+              <span class="dash-qb-label">ModelHub</span>
+              <span class="dash-qb-sub">Manage models</span>
+            </button>
+            <button type="button" class="dash-quick-btn"
+                    onclick="window.showTab && window.showTab('strategist')">
+              <span class="dash-qb-icon" style="color:#FFD700;">✨</span>
+              <span class="dash-qb-label">AI Strategist</span>
+              <span class="dash-qb-sub">Cloud chat (Gemini/OpenAI)</span>
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- 4. Selected-game context (the existing JS-populated info block,
+           lifted into its own card so the relationship "I picked X above,
+           here's what X means" reads cleanly). -->
+      <div class="card dash-game-info">
+        <h3><span>📌</span> Selected Game</h3>
         <div id="game-preset-info" style="padding:12px; background:rgba(0,0,0,0.2); border-radius:10px; min-height:60px;">
           <div style="display:flex; gap:12px; align-items:flex-start;">
             <span style="font-size:32px;">⚔️</span>
@@ -507,35 +948,7 @@
         </div>
       </div>
 
-      <h3 style="margin-bottom: 15px; color: var(--text-dim);">Quick Actions</h3>
-      <div class="grid-container">
-        <div class="card" onclick="window.showTab && window.showTab('teach')">
-          <div class="card-icon" style="color: #FF5252;">🎥</div>
-          <h3>Create New Route</h3>
-          <p>Record movement and actions to create a dataset session.</p>
-        </div>
-        <div class="card" onclick="window.showTab && window.showTab('train')">
-          <div class="card-icon" style="color: #FFB74D;">🧠</div>
-          <h3>Train New Model</h3>
-          <p>Start training scripts. Logs stream into the terminal.</p>
-        </div>
-        <div class="card" onclick="window.showTab && window.showTab('models')">
-          <div class="card-icon" style="color: #69F0AE;">📚</div>
-          <h3>ModelHub</h3>
-          <p>Choose game, inspect models/datasets, set active model.</p>
-        </div>
-        <div class="card" onclick="window.showTab && window.showTab('strategist')">
-          <div class="card-icon" style="color: #FFD700;">✨</div>
-          <h3>Ask AI Strategist</h3>
-          <p>Optional cloud chat (Gemini/OpenAI) using your API key.</p>
-        </div>
-        <div class="card" onclick="window.showTab && window.showTab('wizard')">
-          <div class="card-icon" style="color: #BB86FC;">⚡</div>
-          <h3>Quick Start</h3>
-          <p>Zero-typing setup wizard. Configure game, task, and model automatically.</p>
-        </div>
-      </div>
-
+      <!-- 5. Stats -->
       <div class="stats-bar">
         <div class="stat-item">
           <div class="stat-label">Datasets</div><div class="stat-val" id="stat-datasets">—</div>
@@ -639,6 +1052,8 @@
     <!-- TRAIN -->
     <div id="tab-train" class="tab-content">
       <div class="terminal-window" id="terminal">
+        <button type="button" class="terminal-copy-btn" id="btn-copy-terminal"
+                title="Copy all log lines to clipboard">📋 Copy</button>
         <div class="log-entry"><span class="log-time">[System]</span> Neural Training Console Initialized.</div>
       </div>
 
@@ -763,20 +1178,85 @@
         </div>
       </div>
 
-      <div class="card" style="cursor: default; margin-bottom:14px;">
-        <h3 style="margin-bottom: 10px;">Start / Stop</h3>
+      <!-- Start / Stop card. State-aware: the Rust start_bot command
+           refuses to run unless an active model is set in ModelHub,
+           because 3-test_model.py declares --model as required. We
+           mirror that gate in the UI so the user sees the prereq
+           before the click rather than as a post-click error. The
+           gate is driven by main.js#refreshRunBotGate(), which reads
+           the catalog response cached by loadCatalog(). -->
+      <div class="card" id="run-bot-card" data-state="checking" style="cursor: default; margin-bottom:14px;">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 10px;">
+          <h3 style="margin: 0;">Start / Stop</h3>
+          <span class="diag-verdict" id="run-bot-state-badge" style="font-size: 10px;">● Checking</span>
+        </div>
         <button class="btn btn-success btn-wide" style="height: 60px; font-size: 18px;" id="btnStartBot">
           ▶ START BOT
         </button>
-        <div style="margin-top:10px; color: var(--text-dim); font-size: 12px;">
+        <div style="margin-top:10px; color: var(--text-dim); font-size: 12px;" id="run-bot-hint">
           Tip: set an active model in <b>ModelHub</b> before running.
         </div>
       </div>
 
-      <div class="card" style="cursor: default;">
-        <h3 style="margin-bottom: 10px;">Drivers</h3>
-        <button class="btn btn-secondary btn-wide" id="btnInstallDrivers" type="button">Install Drivers (Windows)</button>
-        <div style="margin-top:10px; color: var(--text-dim);" id="drivers-status">—</div>
+      <!-- Drivers card. State-aware: when install_health reports an error
+           severity (sidecar / python / scripts / backend / modelhub) we
+           gate the Install Drivers action behind a "Setup incomplete"
+           panel, because attempting driver install before the bundled
+           binaries are present is a guaranteed failure path. The states
+           are populated by main.js#refreshDriversCard once install_health
+           returns. -->
+      <div class="card" id="drivers-card" data-state="checking" style="cursor: default;">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 10px;">
+          <h3 style="margin: 0;">Drivers</h3>
+          <span class="diag-verdict" id="drivers-state-badge" style="font-size: 10px;">● Checking</span>
+        </div>
+
+        <!-- Default / OK state: just the install button -->
+        <div id="drivers-pane-ready">
+          <button class="btn btn-secondary btn-wide" id="btnInstallDrivers" type="button">
+            Install Drivers (Windows)
+          </button>
+          <div style="margin-top:10px; color: var(--text-dim); font-size: 12px;" id="drivers-status">—</div>
+        </div>
+
+        <!-- Blocked state: shown when install_health verdict is "error".
+             Mirrors the Settings → System Tools recovery actions so the
+             user can fix the underlying problem without digging. -->
+        <div id="drivers-pane-blocked" hidden
+             style="border: 1px solid rgba(250,204,21,0.25);
+                    background: rgba(250,204,21,0.06);
+                    border-radius: 10px; padding: 14px;">
+          <div style="display:flex; gap: 12px; align-items: flex-start;">
+            <div style="font-size: 20px; line-height: 1; color: #facc15;">⚠</div>
+            <div style="flex: 1;">
+              <div style="font-weight: 700; color: var(--text-main); margin-bottom: 4px;">
+                Setup incomplete
+              </div>
+              <div style="font-size: 12px; color: var(--text-dim); margin-bottom: 10px;">
+                Windows drivers can't be installed yet because required backend
+                files are missing. Resolve those first; the driver installer
+                expects the rest of the install to be intact.
+              </div>
+              <ul id="drivers-missing-list"
+                  style="font-size: 12px; color: var(--text-main);
+                         margin: 0 0 12px 16px; padding: 0;"></ul>
+              <div style="display:flex; gap: 8px; flex-wrap: wrap;">
+                <button type="button" class="btn" id="btn-drivers-run-diagnosis">
+                  ▶ Run Diagnosis
+                </button>
+                <button type="button" class="btn btn-secondary" id="btn-drivers-copy-details">
+                  📋 Copy Details
+                </button>
+                <a class="btn btn-secondary"
+                   href="https://github.com/ruslanmv/BOT-MMORPG-AI/releases/latest"
+                   target="_blank" rel="noreferrer"
+                   style="text-decoration: none;">
+                  ⬇ Download Latest Installer
+                </a>
+              </div>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -918,37 +1398,202 @@
     </div>
   </main>
 
-  <!-- SETTINGS MODAL -->
+  <!--
+    SETTINGS MODAL — AAA-style vertical tab layout.
+    Left rail = section nav (General / AI Provider / Runtime / System Tools).
+    Right panel = section content. The "AI Provider" section contains the
+    legacy LLM-provider/API-key form so the existing save_configuration
+    Tauri command keeps working with no Rust changes.
+  -->
   <div class="modal-overlay" id="settings-modal-overlay">
     <div class="modal">
       <div class="modal-header">
-        <div class="modal-title"><span>🛠</span> Neural Link Configuration</div>
-        <!-- ✅ FIX: remove inline onclick, add id -->
-        <button class="close-modal" id="btn-close-settings-x">×</button>
+        <div class="modal-title"><span>⚙️</span> Settings</div>
+        <button class="close-modal" id="btn-close-settings-x" aria-label="Close">×</button>
       </div>
 
       <div class="modal-body">
-        <div style="margin-bottom: 18px;">
-          <label class="form-label">LLM Provider</label>
-          <select class="form-select" id="settings-provider">
-            <option value="gemini">Google Gemini</option>
-            <option value="openai">OpenAI</option>
-          </select>
-        </div>
+        <div class="settings-shell">
+          <!-- Vertical tab rail -->
+          <nav class="settings-rail" role="tablist" aria-label="Settings categories">
+            <div class="settings-rail-section">Preferences</div>
+            <button class="settings-rail-btn active" data-settings-tab="general" role="tab">
+              <span class="rail-icon">🎨</span> General
+            </button>
+            <button class="settings-rail-btn" data-settings-tab="ai-provider" role="tab">
+              <span class="rail-icon">🧠</span> AI Provider
+            </button>
 
-        <div style="margin-bottom: 18px;">
-          <label class="form-label">API Key</label>
-          <input type="password" class="form-input" id="settings-api-key" placeholder="Paste your API Key here...">
-          <p style="font-size: 11px; color: var(--text-dim); margin-top: 8px;">
-            Stored locally in <code>.env</code> (dev: repo root, prod: app config dir).
-          </p>
+            <div class="settings-rail-divider"></div>
+            <div class="settings-rail-section">Status</div>
+            <button class="settings-rail-btn" data-settings-tab="runtime" role="tab">
+              <span class="rail-icon">📊</span> Runtime
+            </button>
+
+            <div class="settings-rail-divider"></div>
+            <div class="settings-rail-section">Support</div>
+            <button class="settings-rail-btn" data-settings-tab="system-tools" role="tab">
+              <span class="rail-icon">🛠</span> System Tools
+              <span id="rail-health-dot" class="settings-health-dot" hidden></span>
+            </button>
+          </nav>
+
+          <!-- Right panel -->
+          <div class="settings-panel">
+
+            <!-- GENERAL ============================================== -->
+            <section class="settings-section active" data-settings-pane="general">
+              <h3>Appearance</h3>
+              <div class="settings-row">
+                <span class="settings-row-label">Theme</span>
+                <span class="settings-row-value">Dark (default)</span>
+              </div>
+              <div class="settings-row">
+                <span class="settings-row-label">Notifications</span>
+                <span class="settings-row-value">Enabled</span>
+              </div>
+              <p style="font-size: 11px; color: var(--text-dim); margin-top: 16px;">
+                Theme switching is on the roadmap. Notification preferences will sync
+                with the Windows system setting once the toggle ships.
+              </p>
+            </section>
+
+            <!-- AI PROVIDER ========================================== -->
+            <section class="settings-section" data-settings-pane="ai-provider">
+              <h3>LLM Provider</h3>
+              <div style="margin-bottom: 18px;">
+                <label class="form-label">Provider</label>
+                <select class="form-select" id="settings-provider">
+                  <option value="gemini">Google Gemini</option>
+                  <option value="openai">OpenAI</option>
+                </select>
+              </div>
+
+              <div style="margin-bottom: 8px;">
+                <label class="form-label">API Key</label>
+                <input type="password" class="form-input" id="settings-api-key"
+                       placeholder="Paste your API Key here...">
+                <p style="font-size: 11px; color: var(--text-dim); margin-top: 8px;">
+                  Stored locally in <code>.env</code> (dev: repo root, prod: app config dir).
+                </p>
+              </div>
+            </section>
+
+            <!-- RUNTIME (read-only status) =========================== -->
+            <section class="settings-section" data-settings-pane="runtime">
+              <h3>Backend</h3>
+              <div class="settings-row">
+                <span class="settings-row-label">Rust backend</span>
+                <span class="settings-row-value" id="rt-rust">—</span>
+              </div>
+              <div class="settings-row">
+                <span class="settings-row-label">Sidecar (Python HTTP API)</span>
+                <span class="settings-row-value" id="rt-sidecar">—</span>
+              </div>
+              <div class="settings-row">
+                <span class="settings-row-label">ModelHub</span>
+                <span class="settings-row-value" id="rt-modelhub">—</span>
+              </div>
+
+              <h3>Game</h3>
+              <div class="settings-row">
+                <span class="settings-row-label">Active game</span>
+                <span class="settings-row-value" id="rt-active-game">—</span>
+              </div>
+
+              <h3>Install</h3>
+              <div class="settings-row">
+                <span class="settings-row-label">Install directory</span>
+                <span class="settings-row-value" id="rt-install-dir">—</span>
+              </div>
+              <div class="settings-row">
+                <span class="settings-row-label">App version</span>
+                <span class="settings-row-value" id="rt-version">—</span>
+              </div>
+            </section>
+
+            <!-- SYSTEM TOOLS (Diagnosis + logs) ====================== -->
+            <section class="settings-section" data-settings-pane="system-tools">
+              <h3 style="display: flex; align-items: center; justify-content: space-between;">
+                <span>System Diagnosis</span>
+                <span id="diag-verdict" class="diag-verdict ready" hidden></span>
+              </h3>
+              <p style="font-size: 12px; color: var(--text-dim); margin: 0 0 14px;">
+                Run a health check across every subsystem the app depends on. If a check
+                fails, the message tells you exactly which file or service is missing.
+              </p>
+
+              <div id="diag-results" style="margin-bottom: 14px; min-height: 60px;
+                   display: flex; align-items: center; justify-content: center;
+                   color: var(--text-dim); font-size: 12px;">
+                Click <strong style="margin: 0 4px;">Run Diagnosis</strong>
+                to begin.
+              </div>
+
+              <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+                <button type="button" id="btn-run-diagnosis" class="btn">▶ Run Diagnosis</button>
+                <button type="button" id="btn-copy-support-report" class="btn btn-secondary"
+                        disabled title="Run a diagnosis first">📋 Copy Support Report</button>
+                <button type="button" id="btn-copy-logs" class="btn btn-secondary">
+                  📜 Copy Recent Logs
+                </button>
+              </div>
+
+              <!-- AI debug-loop section. Pulls captured runtime errors
+                   from the Rust ring buffer + sidecar /diagnostics/recent
+                   and packages them as a Markdown+JSON bundle the user
+                   pastes directly into Claude Code. Distinct from the
+                   "Support Report" above: that one is for human triage
+                   (GitHub issues, Discord). This one is for AI fixes. -->
+              <h3 style="margin-top: 24px; display: flex; align-items: center; gap: 8px;">
+                <span>AI Fix Loop</span>
+                <span id="ai-errors-count"
+                      class="diag-verdict ready"
+                      style="font-size: 10px;"
+                      hidden>0 captured</span>
+              </h3>
+              <p style="font-size: 12px; color: var(--text-dim); margin: 0 0 10px;">
+                When something fails, the runtime captures the error
+                (Python tracebacks from spawned scripts, FastAPI exceptions
+                from the sidecar). Click below to copy a structured bundle
+                into your clipboard, then paste into Claude Code or any
+                LLM with file access — the bundle has enough context for
+                the model to find the bug without further questions.
+              </p>
+              <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+                <button type="button" id="btn-copy-ai-bundle" class="btn">
+                  🤖 Copy AI Fix Request
+                </button>
+                <button type="button" id="btn-clear-ai-errors" class="btn btn-secondary">
+                  🧹 Clear Captured Errors
+                </button>
+              </div>
+
+              <h3 style="margin-top: 24px;">Reporting a problem (humans)</h3>
+              <p style="font-size: 12px; color: var(--text-dim); margin: 0;">
+                Use <strong>Copy Support Report</strong> after running a diagnosis,
+                then paste it into a
+                <a href="https://github.com/ruslanmv/BOT-MMORPG-AI/issues/new"
+                   target="_blank" rel="noreferrer"
+                   style="color: var(--accent);">GitHub issue</a>
+                or your support channel.
+              </p>
+            </section>
+
+          </div>
         </div>
       </div>
 
       <div class="modal-footer">
-        <!-- ✅ FIX: remove inline onclick, add id -->
-        <button class="btn btn-secondary" id="btn-cancel-settings">Cancel</button>
-        <button class="btn" onclick="saveSettings()" id="btn-save-settings">Save Configuration</button>
+        <div class="footer-left">
+          <span id="settings-footer-hint" style="font-size: 11px; color: var(--text-dim);">
+            Changes save when you click "Save".
+          </span>
+        </div>
+        <div class="footer-right">
+          <button class="btn btn-secondary" id="btn-cancel-settings">Close</button>
+          <button class="btn" onclick="saveSettings()" id="btn-save-settings">Save</button>
+        </div>
       </div>
     </div>
   </div>
@@ -962,6 +1607,163 @@
       document.getElementById('settings-modal-overlay').classList.remove('open');
     }
 
+    // Settings: tab switching inside the modal (vertical rail).
+    function switchSettingsTab(tabId) {
+      document.querySelectorAll('.settings-rail-btn').forEach(b =>
+        b.classList.toggle('active', b.dataset.settingsTab === tabId));
+      document.querySelectorAll('.settings-section').forEach(s =>
+        s.classList.toggle('active', s.dataset.settingsPane === tabId));
+
+      // Auto-populate the Runtime tab when it's opened so the user
+      // doesn't have to click anything to see status.
+      if (tabId === 'runtime')      populateRuntimeTab();
+      if (tabId === 'system-tools') ensureDiagnosisIdle();
+    }
+
+    function populateRuntimeTab() {
+      const set = (id, txt) => { const el = document.getElementById(id); if (el) el.textContent = txt; };
+      // Pull what we can from existing status badges + recent diagnosis.
+      const rustBadge = document.getElementById('backend-status-badge');
+      set('rt-rust',       rustBadge ? rustBadge.textContent.trim() : 'Unknown');
+      set('rt-sidecar',    window.__lastHealth?.sidecar_ok ? 'Online' : 'Unknown');
+      set('rt-modelhub',   window.__lastHealth?.checks?.find(c => c.id==='modelhub')?.status || 'Unknown');
+      const game = document.getElementById('active-game-pill');
+      set('rt-active-game', game ? game.textContent.trim() : '—');
+      set('rt-install-dir', window.__lastHealth?.install_dir || '—');
+      // Prefer the stashed app_info (real package version + channel) over
+      // anything scraped from the sidebar -- the sidebar is now a live
+      // template, not a static label, so scraping it gave fragile results.
+      const info = window.__appInfo;
+      const latest = window.__lastUpdate?.latest_version;
+      set('rt-version',
+        info
+          ? `v${info.version} (${info.channel})${latest ? `  •  Latest: v${latest}` : ''}`
+          : '—');
+    }
+
+    function ensureDiagnosisIdle() {
+      const results = document.getElementById('diag-results');
+      if (results && !results.dataset.populated) {
+        // Leave the placeholder text alone until the user clicks Run.
+      }
+    }
+
+    function renderDiagnosis(health) {
+      window.__lastHealth = health;
+      const results = document.getElementById('diag-results');
+      const verdict = document.getElementById('diag-verdict');
+      const copyBtn = document.getElementById('btn-copy-support-report');
+      if (!results || !verdict) return;
+
+      // Verdict pill
+      const v = health.verdict || (health.healthy ? 'ready' : 'error');
+      verdict.hidden = false;
+      verdict.classList.remove('ready', 'warning', 'error');
+      verdict.classList.add(v);
+      verdict.textContent = ({ ready: '● Ready', warning: '● Warning', error: '● Error' })[v] || v;
+
+      // Per-check rows
+      const checks = Array.isArray(health.checks) ? health.checks : [];
+      results.style.display = 'block';
+      results.style.alignItems = '';
+      results.style.justifyContent = '';
+      results.style.color = '';
+      results.dataset.populated = '1';
+      results.innerHTML = checks.map(c => {
+        const sev = c.severity || 'ok';
+        const icon = sev === 'ok' ? '✔' : sev === 'warn' ? '⚠' : '✘';
+        return `
+          <div class="diag-row ${sev}">
+            <div class="diag-icon">${icon}</div>
+            <div>
+              <div class="diag-label">${escapeHtml(c.label || c.id || '')}</div>
+              <div class="diag-msg">${escapeHtml(c.message || '')}</div>
+            </div>
+            <div class="diag-status">${escapeHtml(c.status || sev)}</div>
+          </div>
+        `;
+      }).join('') || '<div style="padding: 12px; color: var(--text-dim); font-size: 12px;">No checks reported.</div>';
+
+      if (copyBtn) {
+        copyBtn.disabled = false;
+        copyBtn.title = 'Copy a Markdown support report to your clipboard';
+      }
+
+      // Sync the rail health dot (red when any error severity).
+      const dot1 = document.getElementById('settings-health-dot');
+      const dot2 = document.getElementById('rail-health-dot');
+      const showDot = checks.some(c => c.severity === 'error');
+      [dot1, dot2].forEach(d => { if (d) d.hidden = !showDot; });
+    }
+
+    function escapeHtml(s) {
+      return String(s).replace(/[&<>"']/g, ch => ({
+        '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
+      })[ch]);
+    }
+
+    async function runDiagnosis() {
+      const btn = document.getElementById('btn-run-diagnosis');
+      const results = document.getElementById('diag-results');
+      if (!window.__TAURI__?.invoke) {
+        if (results) results.textContent = 'Tauri backend not found (running outside the installed app?).';
+        return;
+      }
+      if (btn) { btn.disabled = true; btn.textContent = '⏳ Running...'; }
+      try {
+        const health = await window.__TAURI__.invoke('install_health');
+        renderDiagnosis(health);
+      } catch (e) {
+        if (results) results.textContent = 'Diagnosis failed: ' + e;
+      } finally {
+        if (btn) { btn.disabled = false; btn.textContent = '▶ Run Again'; }
+      }
+    }
+
+    async function copySupportReport() {
+      const btn = document.getElementById('btn-copy-support-report');
+      if (!window.__TAURI__?.invoke) return;
+      if (btn) { btn.disabled = true; btn.textContent = '⏳ Copying...'; }
+      try {
+        let report = await window.__TAURI__.invoke('support_report');
+        // Append the in-app terminal buffer so support has runtime context.
+        const term = document.getElementById('terminal-output')
+                  || document.querySelector('[data-terminal]');
+        if (term) {
+          report += '\n\n## Recent in-app log\n\n```\n'
+                  + term.textContent.split('\n').slice(-200).join('\n').trim()
+                  + '\n```\n';
+        }
+        await navigator.clipboard.writeText(report);
+        if (btn) btn.textContent = '✓ Copied!';
+      } catch (e) {
+        if (btn) btn.textContent = '✗ Failed';
+        console.warn('support_report failed:', e);
+      } finally {
+        setTimeout(() => {
+          if (btn) { btn.disabled = false; btn.textContent = '📋 Copy Support Report'; }
+        }, 1500);
+      }
+    }
+
+    async function copyRecentLogs() {
+      const btn = document.getElementById('btn-copy-logs');
+      const term = document.getElementById('terminal')
+                || document.getElementById('terminal-output')
+                || document.querySelector('[data-terminal]');
+      if (!term) return;
+      const text = term.textContent.split('\n').slice(-200).join('\n').trim();
+      try {
+        await navigator.clipboard.writeText(text);
+        if (btn) { btn.textContent = '✓ Copied!'; }
+      } catch (e) {
+        if (btn) { btn.textContent = '✗ Failed'; }
+      }
+      setTimeout(() => {
+        if (btn) btn.textContent = '📜 Copy Recent Logs';
+      }, 1500);
+    }
+
     // ✅ NEW: production-safe bindings for Settings only (prevents inline handler quirks in installed exe)
     window.addEventListener('DOMContentLoaded', () => {
       const openBtn = document.getElementById('btn-open-settings');
@@ -972,6 +1774,106 @@
 
       const cancelBtn = document.getElementById('btn-cancel-settings');
       if (cancelBtn) cancelBtn.addEventListener('click', closeSettings);
+
+      // Tab rail
+      document.querySelectorAll('.settings-rail-btn').forEach(b =>
+        b.addEventListener('click', () => switchSettingsTab(b.dataset.settingsTab)));
+
+      // System Tools actions
+      document.getElementById('btn-run-diagnosis')?.addEventListener('click', runDiagnosis);
+      document.getElementById('btn-copy-support-report')?.addEventListener('click', copySupportReport);
+      document.getElementById('btn-copy-logs')?.addEventListener('click', copyRecentLogs);
+
+      // AI Fix Loop buttons. Pulls the structured bundle from the
+      // recent_errors_for_ai Tauri command (which itself merges Rust
+      // ring-buffer errors with sidecar /diagnostics/recent/ai entries),
+      // appends the last 200 in-app log lines for context, then writes
+      // to clipboard. The user pastes into Claude Code.
+      const aiCopyBtn  = document.getElementById('btn-copy-ai-bundle');
+      const aiClearBtn = document.getElementById('btn-clear-ai-errors');
+      const aiCount    = document.getElementById('ai-errors-count');
+
+      if (aiCopyBtn) aiCopyBtn.addEventListener('click', async () => {
+        if (!window.__TAURI__?.invoke) {
+          aiCopyBtn.textContent = '✗ Tauri unavailable';
+          return;
+        }
+        const orig = aiCopyBtn.textContent;
+        aiCopyBtn.disabled = true;
+        aiCopyBtn.textContent = '⏳ Building bundle...';
+        try {
+          let bundle = await window.__TAURI__.invoke('recent_errors_for_ai');
+          // Append the in-app log tail so the AI sees the timeline of
+          // events leading up to the error, not just the error itself.
+          const term = document.getElementById('terminal');
+          if (term) {
+            const lines = Array.from(term.querySelectorAll('.log-entry'))
+              .map(el => el.textContent.replace(/\s+/g, ' ').trim());
+            if (lines.length) {
+              bundle += '\n## Recent in-app log tail\n\n```\n'
+                     + lines.slice(-200).join('\n')
+                     + '\n```\n';
+            }
+          }
+          await navigator.clipboard.writeText(bundle);
+          aiCopyBtn.textContent = '✓ Copied — paste into Claude Code';
+        } catch (e) {
+          console.warn('recent_errors_for_ai failed:', e);
+          aiCopyBtn.textContent = '✗ Failed';
+        } finally {
+          setTimeout(() => {
+            aiCopyBtn.disabled = false;
+            aiCopyBtn.textContent = orig;
+          }, 2500);
+        }
+      });
+
+      if (aiClearBtn) aiClearBtn.addEventListener('click', async () => {
+        if (!window.__TAURI__?.invoke) return;
+        const orig = aiClearBtn.textContent;
+        aiClearBtn.disabled = true;
+        aiClearBtn.textContent = '⏳ Clearing...';
+        try {
+          const n = await window.__TAURI__.invoke('clear_recent_errors');
+          aiClearBtn.textContent = `✓ Cleared ${n}`;
+          if (aiCount) {
+            aiCount.hidden = true;
+            aiCount.textContent = '0 captured';
+          }
+        } catch (e) {
+          console.warn('clear_recent_errors failed:', e);
+          aiClearBtn.textContent = '✗ Failed';
+        } finally {
+          setTimeout(() => {
+            aiClearBtn.disabled = false;
+            aiClearBtn.textContent = orig;
+          }, 1500);
+        }
+      });
+
+      // In-place "Copy" button on the Train Brain log console.
+      // Reads each .log-entry child so the button's own label is not copied.
+      const termCopyBtn = document.getElementById('btn-copy-terminal');
+      if (termCopyBtn) {
+        termCopyBtn.addEventListener('click', async () => {
+          const term = document.getElementById('terminal');
+          if (!term) return;
+          const lines = Array.from(term.querySelectorAll('.log-entry'))
+            .map(el => el.textContent.replace(/\s+/g, ' ').trim());
+          const text = lines.join('\n');
+          try {
+            await navigator.clipboard.writeText(text);
+            termCopyBtn.classList.add('copied');
+            termCopyBtn.textContent = '✓ Copied';
+          } catch (e) {
+            termCopyBtn.textContent = '✗ Failed';
+          }
+          setTimeout(() => {
+            termCopyBtn.classList.remove('copied');
+            termCopyBtn.textContent = '📋 Copy';
+          }, 1500);
+        });
+      }
     });
 
     // Optional: save settings via invoke (safe no-op if missing)
@@ -1123,6 +2025,227 @@
           }
         });
       }
+    });
+  </script>
+
+  <!-- Toast stack — populated by window.notify() / notifyError() etc. -->
+  <div class="toast-container" id="toast-container" aria-live="polite" aria-atomic="false"></div>
+
+  <!-- Patch notes modal (rendered when user clicks "View Patch Notes"
+       on the update banner). Reuses the AAA settings modal styling. -->
+  <div class="modal-overlay" id="patch-notes-overlay">
+    <div class="modal" style="width: 720px; max-width: calc(100vw - 48px);">
+      <div class="modal-header">
+        <div class="modal-title"><span>📝</span> Patch Notes <span id="patch-notes-version"
+          style="font-size: 12px; font-weight: 600; color: var(--text-dim); margin-left: 8px;"></span></div>
+        <button class="close-modal" id="btn-close-patch-notes" aria-label="Close">×</button>
+      </div>
+      <div class="modal-body" style="padding: 22px 28px;">
+        <pre id="patch-notes-body"
+             style="white-space: pre-wrap; font-family: inherit; font-size: 13px;
+                    color: var(--text-main); line-height: 1.55; margin: 0;
+                    user-select: text; -webkit-user-select: text;">Loading…</pre>
+      </div>
+      <div class="modal-footer">
+        <div class="footer-left">
+          <a id="patch-notes-link" target="_blank" rel="noreferrer"
+             style="color: var(--accent); font-size: 11px;">Open on GitHub →</a>
+        </div>
+        <div class="footer-right">
+          <button class="btn btn-secondary" id="btn-patch-notes-dismiss">Close</button>
+          <a class="btn" id="btn-patch-notes-update"
+             href="https://github.com/ruslanmv/BOT-MMORPG-AI/releases/latest"
+             target="_blank" rel="noreferrer" style="text-decoration:none;">⬇ Update Now</a>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ====================================================================
+       Notification system — public API used everywhere in the UI.
+
+       Usage:
+         window.notify({ type, title, message, actions, duration, persistent })
+         window.notifyError(title, msg, actions)
+         window.notifyWarning(title, msg, actions)
+         window.notifySuccess(title, msg)
+         window.notifyInfo(title, msg)
+
+       AAA UX rules baked in:
+         - error notifications are persistent (no auto-dismiss)
+         - success/info auto-dismiss after a sensible duration
+         - the close X button is always reachable
+         - actions render in primary -> secondary -> tertiary order
+       ==================================================================== -->
+  <script>
+    (function () {
+      const ICONS    = { error: '⚠', warning: '⚠', success: '✓', info: 'ℹ', update: '🔄' };
+      const DURATION = { success: 3500, info: 4500, warning: 0, error: 0, update: 0 };
+
+      function escapeHtml(s) {
+        return String(s).replace(/[&<>"']/g, ch => ({
+          '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
+        })[ch]);
+      }
+
+      function buildToastDom({ type, title, message, actions, icon }) {
+        const card = document.createElement('div');
+        card.className = 'notification-card ' + (type || 'info');
+
+        const iconEl = document.createElement('div');
+        iconEl.className = 'notification-icon';
+        iconEl.textContent = icon || ICONS[type] || ICONS.info;
+
+        const body = document.createElement('div');
+        body.className = 'notification-body';
+        body.innerHTML =
+          (title   ? `<div class="notification-title">${escapeHtml(title)}</div>` : '') +
+          (message ? `<div class="notification-msg">${escapeHtml(message)}</div>` : '');
+
+        if (Array.isArray(actions) && actions.length) {
+          const row = document.createElement('div');
+          row.className = 'notification-actions';
+          actions.forEach((a, i) => {
+            const b = document.createElement('button');
+            b.type = 'button';
+            b.textContent = a.label || ('Action ' + (i + 1));
+            // Primary=index 0 unless explicitly overridden by a.primary=false.
+            const isPrimary = a.primary === undefined ? i === 0 : a.primary;
+            b.className = 'btn' + (isPrimary ? '' : ' btn-secondary');
+            b.addEventListener('click', () => {
+              try { a.onClick && a.onClick(); } catch (e) { console.warn(e); }
+              if (!a.keepOpen) dismiss();
+            });
+            row.appendChild(b);
+          });
+          body.appendChild(row);
+        }
+
+        const closeBtn = document.createElement('button');
+        closeBtn.className = 'notification-close';
+        closeBtn.setAttribute('aria-label', 'Dismiss');
+        closeBtn.textContent = '×';
+        closeBtn.addEventListener('click', () => dismiss());
+
+        card.appendChild(iconEl);
+        card.appendChild(body);
+        card.appendChild(closeBtn);
+
+        // Closure-scoped dismissal
+        const wrapper = document.createElement('div');
+        wrapper.className = 'toast';
+        wrapper.appendChild(card);
+        function dismiss() {
+          wrapper.classList.add('dismissing');
+          wrapper.addEventListener('animationend', () => wrapper.remove(), { once: true });
+        }
+        return { wrapper, dismiss };
+      }
+
+      window.notify = function (opts) {
+        const o = opts || {};
+        const { wrapper, dismiss } = buildToastDom(o);
+        const c = document.getElementById('toast-container');
+        if (!c) return null;
+        c.appendChild(wrapper);
+
+        const autoMs = o.persistent ? 0 : (o.duration ?? DURATION[o.type] ?? 4500);
+        if (autoMs > 0) setTimeout(dismiss, autoMs);
+        return { dismiss };
+      };
+
+      window.notifyError   = (t, m, a) => window.notify({ type:'error',   title:t, message:m, actions:a, persistent:true });
+      window.notifyWarning = (t, m, a) => window.notify({ type:'warning', title:t, message:m, actions:a });
+      window.notifySuccess = (t, m, a) => window.notify({ type:'success', title:t, message:m, actions:a });
+      window.notifyInfo    = (t, m, a) => window.notify({ type:'info',    title:t, message:m, actions:a });
+      window.notifyUpdate  = (t, m, a) => window.notify({ type:'update',  title:t, message:m, actions:a, persistent:true });
+    })();
+
+    // Patch notes modal wiring (called from the update banner).
+    // Reads from window.__lastUpdate so the wire-up below doesn't need
+    // the live response; checkForUpdate() in main.js stashes the result
+    // on window.__lastUpdate when an update is available.
+    window.openPatchNotes = function (info) {
+      const overlay = document.getElementById('patch-notes-overlay');
+      const ver     = document.getElementById('patch-notes-version');
+      const body    = document.getElementById('patch-notes-body');
+      const link    = document.getElementById('patch-notes-link');
+      if (!overlay) return;
+      const data = info || window.__lastUpdate || {};
+      if (ver)  ver.textContent  = data.latest_version ? 'v' + data.latest_version : '';
+      if (body) body.textContent = (data.release_notes || 'No release notes provided.').trim();
+      if (link && data.release_url) link.href = data.release_url;
+      overlay.classList.add('open');
+    };
+
+    // ====================================================================
+    // GLOBAL EXTERNAL-LINK INTERCEPTOR
+    //
+    // Tauri 1.x's webview does NOT auto-open <a target="_blank"> links in
+    // the system browser. Without this delegated handler, clicking
+    // "Download Latest Installer", "Update Now", "Star on GitHub", or any
+    // other external link does nothing -- the navigation gets silently
+    // dropped by the webview. We catch every external link click here
+    // and route it through window.__TAURI__.shell.open(), which IS allowed
+    // (tauri.conf.json :: shell.open: true). Falls back to window.open
+    // when running in a regular browser (e.g. dev preview).
+    // ====================================================================
+    document.addEventListener('click', (e) => {
+      const link = e.target.closest('a[href][target="_blank"]');
+      if (!link) return;
+      const url = link.getAttribute('href');
+      if (!url || url.startsWith('javascript:')) return;
+      // Only redirect external schemes; internal #anchors etc. fall through.
+      if (!/^https?:|^mailto:|^file:/.test(url)) return;
+      e.preventDefault();
+      const open = window.__TAURI__?.shell?.open;
+      if (typeof open === 'function') {
+        open(url).catch(err => {
+          console.warn('shell.open failed; falling back to window.open:', err);
+          window.open(url, '_blank', 'noopener,noreferrer');
+        });
+      } else {
+        window.open(url, '_blank', 'noopener,noreferrer');
+      }
+    }, true);  // capture phase so we beat any native handler
+
+    // ====================================================================
+    // STATIC NOTIFICATION-BUTTON WIRING
+    //
+    // Earlier these handlers were attached inside checkInstallHealth() /
+    // checkForUpdate(). Problem: if those functions threw mid-way (e.g.
+    // an unexpected shape from install_health), the buttons rendered but
+    // were never bound, leaving the banner visually-correct but inert.
+    // Hoisting the static handlers here means they're always wired even
+    // when the data fetch fails.
+    // ====================================================================
+    document.addEventListener('DOMContentLoaded', () => {
+      // Patch-notes modal close
+      const hidePatch = () =>
+        document.getElementById('patch-notes-overlay')?.classList.remove('open');
+      document.getElementById('btn-close-patch-notes')?.addEventListener('click', hidePatch);
+      document.getElementById('btn-patch-notes-dismiss')?.addEventListener('click', hidePatch);
+
+      // Install-health banner: dismiss + open Diagnosis
+      const healthBanner = document.getElementById('install-health-banner');
+      document.getElementById('install-health-dismiss')?.addEventListener('click', () => {
+        if (healthBanner) healthBanner.hidden = true;
+      });
+      document.getElementById('install-health-open-diagnosis')?.addEventListener('click', () => {
+        if (typeof window.openSettings === 'function') window.openSettings();
+        document.getElementById('settings-modal-overlay')?.classList.add('open');
+        if (typeof window.switchSettingsTab === 'function') window.switchSettingsTab('system-tools');
+        document.getElementById('btn-run-diagnosis')?.click();
+      });
+
+      // Update banner: close, Later, View Patch Notes
+      const updateBanner = document.getElementById('update-banner');
+      const hideUpdate = () => { if (updateBanner) updateBanner.hidden = true; };
+      document.getElementById('update-close')?.addEventListener('click', hideUpdate);
+      document.getElementById('btn-update-later')?.addEventListener('click', hideUpdate);
+      document.getElementById('btn-update-notes')?.addEventListener('click', () => {
+        window.openPatchNotes && window.openPatchNotes(window.__lastUpdate);
+      });
     });
   </script>
 </body>

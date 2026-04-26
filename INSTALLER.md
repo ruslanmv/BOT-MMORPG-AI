@@ -2,6 +2,21 @@
 
 This document provides comprehensive information about building, testing, and distributing the Windows installer for BOT MMORPG AI.
 
+> **Debugging an installer or runtime bug?** Read
+> [`docs/installer/`](./docs/installer/README.md) — focused per-file
+> reference, bug index, debug tools, and worked case studies. Optimized
+> for AI sessions / new developers landing cold.
+>
+> | Doc | Read when… |
+> |---|---|
+> | [01 — Files & Responsibilities](./docs/installer/01-files-and-responsibilities.md) | You don't know which file controls a given install behavior. |
+> | [02 — Build Pipeline](./docs/installer/02-build-pipeline.md) | You want to understand how `make build-installer` produces the `.exe`. |
+> | [03 — Runtime Flow](./docs/installer/03-runtime-flow.md) | You need to understand what the installed `.exe` does at install time and at app launch. |
+> | [04 — Bug Index](./docs/installer/04-bug-index.md) | A user reported a symptom and you need to know which file to edit. |
+> | [05 — Case Studies](./docs/installer/05-case-studies.md) | You want worked examples of bugs we already fixed. |
+> | [06 — Debug Tools](./docs/installer/06-debug-tools.md) | You need PowerShell scripts / commands to inspect the installer. |
+> | [07 — Build & Test](./docs/installer/07-build-and-test.md) | You need the actual `make` commands to run a build. |
+
 ## Table of Contents
 
 - [Overview](#overview)

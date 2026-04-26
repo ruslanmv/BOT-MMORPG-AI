@@ -73,7 +73,7 @@ class TestTauriUI(unittest.TestCase):
 
         # (1) Canonical defines must be present.
         self.assertIn(
-            '!define MAINBINARYNAME',
+            "!define MAINBINARYNAME",
             nsi,
             "Missing !define MAINBINARYNAME (canonical Tauri 1.6 pattern)",
         )

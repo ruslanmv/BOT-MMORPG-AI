@@ -130,14 +130,43 @@ Write-Host ""
 
 Assert-Admin
 
-# Use PSScriptRoot for reliability
-$root = Split-Path -Parent $PSScriptRoot
-
-# Driver paths
-$driversDir = Join-Path $root "src-tauri\drivers"
-if (-not (Test-Path $driversDir)) {
-    $driversDir = Join-Path $root "drivers"
+# Locate the drivers/ folder. Two install layouts are possible:
+#
+#   DEV (this repo):
+#     <repo>\scripts\install_drivers.ps1
+#         => drivers at <repo>\src-tauri\drivers\
+#
+#   PROD (after `make build-installer` + NSIS install):
+#     C:\Program Files\BOT-MMORPG-AI\resources\scripts\install_drivers.ps1
+#         => drivers at C:\Program Files\BOT-MMORPG-AI\drivers\
+#         (the resources/** glob in tauri.conf.json puts THIS script under
+#          resources\scripts\, but the drivers/** glob keeps drivers\ at the
+#          install root -- one level higher than where this script lives.)
+#
+# The previous version assumed PROD drivers were at <script_parent>\drivers,
+# which resolves to ...\resources\drivers and silently misses every install
+# attempt because that folder doesn't exist.
+$candidates = @(
+    (Join-Path $PSScriptRoot "..\..\drivers"),         # PROD: install_dir\drivers
+    (Join-Path $PSScriptRoot "..\src-tauri\drivers"),  # DEV:  repo\src-tauri\drivers
+    (Join-Path $PSScriptRoot "..\drivers")             # legacy/fallback
+)
+$driversDir = $null
+foreach ($c in $candidates) {
+    $resolved = (Resolve-Path -LiteralPath $c -ErrorAction SilentlyContinue).Path
+    if ($resolved -and (Test-Path $resolved)) {
+        $driversDir = $resolved
+        break
+    }
 }
+if (-not $driversDir) {
+    Write-Err "Could not locate the drivers/ folder."
+    Write-Err "Tried (relative to $PSScriptRoot):"
+    foreach ($c in $candidates) { Write-Err "  - $c" }
+    Write-Err "Re-run the latest installer to restore drivers/interception/ and drivers/vjoy/."
+    exit 1
+}
+Write-Info "Using drivers folder: $driversDir"
 
 $interceptionDir = Join-Path $driversDir "interception"
 $vjoyDir = Join-Path $driversDir "vjoy"

@@ -37,11 +37,32 @@ struct SidecarApi {
     token: String,
 }
 
+// In-memory error record captured from the Rust side. The Python sidecar
+// keeps its own ring buffer (modelhub/diagnostics/collector.py); the
+// `recent_errors_for_ai` command merges both before formatting.
+//
+// Kept tiny on purpose: the diagnostic layer must not bloat AppState or
+// trigger heavy serialization. Strings only, no boxed errors.
+#[derive(Clone, serde::Serialize)]
+struct ErrorEntry {
+    timestamp_ms: u64,
+    source: String,        // "rust" | "spawned_script"
+    error_type: String,    // e.g. "ModuleNotFoundError", "SidecarTimeout"
+    message: String,
+    primary_file: String,  // best-effort first File "..." extracted from traceback
+    primary_line: u32,
+    traceback: String,     // raw traceback text for spawned scripts, empty for rust-side
+    context: serde_json::Value,
+}
+
+const MAX_ERRORS: usize = 50;
+
 struct AppStateInner {
     current_process: Mutex<Option<Child>>,
     sidecar_process: Mutex<Option<Child>>,
     sidecar: Mutex<Option<SidecarApi>>,
     http: Client,
+    recent_errors: Mutex<std::collections::VecDeque<ErrorEntry>>,
 }
 
 #[derive(Clone)]
@@ -290,9 +311,31 @@ fn managed_python_root(app: &AppHandle) -> PathBuf {
     ensure_runtime_layout(app).join("runtime").join("py")
 }
 
-/// Where we install python packages in PROD (portable, no venv)
+/// Where the bundled Python keeps its site-packages tree.
+///
+/// The build pipeline (`scripts/build_pipeline.ps1` STEP 6.7) packs
+/// `src-tauri/resources/python/` into `python-runtime.zip` AS-IS, with
+/// `site-packages/` as a SUBDIRECTORY of the python interpreter dir.
+/// At runtime `extract_zip_to` unpacks that zip into
+/// `<INSTDIR>/runtime/py/python/`, so site-packages lands at
+/// `<INSTDIR>/runtime/py/python/site-packages/` — INSIDE python/, not
+/// next to it.
+///
+/// A previous version of this function returned `runtime/py/site-packages/`
+/// (a sibling of `python/`), which was created empty by
+/// `ensure_runtime_layout` and never populated. The site-packages-empty
+/// detection in `ensure_python_env` then triggered a doomed wheelhouse
+/// repair path on every launch — confusingly, while the application
+/// itself worked fine because the embedded Python's `_pth` already
+/// pointed at the real `.\site-packages` (which resolves to
+/// `<runtime>/py/python/site-packages/` next to python.exe).
+///
+/// Returning the real location here makes the `_pth` re-patch
+/// idempotent, silences the spurious repair messages, and aligns the
+/// PYTHONPATH entries we add in `run_python_script` /
+/// `start_sidecar_server` with the actual on-disk layout.
 fn managed_site_packages_dir(app: &AppHandle) -> PathBuf {
-    managed_python_root(app).join("site-packages")
+    managed_python_root(app).join("python").join("site-packages")
 }
 
 /// Copy target for embedded python runtime in PROD
@@ -649,6 +692,42 @@ fn ensure_python_env(app: &AppHandle, window: &Window) -> Result<PathBuf, String
         ));
     }
 
+    // Inject sitecustomize.py into the bundled site-packages.
+    //
+    // Embedded Python (with a _pth file present) runs in *isolated mode*:
+    //  - the script's own directory is NOT auto-prepended to sys.path
+    //  - PYTHONPATH is IGNORED, even with `import site` enabled in _pth
+    //
+    // That second behaviour bites us specifically: `run_python_script`
+    // adds the script's parent dir to PYTHONPATH (`vdir`) so scripts can
+    // import siblings — but the embedded interpreter discards it, and
+    // `1-collect_data.py` dies on `from grabscreen import grab_screen`
+    // (grabscreen.py is a sibling, not a package install).
+    //
+    // What we CAN rely on: `import site` is in the patched _pth, so
+    // site.py runs at startup and looks for `sitecustomize` on sys.path.
+    // The bundled site-packages IS on sys.path (via `.\site-packages`
+    // in _pth), so dropping a sitecustomize.py here makes Python pick
+    // it up automatically. Inside it we read the `BOT_VERSION_DIR` env
+    // var (which `run_python_script` already exports) and prepend it
+    // to sys.path. Now sibling imports work without touching any of
+    // the 50+ scripts in versions/0.01/.
+    //
+    // For the sidecar (start_sidecar_server) BOT_VERSION_DIR is unset,
+    // so this is a no-op there. No collision.
+    let sitecustomize = target_dir.join("sitecustomize.py");
+    let _ = fs::create_dir_all(&target_dir);
+    let _ = fs::write(
+        &sitecustomize,
+        "# Auto-injected by main.rs#ensure_python_env. Re-enables sibling-module\n\
+         # imports for scripts launched via run_python_script under embedded\n\
+         # Python's _pth-isolated mode (where PYTHONPATH is ignored).\n\
+         import os, sys\n\
+         _vdir = os.environ.get('BOT_VERSION_DIR', '').strip()\n\
+         if _vdir and os.path.isdir(_vdir) and _vdir not in sys.path:\n\
+             sys.path.insert(0, _vdir)\n",
+    );
+
     // 2) Patch _pth to include our portable site-packages (always do this)
     patch_embedded_python_pth(&local_py_dir, &target_dir).map_err(|e| {
         format!(
@@ -854,11 +933,13 @@ fn work_dir(app: &AppHandle) -> PathBuf {
 }
 
 /// Resolve scripts in production in this order:
-///  1) User-copied override:  <install_dir>\versions\<ver>\<script>
+///  1) Bundled resource (canonical install layout):
+///                            <install_dir>\resources\versions\<ver>\<script>
+///  2) User-copied override:  <install_dir>\versions\<ver>\<script>
 ///                            (matches what users in issues #26/#37/#42 do manually)
-///  2) Content override:      <install_dir>\content\versions\<ver>\<script>
-///  3) Bundled resource:      resolve_resource("versions/<ver>/<script>")
-///  4) Legacy staging:        <install_dir>\_up_\versions\<ver>\<script>
+///  3) Content override:      <install_dir>\content\versions\<ver>\<script>
+///  4) Tauri resolver:        resolve_resource("resources/versions/<ver>/<script>")
+///  5) Legacy staging:        <install_dir>\_up_\versions\<ver>\<script>
 ///
 /// In debug, fallback to repo tree: <repo>/versions/<ver>/<script>
 fn resolve_script(app: &AppHandle, script_name: &str) -> Result<PathBuf, String> {
@@ -866,7 +947,21 @@ fn resolve_script(app: &AppHandle, script_name: &str) -> Result<PathBuf, String>
         let root = ensure_runtime_layout(app);
         let mut tried: Vec<String> = Vec::new();
 
-        // 1) User-copied: <install_dir>\versions\<ver>\<script>
+        // 1) Bundled (canonical): $INSTDIR\resources\versions\<ver>\<script>.
+        // This is where the NSIS installer actually puts the files because
+        // tauri.conf.json's `resources/**` glob preserves the `resources/`
+        // prefix on extraction. Probed first so a clean install just works.
+        let bundled = root
+            .join("resources")
+            .join("versions")
+            .join(DEFAULT_VERSION)
+            .join(script_name);
+        tried.push(bundled.display().to_string());
+        if bundled.exists() {
+            return Ok(bundled);
+        }
+
+        // 2) User-copied: <install_dir>\versions\<ver>\<script>
         // This is exactly the path users in issues #26/#37/#42 copied files to.
         let user_candidate = root
             .join("versions")
@@ -877,7 +972,7 @@ fn resolve_script(app: &AppHandle, script_name: &str) -> Result<PathBuf, String>
             return Ok(user_candidate);
         }
 
-        // 2) Content override (writable) in installation directory
+        // 3) Content override (writable) in installation directory
         let content_candidate = root
             .join("content")
             .join("versions")
@@ -888,8 +983,8 @@ fn resolve_script(app: &AppHandle, script_name: &str) -> Result<PathBuf, String>
             return Ok(content_candidate);
         }
 
-        // 3) Bundled versions (from resources staged by build_pipeline Step 6.5)
-        let rel = format!("versions/{}/{}", DEFAULT_VERSION, script_name);
+        // 4) Tauri resolver fallback (covers any non-standard install layout)
+        let rel = format!("resources/versions/{}/{}", DEFAULT_VERSION, script_name);
         if let Some(p) = app.path_resolver().resolve_resource(&rel) {
             tried.push(p.display().to_string());
             if p.exists() {
@@ -899,7 +994,7 @@ fn resolve_script(app: &AppHandle, script_name: &str) -> Result<PathBuf, String>
             tried.push(format!("<bundled> {}", rel));
         }
 
-        // 4) Legacy staging (install dir)
+        // 5) Legacy staging (install dir)
         let legacy_up = root
             .join("_up_")
             .join("versions")
@@ -1014,10 +1109,23 @@ fn start_sidecar_server(app: &AppHandle) -> Result<(SidecarApi, Child), String> 
 
         let py = ensure_python_env(app, &window)?;
 
-        // Resolve the backend entry script from bundled resources
+        // Resolve the backend entry script from bundled resources.
+        // The NSIS bundler places resources at $INSTDIR\resources\... (the
+        // `resources/**` glob in tauri.conf.json preserves that prefix), so
+        // resolve_resource() must be called with the matching path. A bare
+        // "backend/entry_main.py" silently resolves to $INSTDIR\backend\...
+        // which doesn't exist and makes the sidecar fail to launch.
         let backend_script = app
             .path_resolver()
-            .resolve_resource("backend/entry_main.py")
+            .resolve_resource("resources/backend/entry_main.py")
+            .filter(|p| p.exists())
+            .or_else(|| {
+                let direct = local_data_root(app)
+                    .join("resources")
+                    .join("backend")
+                    .join("entry_main.py");
+                if direct.exists() { Some(direct) } else { None }
+            })
             .ok_or_else(|| {
                 "Bundled backend script not found: resources/backend/entry_main.py".to_string()
             })?;
@@ -1043,11 +1151,15 @@ fn start_sidecar_server(app: &AppHandle) -> Result<(SidecarApi, Child), String> 
             pypaths.push(backend_dir.display().to_string());
         }
 
-        // Add modelhub directory (sibling to backend)
-        if let Some(p) = app.path_resolver().resolve_resource("modelhub") {
-            if p.exists() {
-                pypaths.push(p.display().to_string());
-            }
+        // Add modelhub directory (sibling to backend under resources/).
+        // Same prefix rule as the backend script above.
+        let modelhub_dir = app
+            .path_resolver()
+            .resolve_resource("resources/modelhub")
+            .filter(|p| p.exists())
+            .unwrap_or_else(|| local_data_root(app).join("resources").join("modelhub"));
+        if modelhub_dir.exists() {
+            pypaths.push(modelhub_dir.display().to_string());
         }
 
         // Add site-packages from embedded Python
@@ -1310,6 +1422,7 @@ fn shutdown_all(app: &AppHandle, window: Option<&Window>) {
 fn run_python_script(
     app: AppHandle,
     script_name: &str,
+    extra_args: &[&str],
     window: Window,
     inner: Arc<AppStateInner>,
 ) -> Result<String, String> {
@@ -1335,6 +1448,10 @@ fn run_python_script(
 
     // Use -u for unbuffered output so UI gets logs immediately
     cmd.arg("-u").arg(&script_path);
+    // Forward script-specific args (e.g. "--model <path>" for 3-test_model.py).
+    for a in extra_args {
+        cmd.arg(a);
+    }
 
     // Build PYTHONPATH:
     //  - script directory (versions/<ver>)
@@ -1402,11 +1519,54 @@ fn run_python_script(
                 }
             });
 
+            // Stderr reader is also our traceback observer for the AI
+            // debug-loop. We keep emitting every line as before (no UI
+            // change), but maintain a small state machine that detects
+            // Python tracebacks and records them in the in-memory error
+            // buffer for the `recent_errors_for_ai` Tauri command.
             let w2 = window.clone();
+            let inner_for_tb = inner.clone();
+            let script_for_tb = script_path.display().to_string();
             thread::spawn(move || {
                 let reader = BufReader::new(stderr);
+                let mut in_tb = false;
+                let mut tb_buf = String::new();
                 for line in reader.lines().flatten() {
                     let _ = w2.emit("terminal_update", format!("(stderr) {}", line));
+
+                    if line.trim_start().starts_with("Traceback (most recent call last):") {
+                        in_tb = true;
+                        tb_buf.clear();
+                    }
+                    if in_tb {
+                        tb_buf.push_str(&line);
+                        tb_buf.push('\n');
+                        // A non-indented line in the form "Type: message"
+                        // where Type starts uppercase is the error
+                        // terminator (e.g. "ModuleNotFoundError: ...").
+                        let raw = line.trim_end();
+                        let is_indented = raw.starts_with(' ') || raw.starts_with('\t');
+                        if !is_indented && !raw.is_empty() {
+                            if let Some((etype, _)) = raw.split_once(": ") {
+                                if etype
+                                    .chars()
+                                    .next()
+                                    .map_or(false, |c| c.is_ascii_uppercase())
+                                {
+                                    let entry = parse_python_traceback(&tb_buf, &script_for_tb);
+                                    record_error(&inner_for_tb, entry);
+                                    in_tb = false;
+                                    tb_buf.clear();
+                                }
+                            }
+                        }
+                    }
+                }
+                // Stream ended mid-traceback (process killed?). Capture
+                // whatever we have so the user still sees something.
+                if in_tb && !tb_buf.is_empty() {
+                    let entry = parse_python_traceback(&tb_buf, &script_for_tb);
+                    record_error(&inner_for_tb, entry);
                 }
             });
 
@@ -1590,14 +1750,22 @@ async fn start_recording(
     let cap_mouse = capture_mouse.unwrap_or(false);
     let inner = state.inner.clone();
 
-    if let Err(e) = api_post_with(
+    // Sidecar bookkeeping is best-effort. If the sidecar is offline, the
+    // Python script that does the actual recording still runs fine -- only
+    // the SessionManager's dataset registration is skipped. Phrased so the
+    // user doesn't think their recording is broken when it isn't.
+    if let Err(_e) = api_post_with(
         &inner,
         "/session/begin_recording",
         json!({"game_id": gid, "dataset_name": name, "capture_mouse": cap_mouse}),
     )
     .await
     {
-        let _ = window.emit("terminal_update", format!("[Warning] begin_recording failed: {}", e));
+        let _ = window.emit(
+            "terminal_update",
+            "[Sidecar] Session metadata not recorded (sidecar offline). Recording will still start."
+                .to_string(),
+        );
     }
 
     // Pass mouse capture preference as env var for the Python script
@@ -1607,7 +1775,7 @@ async fn start_recording(
         std::env::set_var("BOTMMO_CAPTURE_MOUSE", "false");
     }
 
-    run_python_script(app, "1-collect_data.py", window, inner)
+    run_python_script(app, "1-collect_data.py", &[], window, inner)
 }
 
 #[tauri::command]
@@ -1626,22 +1794,78 @@ async fn start_training(
     let a = arch.unwrap_or_else(|| "custom".to_string());
     let inner = state.inner.clone();
 
-    if let Err(e) = api_post_with(
+    // Same fail-soft pattern as start_recording.
+    if let Err(_e) = api_post_with(
         &inner,
         "/session/begin_training",
         json!({"game_id": gid, "model_name": mname, "dataset_id": did, "arch": a}),
     )
     .await
     {
-        let _ = window.emit("terminal_update", format!("[Warning] begin_training failed: {}", e));
+        let _ = window.emit(
+            "terminal_update",
+            "[Sidecar] Session metadata not recorded (sidecar offline). Training will still start."
+                .to_string(),
+        );
     }
 
-    run_python_script(app, "2-train_model.py", window, inner)
+    run_python_script(app, "2-train_model.py", &[], window, inner)
 }
 
+// Inference. 3-test_model.py declares `--model` as a REQUIRED arg
+// (versions/0.01/3-test_model.py:502), so spawning it without one
+// previously failed silently with "argument --model is required".
+//
+// We resolve the active model from the running sidecar's
+// /modelhub/catalog endpoint, which already returns an `active`
+// field maintained by `mh_set_active_model` in
+// modelhub/registry_store.py. If the user hasn't picked a model, we
+// return a clear error instead of spawning a doomed subprocess --
+// the frontend renders this back as a toast / log message.
 #[tauri::command]
-fn start_bot(app: AppHandle, window: Window, state: tauri::State<AppState>) -> Result<String, String> {
-    run_python_script(app, "3-test_model.py", window, state.inner.clone())
+async fn start_bot(
+    state: tauri::State<'_, AppState>,
+    app: AppHandle,
+    window: Window,
+    game_id: Option<String>,
+) -> Result<String, String> {
+    let gid = normalize_game_id(game_id);
+    let inner = state.inner.clone();
+
+    let catalog = api_get_with(
+        &inner,
+        &format!("/modelhub/catalog?game_id={}", urlencoding::encode(&gid)),
+    )
+    .await
+    .map_err(|e| {
+        format!(
+            "Cannot determine active model: backend sidecar is unreachable ({}). \
+             Open Settings -> System Tools -> Run Diagnosis to inspect, or restart the app.",
+            e
+        )
+    })?;
+
+    let model_path = catalog
+        .get("active")
+        .and_then(|v| if v.is_null() { None } else { Some(v) })
+        .and_then(|v| v.get("model_dir"))
+        .and_then(|m| m.as_str())
+        .map(|s| s.to_string())
+        .ok_or_else(|| {
+            format!(
+                "No active model set for '{}'. Open ModelHub, pick a trained model, \
+                 click 'Set Active', then start the bot.",
+                gid
+            )
+        })?;
+
+    run_python_script(
+        app,
+        "3-test_model.py",
+        &["--model", &model_path],
+        window,
+        inner,
+    )
 }
 
 #[tauri::command]
@@ -1880,10 +2104,26 @@ async fn delete_dataset(
 // ---------------------------
 // INSTALL-HEALTH probe
 // ---------------------------
-// Returns a small JSON describing whether this installation has every piece
-// the app needs to function. The UI calls this on startup and shows a red
-// banner with reinstall instructions when something is missing — exactly
-// the v0.2.0 case the user reported (no python-runtime.zip, no scripts).
+// Returns a structured JSON describing every subsystem the app needs.
+// Two consumers today:
+//   1. The startup banner (main.js#checkInstallHealth) — only cares about
+//      `healthy` and `issues` (plain strings) and the legacy fields.
+//   2. The Settings → System Tools → Run Diagnosis panel — reads the
+//      richer `checks` array and renders one row per item with a status
+//      icon. Each row carries a `severity` so optional features like
+//      drivers can show as "warn" without flipping the whole verdict to
+//      "error" (AAA-game settings UX: optional features never fail-state
+//      the app).
+//
+// Severity levels:
+//   "ok"    — green check; subsystem present and working.
+//   "warn"  — yellow; optional or recoverable (e.g. drivers not installed).
+//   "error" — red; the app cannot function until this is fixed.
+//
+// Overall verdict:
+//   "ready"   — every check is "ok".
+//   "warning" — at least one "warn", no "error".
+//   "error"   — at least one "error".
 #[tauri::command]
 async fn install_health(
     state: tauri::State<'_, AppState>,
@@ -1891,11 +2131,11 @@ async fn install_health(
 ) -> Result<Value, String> {
     let install_dir = installation_dir();
 
-    // Sidecar reachable?
+    let res_root = install_dir.join("resources");
+
+    // --- Per-subsystem probes ---
     let sidecar_ok = state.inner.sidecar.lock().unwrap().is_some();
 
-    // Python runtime present (either the new packed zip OR the legacy
-    // unpacked dir OR an already-extracted one in LocalAppData).
     let runtime_archive = bundled_python_archive(&app).is_some();
     let runtime_unpacked = bundled_python_dir(&app).is_some();
     let runtime_extracted = managed_embedded_python_dir(&app)
@@ -1903,30 +2143,124 @@ async fn install_health(
         .exists();
     let python_ok = runtime_archive || runtime_unpacked || runtime_extracted;
 
-    // ML scripts present (either bundled or user-copied).
-    let bundled_scripts = app
-        .path_resolver()
-        .resolve_resource("versions/0.01/1-collect_data.py")
-        .map(|p| p.exists())
-        .unwrap_or(false);
+    // Bundled Python entrypoints — must live under resources/ in the
+    // canonical install layout. We accept either the canonical path or
+    // a Tauri-resolver hit (covers non-standard installs).
+    let backend_entry = res_root.join("backend").join("entry_main.py");
+    let backend_ok = backend_entry.exists()
+        || app
+            .path_resolver()
+            .resolve_resource("resources/backend/entry_main.py")
+            .map(|p| p.exists())
+            .unwrap_or(false);
+
+    let modelhub_entry = res_root.join("modelhub").join("tauri.py");
+    let modelhub_ok = modelhub_entry.exists()
+        || app
+            .path_resolver()
+            .resolve_resource("resources/modelhub/tauri.py")
+            .map(|p| p.exists())
+            .unwrap_or(false);
+
+    let scripts_root = res_root.join("versions").join(DEFAULT_VERSION);
+    let bundled_scripts = scripts_root.join("1-collect_data.py").exists()
+        && scripts_root.join("2-train_model.py").exists()
+        && scripts_root.join("3-test_model.py").exists();
+    // User-copy fallback (legacy issues #26/#37/#42 workaround).
     let user_copied_scripts = install_dir
         .join("versions")
-        .join("0.01")
+        .join(DEFAULT_VERSION)
         .join("1-collect_data.py")
         .exists();
     let scripts_ok = bundled_scripts || user_copied_scripts;
 
-    let healthy = sidecar_ok && python_ok && scripts_ok;
-    let issues: Vec<&str> = [
-        (!sidecar_ok, "sidecar HTTP API not running"),
-        (!python_ok, "embedded Python runtime missing (python-runtime.zip)"),
-        (!scripts_ok, "ML scripts missing (versions/0.01/*.py)"),
-    ]
-    .iter()
-    .filter_map(|(bad, msg)| if *bad { Some(*msg) } else { None })
-    .collect();
+    // Drivers are OPTIONAL — only needed for keyboard/mouse capture
+    // (interception) or gamepad simulation (vJoy). Missing → warn, not error.
+    let interception_ok = install_dir
+        .join("drivers")
+        .join("interception")
+        .join("install-interception.exe")
+        .exists();
+    let vjoy_ok = install_dir
+        .join("drivers")
+        .join("vjoy")
+        .join("vJoySetup.exe")
+        .exists();
+
+    // Writable logs dir — created by ensure_runtime_layout() on launch,
+    // but we double-check here in case Program Files permissions changed.
+    let logs_dir = install_dir.join("logs");
+    let logs_writable = {
+        let _ = fs::create_dir_all(&logs_dir);
+        let probe = logs_dir.join(".write_probe");
+        let ok = fs::write(&probe, b"ok").is_ok();
+        let _ = fs::remove_file(&probe);
+        ok
+    };
+
+    // --- Build the structured rows ---
+    fn row(id: &str, label: &str, severity: &str, message: String) -> Value {
+        json!({
+            "id": id,
+            "label": label,
+            "severity": severity,
+            "status": match severity { "ok" => "OK", "warn" => "Warning", _ => "Error" },
+            "message": message,
+        })
+    }
+
+    let checks = vec![
+        row("install_dir", "Install directory", "ok",
+            install_dir.display().to_string()),
+        row("sidecar", "Backend sidecar (Python HTTP API)",
+            if sidecar_ok { "ok" } else { "error" },
+            if sidecar_ok { "Running".into() }
+            else { "Not running. Restart the app to retry; if it persists the bundled Python or backend script is missing.".into() }),
+        row("python", "Embedded Python runtime",
+            if python_ok { "ok" } else { "error" },
+            if python_ok { "python-runtime.zip present (or already extracted)".into() }
+            else { "resources/runtime/python-runtime.zip missing. Reinstall the latest installer.".into() }),
+        row("backend", "Bundled backend script",
+            if backend_ok { "ok" } else { "error" },
+            if backend_ok { format!("{}", backend_entry.display()) }
+            else { "resources/backend/entry_main.py missing. Reinstall.".into() }),
+        row("modelhub", "Bundled ModelHub package",
+            if modelhub_ok { "ok" } else { "error" },
+            if modelhub_ok { format!("{}", modelhub_entry.display()) }
+            else { "resources/modelhub/tauri.py missing. Reinstall.".into() }),
+        row("scripts", "ML scripts (versions/0.01)",
+            if scripts_ok { "ok" } else { "error" },
+            if bundled_scripts { format!("{}", scripts_root.display()) }
+            else if user_copied_scripts { "Found user-copied fallback".into() }
+            else { "1-collect_data.py / 2-train_model.py / 3-test_model.py missing. Reinstall.".into() }),
+        row("drivers_interception", "Interception driver (keyboard/mouse capture)",
+            if interception_ok { "ok" } else { "warn" },
+            if interception_ok { "install-interception.exe present".into() }
+            else { "Optional, not installed. Run Settings → Install Drivers if you need keyboard/mouse capture.".into() }),
+        row("drivers_vjoy", "vJoy driver (gamepad simulation)",
+            if vjoy_ok { "ok" } else { "warn" },
+            if vjoy_ok { "vJoySetup.exe present".into() }
+            else { "Optional, not installed. Required only for games that need gamepad input.".into() }),
+        row("logs_writable", "Logs directory is writable",
+            if logs_writable { "ok" } else { "error" },
+            if logs_writable { format!("{}", logs_dir.display()) }
+            else { format!("Cannot write to {}. Run as administrator or relocate the install.", logs_dir.display()) }),
+    ];
+
+    let any_error = checks.iter().any(|c| c["severity"] == "error");
+    let any_warn = checks.iter().any(|c| c["severity"] == "warn");
+    let verdict = if any_error { "error" } else if any_warn { "warning" } else { "ready" };
+
+    // Legacy fields preserved so the existing startup banner keeps working.
+    let healthy = !any_error;
+    let issues: Vec<String> = checks
+        .iter()
+        .filter(|c| c["severity"] == "error")
+        .map(|c| format!("{}: {}", c["label"].as_str().unwrap_or(""), c["message"].as_str().unwrap_or("")))
+        .collect();
 
     Ok(json!({
+        // Legacy (banner) fields:
         "healthy": healthy,
         "sidecar_ok": sidecar_ok,
         "python_ok": python_ok,
@@ -1936,12 +2270,388 @@ async fn install_health(
         "remediation": if healthy {
             "All systems go.".to_string()
         } else {
-            "This install is incomplete (likely the legacy v0.2.0 stub). \
-             Reinstall the latest installer from \
-             https://github.com/ruslanmv/BOT-MMORPG-AI/releases/latest \
-             which bundles the embedded Python runtime and ML scripts."
-                .to_string()
+            "This install is incomplete. Reinstall the latest installer from \
+             https://github.com/ruslanmv/BOT-MMORPG-AI/releases/latest".to_string()
+        },
+        // New (Diagnosis panel) fields:
+        "verdict": verdict,
+        "checks": checks,
+    }))
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// AI debug-loop: Rust-side error capture and aggregation.
+//
+// Pairs with modelhub/diagnostics/ on the sidecar side. The sidecar
+// captures FastAPI exceptions; this captures (a) Python tracebacks
+// emitted on subprocess stderr and (b) explicit failures in Rust
+// code paths. Both feed `recent_errors_for_ai` which builds a
+// Markdown+JSON bundle the user pastes into Claude Code.
+// ─────────────────────────────────────────────────────────────────────
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// Append an error to the in-memory ring buffer. Bounded by MAX_ERRORS.
+fn record_error(inner: &Arc<AppStateInner>, entry: ErrorEntry) {
+    if let Ok(mut buf) = inner.recent_errors.lock() {
+        if buf.len() >= MAX_ERRORS {
+            buf.pop_front();
         }
+        buf.push_back(entry);
+    }
+}
+
+/// Parse a captured Python traceback into a structured ErrorEntry.
+/// Best-effort: extracts the last `File "...", line N` and the final
+/// `<ErrorType>: <message>` line. Falls back to opaque values if the
+/// shape doesn't match.
+fn parse_python_traceback(tb: &str, script_path: &str) -> ErrorEntry {
+    let mut error_type = "PythonError".to_string();
+    let mut message = String::new();
+    let mut primary_file = String::new();
+    let mut primary_line: u32 = 0;
+
+    // Find the last "File ..." line so the primary_file is the most-recent frame.
+    for line in tb.lines() {
+        let l = line.trim_start();
+        if l.starts_with("File \"") {
+            if let Some(rest) = l.strip_prefix("File \"") {
+                if let Some(end_quote) = rest.find('"') {
+                    primary_file = rest[..end_quote].to_string();
+                    if let Some(after) = rest[end_quote + 1..].strip_prefix(", line ") {
+                        let n: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
+                        if let Ok(num) = n.parse::<u32>() {
+                            primary_line = num;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // The error class+message is the last non-empty non-indented line that
+    // contains ": " or "Error" / "Exception" in the type. Walk backwards.
+    for line in tb.lines().rev() {
+        let l = line.trim_end();
+        if l.is_empty() || l.starts_with(' ') || l.starts_with('\t') {
+            continue;
+        }
+        // Lines like "ModuleNotFoundError: No module named 'grabscreen'"
+        if let Some((etype, emsg)) = l.split_once(": ") {
+            if etype.chars().next().map_or(false, |c| c.is_ascii_uppercase()) {
+                error_type = etype.to_string();
+                message = emsg.to_string();
+                break;
+            }
+        }
+        // "(stderr) " prefix gets stripped if the caller passed in raw events
+        if let Some(stripped) = l.strip_prefix("(stderr) ") {
+            if let Some((etype, emsg)) = stripped.split_once(": ") {
+                if etype.chars().next().map_or(false, |c| c.is_ascii_uppercase()) {
+                    error_type = etype.to_string();
+                    message = emsg.to_string();
+                    break;
+                }
+            }
+        }
+    }
+
+    ErrorEntry {
+        timestamp_ms: now_ms(),
+        source: "spawned_script".to_string(),
+        error_type,
+        message,
+        primary_file,
+        primary_line,
+        traceback: tb.to_string(),
+        context: json!({ "spawned_script": script_path }),
+    }
+}
+
+/// Build the Markdown+JSON bundle the UI's "Copy AI Fix Request"
+/// button writes to the clipboard. Mirrors the Python formatter's
+/// shape so a bundle from either layer is structurally identical.
+fn build_ai_bundle(
+    rust_errors: &[ErrorEntry],
+    sidecar_entries: &[Value],
+    app_version: &str,
+    install_dir: &str,
+) -> String {
+    let mut out = String::new();
+    out.push_str("# AI Fix Request\n\n");
+    out.push_str(&format!("- App version: `{}`\n", app_version));
+    out.push_str(&format!("- Install dir: `{}`\n", install_dir));
+    out.push_str(&format!(
+        "- Error count: {} (Rust: {}, sidecar: {})\n",
+        rust_errors.len() + sidecar_entries.len(),
+        rust_errors.len(),
+        sidecar_entries.len()
+    ));
+    out.push_str("\n## Errors\n\n");
+
+    let mut idx = 1;
+    for e in rust_errors {
+        let formatted = json!({
+            "claude_code_task": "fix_runtime_error",
+            "summary": format!("{}: {}", e.error_type, e.message),
+            "source": e.source,
+            "timestamp_ms": e.timestamp_ms,
+            "context": e.context,
+            "error": {
+                "type": e.error_type,
+                "message": e.message,
+                "primary_file": e.primary_file,
+                "primary_line": e.primary_line,
+                "traceback": e.traceback,
+            },
+            "candidate_files": [
+                "src-tauri/src/main.rs",
+                "docs/installer/04-bug-index.md",
+                e.primary_file.clone(),
+            ],
+            "instructions": [
+                "Read each candidate_files path before proposing changes.",
+                "Identify the minimal patch that fixes the root cause.",
+                "Do NOT rewrite entire files. Edit targeted lines only.",
+                "Reference docs/installer/04-bug-index.md for similar prior bugs."
+            ]
+        });
+        out.push_str(&format!(
+            "### Error {} — {}: {}\n\n```json\n{}\n```\n\n",
+            idx,
+            e.error_type,
+            e.message,
+            serde_json::to_string_pretty(&formatted).unwrap_or_default()
+        ));
+        idx += 1;
+    }
+    for e in sidecar_entries {
+        out.push_str(&format!(
+            "### Error {} — {}\n\n```json\n{}\n```\n\n",
+            idx,
+            e.get("summary").and_then(|v| v.as_str()).unwrap_or("(sidecar error)"),
+            serde_json::to_string_pretty(e).unwrap_or_default()
+        ));
+        idx += 1;
+    }
+
+    out.push_str(
+        "## How to use this report\n\n\
+        Paste the entire block above into Claude Code (or any LLM with file \
+        access). The model has enough context — error type, primary file + \
+        line, traceback, candidate_files list — to locate the bug without \
+        further questions. Review every patch before applying.\n",
+    );
+    out
+}
+
+/// Tauri command: returns the AI-ready Markdown bundle. Aggregates
+/// Rust-captured errors with sidecar-captured errors (best-effort HTTP
+/// call; if sidecar is offline we just ship the Rust portion).
+#[tauri::command]
+async fn recent_errors_for_ai(
+    state: tauri::State<'_, AppState>,
+    app: AppHandle,
+) -> Result<String, String> {
+    let inner = state.inner.clone();
+    let rust_errors: Vec<ErrorEntry> = inner
+        .recent_errors
+        .lock()
+        .map(|b| b.iter().cloned().collect())
+        .unwrap_or_default();
+
+    // Best-effort sidecar fetch. Soft-fails so a dead sidecar doesn't
+    // hide Rust-captured errors from the user.
+    let sidecar_entries: Vec<Value> = match api_get_with(&inner, "/diagnostics/recent/ai").await {
+        Ok(resp) => resp
+            .get("entries")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default(),
+        Err(_) => Vec::new(),
+    };
+
+    let version = app.package_info().version.to_string();
+    let install_dir = installation_dir().display().to_string();
+    Ok(build_ai_bundle(
+        &rust_errors,
+        &sidecar_entries,
+        &version,
+        &install_dir,
+    ))
+}
+
+/// Tauri command: clear the Rust-side ring buffer. Returns the count
+/// cleared. The frontend pairs this with a sidecar DELETE to fully
+/// reset state after a fix-and-verify cycle.
+#[tauri::command]
+fn clear_recent_errors(state: tauri::State<AppState>) -> usize {
+    state
+        .inner
+        .recent_errors
+        .lock()
+        .map(|mut b| {
+            let n = b.len();
+            b.clear();
+            n
+        })
+        .unwrap_or(0)
+}
+
+// Cheap version + channel probe. Used by the sidebar version label
+// (so it doesn't have to wait for the GitHub-releases call) and any
+// other UI that wants to show "Installed: vX.Y.Z" without coupling
+// to install_health's bigger payload. Channel is derived from the
+// version string -- "dev"/"alpha"/"nightly" => Dev Build,
+// "rc"/"beta" => Pre-release, otherwise Stable.
+#[tauri::command]
+fn app_info(app: AppHandle) -> Value {
+    let version = app.package_info().version.to_string();
+    let v = version.to_lowercase();
+    let channel = if v.contains("dev") || v.contains("alpha") || v.contains("nightly") {
+        "Dev Build"
+    } else if v.contains("rc") || v.contains("beta") {
+        "Pre-release"
+    } else {
+        "Stable"
+    };
+    json!({
+        "version": version,
+        "channel": channel,
+    })
+}
+
+// Plain-text bundle the user can paste into a GitHub issue / Discord.
+// Aggregates: app version, OS, install paths, the structured health
+// check results, and the active game. No log content here -- the
+// frontend has direct access to the in-app terminal buffer and will
+// append it client-side before copying.
+#[tauri::command]
+async fn support_report(
+    state: tauri::State<'_, AppState>,
+    app: AppHandle,
+) -> Result<String, String> {
+    let h = install_health(state, app.clone()).await?;
+
+    let install_dir = installation_dir();
+    let exe_path = std::env::current_exe()
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|_| "<unknown>".to_string());
+    let version = app.package_info().version.to_string();
+    let os = std::env::consts::OS;
+    let arch = std::env::consts::ARCH;
+
+    let mut out = String::new();
+    out.push_str("# BOT-MMORPG-AI Support Report\n\n");
+    out.push_str(&format!("- App version: {}\n", version));
+    out.push_str(&format!("- OS / arch: {} / {}\n", os, arch));
+    out.push_str(&format!("- Install dir: {}\n", install_dir.display()));
+    out.push_str(&format!("- Executable: {}\n", exe_path));
+    out.push_str(&format!("- Verdict: {}\n\n", h["verdict"].as_str().unwrap_or("?")));
+
+    out.push_str("## Subsystem checks\n\n");
+    if let Some(checks) = h["checks"].as_array() {
+        for c in checks {
+            let sym = match c["severity"].as_str().unwrap_or("") {
+                "ok" => "[OK]",
+                "warn" => "[WARN]",
+                _ => "[FAIL]",
+            };
+            out.push_str(&format!(
+                "- {} {}: {}\n",
+                sym,
+                c["label"].as_str().unwrap_or(""),
+                c["message"].as_str().unwrap_or(""),
+            ));
+        }
+    }
+
+    Ok(out)
+}
+
+// GitHub-releases-based update check. Called by the frontend on startup
+// after install_health resolves; renders an "Update Available" card if
+// a newer release is published. Uses the Rust-side reqwest client we
+// already depend on for the modelhub HTTP plumbing -- no new HTTP
+// allowlist needed in tauri.conf.json (which would have been a
+// security-meaningful change).
+//
+// Version comparison is real semver via the `semver` crate -- string
+// compares would do the wrong thing on prerelease tags like
+// "0.2.1-rc.1" < "0.2.1" or pre-1.0 versions like "0.10.0" vs "0.2.0".
+#[tauri::command]
+async fn check_for_update(app: AppHandle) -> Result<Value, String> {
+    let current_str = app.package_info().version.to_string();
+
+    // GitHub Releases API. We could use /releases/latest, but that
+    // skips prereleases; /releases?per_page=1 picks up nightlies too.
+    // We default to the stable feed for users; switching to prerelease
+    // is a user setting we don't expose yet.
+    let url = "https://api.github.com/repos/ruslanmv/BOT-MMORPG-AI/releases/latest";
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(8))
+        .build()
+        .map_err(|e| format!("http client: {}", e))?;
+
+    let resp = match client
+        .get(url)
+        // GitHub requires a User-Agent on every API request.
+        .header("User-Agent", format!("BOT-MMORPG-AI/{}", current_str))
+        .header("Accept", "application/vnd.github+json")
+        .send()
+        .await
+    {
+        Ok(r) => r,
+        // Don't propagate offline / DNS errors as a hard error -- the
+        // frontend treats this as "no update info" rather than alerting.
+        Err(e) => {
+            return Ok(json!({
+                "ok": false,
+                "reason": format!("network: {}", e),
+                "current_version": current_str,
+            }));
+        }
+    };
+
+    if !resp.status().is_success() {
+        return Ok(json!({
+            "ok": false,
+            "reason": format!("http {}", resp.status().as_u16()),
+            "current_version": current_str,
+        }));
+    }
+
+    let release: Value = resp.json().await.map_err(|e| e.to_string())?;
+    let tag = release["tag_name"].as_str().unwrap_or("");
+    let latest_str = tag.trim_start_matches('v').to_string();
+    let body = release["body"].as_str().unwrap_or("").to_string();
+    let html_url = release["html_url"].as_str().unwrap_or("").to_string();
+    let published = release["published_at"].as_str().unwrap_or("").to_string();
+
+    // Parse both versions; if either fails, fall back to "no update"
+    // rather than alarming the user with a cosmetic comparison failure.
+    let update_available = match (
+        semver::Version::parse(&current_str),
+        semver::Version::parse(&latest_str),
+    ) {
+        (Ok(cur), Ok(lat)) => lat > cur,
+        _ => false,
+    };
+
+    Ok(json!({
+        "ok": true,
+        "update_available": update_available,
+        "current_version": current_str,
+        "latest_version": latest_str,
+        "release_notes": body,
+        "release_url": html_url,
+        "published_at": published,
     }))
 }
 
@@ -2006,6 +2716,7 @@ fn main() {
                 sidecar_process: Mutex::new(None),
                 sidecar: Mutex::new(None),
                 http: Client::new(),
+                recent_errors: Mutex::new(std::collections::VecDeque::with_capacity(MAX_ERRORS)),
             }),
         })
         .on_window_event(|event| {
@@ -2094,6 +2805,11 @@ fn main() {
             list_datasets,
             delete_dataset,
             install_health,
+            support_report,
+            check_for_update,
+            app_info,
+            recent_errors_for_ai,
+            clear_recent_errors,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
@@ -2275,6 +2991,7 @@ mod tests {
                 sidecar_process: Mutex::new(None),
                 sidecar: Mutex::new(None),
                 http: Client::new(),
+                recent_errors: Mutex::new(std::collections::VecDeque::with_capacity(MAX_ERRORS)),
             }),
         };
         assert!(state.inner.current_process.lock().unwrap().is_none());
