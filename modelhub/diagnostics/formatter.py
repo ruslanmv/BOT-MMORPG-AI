@@ -1,16 +1,15 @@
 """
-Format captured errors into an AI-ready bundle.
+Format captured errors into a vendor-neutral, AI-ready bundle.
 
-Output is Markdown with embedded JSON. Optimized for paste into
-Claude Code, but works in any LLM chat:
+Output is Markdown with embedded JSON. Designed to be pasted into
+any AI coding assistant or LLM chat that has file-read access:
 
   - Markdown sections so a human reading it sees structure
-  - A single JSON code block per error so the LLM can parse it
+  - A single JSON code block per error so the model can parse it
     deterministically
-  - Repo-relative file paths preferred over absolute paths so
-    Claude Code can use them as Read tool arguments without the
-    user editing the prompt
-  - Candidate file list at the top so the LLM knows what to load
+  - Repo-relative file paths preferred over absolute paths so the
+    assistant can pass them straight to its file-reader tool
+  - Candidate file list at the top so the model knows what to load
     BEFORE reading the traceback
 
 The formatter is pure: no imports from collector, no I/O. The
@@ -25,9 +24,9 @@ from typing import Any, Dict, List, Optional
 
 def _to_repo_relative(absolute_path: str, repo_root: Optional[str]) -> str:
     """
-    Best-effort: strip repo_root from an absolute path so Claude Code's
-    Read tool sees a clean repo-relative arg. Returns the original path
-    if repo_root is missing or doesn't match.
+    Best-effort: strip repo_root from an absolute path so the assistant's
+    file-reader sees a clean repo-relative arg. Returns the original
+    path if repo_root is missing or doesn't match.
     """
     if not absolute_path or not repo_root:
         return absolute_path
@@ -79,7 +78,7 @@ def format_one(entry: Dict[str, Any], repo_root: Optional[str] = None) -> Dict[s
     into the AI bundle. Pure transformation.
     """
     return {
-        "claude_code_task": "fix_runtime_error",
+        "task": "fix_runtime_error",
         "summary": f"{entry.get('error_type', 'Error')}: {entry.get('message', '')}",
         "source": entry.get("source"),
         "timestamp_iso": time.strftime(
@@ -141,9 +140,8 @@ def format_bundle(
     if not entries:
         return (
             "# AI Fix Request\n\n"
-            "_No errors captured. Either nothing has gone wrong this "
-            "session, or the diagnostic layer wasn't running when the "
-            "error happened._\n"
+            "_No errors captured this session. Reproduce the failing "
+            "action first, then copy this bundle._\n"
         )
 
     lines: List[str] = ["# AI Fix Request", ""]
@@ -173,11 +171,11 @@ def format_bundle(
         lines.append("")
 
     lines.append(
-        "## How to use this report\n\n"
-        "Paste the entire block above into Claude Code (or any LLM with file "
-        "access). The model has enough context — error type, primary file + "
-        "line, traceback, candidate_files list, and recent log tail — to "
-        "locate the bug without further questions. Review every patch before "
+        "## Usage\n\n"
+        "Paste this entire block into your AI coding assistant. It has "
+        "enough context (error type, primary file + line, traceback, "
+        "candidate files, recent log) to locate the root cause without "
+        "follow-up questions. Always review the proposed patch before "
         "applying."
     )
 

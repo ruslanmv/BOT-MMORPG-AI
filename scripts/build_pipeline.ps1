@@ -397,16 +397,44 @@ function Ensure-BundledSitePackages {
   # Prefer .venv if it exists (local dev), otherwise discover Python 3.10 (CI)
   $hostPy = $null
 
-  # 1) Local dev venv
+  # 1) Local dev venv (preferred when a developer has run `make install`).
   $venvPy = Join-Path $RootDir ".venv\Scripts\python.exe"
   if (Test-Path $venvPy) {
     $hostPy = $venvPy
     Log-Info "Using build venv Python: $hostPy"
   }
 
-  # 2) Windows Python Launcher (py -3.10)
+  # 2) Embedded Python downloaded by THIS pipeline at STEP 2.
+  #
+  # Step 2 of build_pipeline.ps1 downloads python-3.10.11-embed-amd64 to
+  # third_party/python/ and patches it for use as the bundled runtime.
+  # That same Python is exactly what the wheelhouse (cp310 win_amd64) is
+  # built against, so it's the most reliable host for Step 99 -- and
+  # crucially it's ALWAYS available by the time we get here, even when
+  # the user hasn't run `make install` to create .venv.
+  #
+  # Without this candidate Step 99 falls through to system PATH, which
+  # on the user's machine is Python 3.11, mismatching the wheelhouse and
+  # aborting the build with:
+  #   "Step 99 must run with Python 3.10 to match wheelhouse
+  #    (win_amd64_cp310). Got: 3.11"
   if (-not $hostPy) {
-    Log-Info "Build venv not found at $venvPy, searching for Python 3.10..."
+    $embeddedDir = Get-ChildItem -Path (Join-Path $RootDir "third_party\python") `
+                                 -Directory -Filter "python-3.10*-embed-amd64" `
+                                 -ErrorAction SilentlyContinue |
+                   Sort-Object Name -Descending | Select-Object -First 1
+    if ($embeddedDir) {
+      $candidate = Join-Path $embeddedDir.FullName "python.exe"
+      if (Test-Path $candidate) {
+        $hostPy = $candidate
+        Log-Info "Using bundled embedded Python (downloaded by STEP 2): $hostPy"
+      }
+    }
+  }
+
+  # 3) Windows Python Launcher (py -3.10)
+  if (-not $hostPy) {
+    Log-Info "Build venv + bundled embedded Python not found, searching for system Python 3.10..."
     try {
       $pyLauncher = Get-Command py -ErrorAction SilentlyContinue
       if ($pyLauncher) {
@@ -419,7 +447,7 @@ function Ensure-BundledSitePackages {
     } catch {}
   }
 
-  # 3) GitHub Actions hostedtoolcache (setup-python puts 3.10 here)
+  # 4) GitHub Actions hostedtoolcache (setup-python puts 3.10 here)
   if (-not $hostPy) {
     $toolcacheBase = "C:\hostedtoolcache\windows\Python"
     if (Test-Path $toolcacheBase) {
@@ -435,14 +463,14 @@ function Ensure-BundledSitePackages {
     }
   }
 
-  # 4) Generic 'python' in PATH (last resort)
+  # 5) Generic 'python' in PATH (last resort, may not be 3.10)
   if (-not $hostPy) {
     $sysPy = Get-Command python -ErrorAction SilentlyContinue
     if ($sysPy) {
       $hostPy = $sysPy.Source
       Log-Info "Using system Python (may not be 3.10): $hostPy"
     } else {
-      throw "No Python found: neither .venv, py launcher, hostedtoolcache, nor system 'python' in PATH"
+      throw "No Python found: tried .venv, third_party/python embedded, py launcher, hostedtoolcache, system 'python' in PATH"
     }
   }
 

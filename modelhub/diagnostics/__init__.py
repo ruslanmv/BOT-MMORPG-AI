@@ -5,7 +5,8 @@ Plugs into modelhub/tauri.py via a single router include and a single
 exception-handling middleware. Captures runtime errors into an
 in-memory ring buffer that the Tauri Rust side aggregates with its
 own error stream, then surfaces in the Settings -> System Tools UI
-as a Markdown+JSON bundle the user copies into Claude Code.
+as a structured Markdown+JSON bundle the user copies into any AI
+coding assistant or LLM chat for a focused fix request.
 
 Design constraints (from the originating design doc):
   - additive only: this package does not touch any existing module
@@ -14,9 +15,11 @@ Design constraints (from the originating design doc):
   - read-only observation: nothing here changes request/response
     semantics; middleware re-raises every exception it captures
   - human-governed: AI suggests, humans approve. We never auto-apply.
+  - vendor-neutral: the bundle format is structured JSON usable by any
+    LLM with file-read access; no specific assistant is hardcoded.
 
 Modules:
   collector.py  ring buffer + capture API
-  formatter.py  AI-ready Markdown bundle
+  formatter.py  vendor-neutral structured bundle
   routes.py     FastAPI APIRouter mounted by modelhub.tauri.main()
 """

@@ -7,15 +7,27 @@ Covers the two pure-Python files added in commit c1e2688:
 
 The third file (routes.py) imports FastAPI and is exercised at sidecar
 startup; we skip its tests in this venv where FastAPI isn't installed.
+
+Also exercises the sitecustomize.py that src-tauri/src/main.rs writes
+into the bundled embedded-Python site-packages on every launch -- by
+extracting the literal-string lines from main.rs and compiling them
+as Python. Regression guard against the IndentationError we hit when
+the Rust source previously used `\` line continuations that swallowed
+the leading whitespace inside the `if`-body.
 """
 
 from __future__ import annotations
 
 import json
+import re
+from pathlib import Path
 
 import pytest
 
 from modelhub.diagnostics import collector, formatter
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+MAIN_RS = REPO_ROOT / "src-tauri" / "src" / "main.rs"
 
 
 # ---------------------------------------------------------------------
@@ -199,7 +211,10 @@ class TestFormatter:
     def test_format_one_produces_expected_shape(self):
         entry = self._sample_entry()
         out = formatter.format_one(entry, repo_root="/abs/path/to/repo")
-        assert out["claude_code_task"] == "fix_runtime_error"
+        assert out["task"] == "fix_runtime_error"
+        # Vendor-neutral: must NOT carry a vendor-specific key like
+        # claude_code_task / chatgpt_task / etc. The bundle is generic.
+        assert "claude_code_task" not in out
         assert out["summary"].startswith("ModuleNotFoundError:")
         assert out["error"]["type"] == "ModuleNotFoundError"
         assert out["error"]["primary_file"] == "versions/0.01/1-collect_data.py"
@@ -243,8 +258,11 @@ class TestFormatter:
         # Recent log section appended
         assert "## Recent in-app log tail" in out
         assert "ModuleNotFoundError" in out
-        # How-to footer
-        assert "Paste the entire block above into Claude Code" in out
+        # How-to footer is vendor-neutral: must mention "AI coding
+        # assistant" (the new generic phrasing) and must NOT name a
+        # specific vendor product like Claude Code or ChatGPT.
+        assert "AI coding assistant" in out
+        assert "Claude Code" not in out
 
     def test_format_bundle_with_multiple_errors_numbers_sections(self):
         entries = [
@@ -288,3 +306,130 @@ class TestEndToEnd:
         assert all_fences == 2 * json_blocks, (
             "Markdown code-block fences are unbalanced"
         )
+
+
+# ---------------------------------------------------------------------
+# Embedded sitecustomize.py guardrail
+#
+# The Rust runtime (src-tauri/src/main.rs#ensure_python_env) writes a
+# tiny sitecustomize.py into the bundled embedded-Python site-packages
+# on every launch. Its job is to read BOT_VERSION_DIR (set by Rust)
+# and prepend it to sys.path so spawned scripts can import sibling
+# modules (grabscreen, getkeys, vjoy2, ...).
+#
+# A previous revision wrote that file via a single Rust string literal
+# with `\` line continuations. Rust collapses every "\n\<whitespace>"
+# into just "\n", which dedented the body of the if-statement and made
+# Python reject the file with IndentationError -- breaking every
+# spawned script the moment it tried a relative import.
+#
+# This test reads main.rs, extracts the literal sitecustomize_lines
+# array, joins it the same way the Rust code does, and asks Python's
+# compiler to parse it. If the indentation is wrong, compile() raises
+# SyntaxError and this test fails before the broken bundle ever ships.
+# ---------------------------------------------------------------------
+
+
+class TestEmbeddedSitecustomize:
+    def _extract_lines(self) -> list[str]:
+        """
+        Pull the sitecustomize_lines: &[&str] = &[ ... ]; block out of
+        main.rs and return each Python line as a string. Uses a simple
+        regex anchored on the variable name so it's robust to surrounding
+        comment/code changes.
+        """
+        if not MAIN_RS.exists():
+            pytest.skip(f"main.rs not found: {MAIN_RS}")
+        text = MAIN_RS.read_text(encoding="utf-8")
+        m = re.search(
+            r"sitecustomize_lines:\s*&\[&str\]\s*=\s*&\[(.*?)\];",
+            text,
+            re.DOTALL,
+        )
+        assert m, (
+            "Could not locate sitecustomize_lines in main.rs. "
+            "If the Rust shape changed, update this test's regex."
+        )
+        body = m.group(1)
+        # Each entry is a "..." string literal. Pull them out.
+        return re.findall(r'"((?:[^"\\]|\\.)*)"', body)
+
+    def test_lines_present(self):
+        lines = self._extract_lines()
+        assert lines, "sitecustomize_lines array was empty"
+
+    def test_compiles_as_valid_python(self):
+        lines = self._extract_lines()
+        source = "\n".join(lines)
+        # If indentation is wrong, compile() raises SyntaxError /
+        # IndentationError and this test fails. That's the regression
+        # we're guarding against.
+        try:
+            compile(source, "<sitecustomize.py from main.rs>", "exec")
+        except SyntaxError as e:
+            pytest.fail(
+                f"Embedded sitecustomize.py is not valid Python: {e}\n"
+                f"Source rebuilt from main.rs:\n---\n{source}\n---"
+            )
+
+    def test_executes_without_runtime_error(self):
+        """
+        The compiled sitecustomize must also be runnable (no NameError
+        for missing imports etc.). Run it in a clean namespace with a
+        synthetic BOT_VERSION_DIR pointing at this repo.
+        """
+        import os
+
+        lines = self._extract_lines()
+        source = "\n".join(lines)
+        ns: dict = {}
+        old_env = os.environ.get("BOT_VERSION_DIR")
+        os.environ["BOT_VERSION_DIR"] = str(REPO_ROOT)
+        try:
+            exec(compile(source, "<sitecustomize>", "exec"), ns)
+        finally:
+            if old_env is None:
+                os.environ.pop("BOT_VERSION_DIR", None)
+            else:
+                os.environ["BOT_VERSION_DIR"] = old_env
+
+    def test_inserts_vdir_into_sys_path(self):
+        """
+        End-to-end: when BOT_VERSION_DIR is set, the script should
+        prepend that directory to sys.path. We verify by running the
+        compiled module against a fresh sys.path-shaped list.
+        """
+        import os
+        import sys
+
+        lines = self._extract_lines()
+        source = "\n".join(lines)
+        sentinel = str(REPO_ROOT / "versions" / "0.01")
+
+        # Temporarily inject BOT_VERSION_DIR pointing at a real dir
+        # (versions/0.01 must exist for the os.path.isdir check to pass).
+        if not Path(sentinel).is_dir():
+            pytest.skip(f"versions/0.01 dir not present at {sentinel}")
+
+        old_env = os.environ.get("BOT_VERSION_DIR")
+        old_path = list(sys.path)
+        try:
+            os.environ["BOT_VERSION_DIR"] = sentinel
+            # Make sure the sentinel isn't already on sys.path (would
+            # make the "if not in sys.path" branch a no-op and we'd
+            # fail to detect breakage).
+            sys.path[:] = [p for p in sys.path if p != sentinel]
+            exec(compile(source, "<sitecustomize>", "exec"), {})
+            assert sentinel in sys.path, (
+                "sitecustomize did not prepend BOT_VERSION_DIR to sys.path"
+            )
+            # And it must be at the FRONT (insert(0, ...))
+            assert sys.path[0] == sentinel, (
+                "sitecustomize inserted BOT_VERSION_DIR but not at index 0"
+            )
+        finally:
+            sys.path[:] = old_path
+            if old_env is None:
+                os.environ.pop("BOT_VERSION_DIR", None)
+            else:
+                os.environ["BOT_VERSION_DIR"] = old_env

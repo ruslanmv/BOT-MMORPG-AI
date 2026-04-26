@@ -1,5 +1,6 @@
 # 05 — Case Studies
 
+{% raw %}
 Worked examples of the bugs fixed on the
 `claude/verify-directory-structure-DLUt1` branch. Read these to learn
 the failure modes and the right way to fix them.
@@ -211,3 +212,4 @@ Re-asserts `hidden`'s semantic above every per-component `display` rule.
 override the UA `[hidden]` rule. Either use `!important` once globally
 (this fix), or write `.my-class[hidden] { display: none }` for every
 class — the global rule is much less maintenance.
+{% endraw %}
