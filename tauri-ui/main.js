@@ -1148,6 +1148,7 @@ async function checkInstallHealth() {
     window.__lastHealth = h;
 
     // Sidebar gear gets a red dot when any check is severity=error.
+    // Warnings alone don't show the dot -- avoids alarm fatigue.
     const dot = document.getElementById("settings-health-dot");
     if (dot) {
       const anyErr = Array.isArray(h.checks)
@@ -1157,36 +1158,96 @@ async function checkInstallHealth() {
     }
 
     const banner   = document.getElementById("install-health-banner");
+    const titleEl  = document.getElementById("install-health-title");
     const detailEl = document.getElementById("install-health-detail");
-    if (!banner || !detailEl) return;
+    if (!banner || !detailEl || !titleEl) return;
 
-    if (h.healthy) {
+    // Verdict: "ready" / "warning" / "error". Fall back to legacy
+    // healthy boolean for builds that predate the verdict field.
+    const verdict = h.verdict || (h.healthy ? "ready" : "error");
+
+    // Healthy -> hide. Warnings alone don't trigger the banner unless
+    // we want them to (we do, with softer copy -- see below).
+    if (verdict === "ready") {
       banner.hidden = true;
       logToTerminal("Install health: OK", "success");
       return;
     }
 
-    // Build a clean summary list of failing checks. Prefer the rich
-    // `checks` array (severity=error) over the legacy `issues` strings.
     const errs = Array.isArray(h.checks)
       ? h.checks.filter(c => c.severity === "error")
       : (h.issues || []).map(s => ({ label: s, message: "" }));
+    const warns = Array.isArray(h.checks)
+      ? h.checks.filter(c => c.severity === "warn")
+      : [];
 
-    const lines = errs.map(c => {
-      const label = (c.label || c.id || "").toString();
-      const msg   = (c.message || "").toString();
-      const safe  = (s) => s.replace(/[<>&]/g, ch => ({'<':'&lt;','>':'&gt;','&':'&amp;'})[ch]);
-      return `<li><strong>${safe(label)}</strong>${msg ? ` — <span style="opacity:.85">${safe(msg)}</span>` : ""}</li>`;
-    }).join("");
+    // Pick title + remediation by verdict, with extra branching for
+    // permissions-only error sets (the user CAN fix that without a
+    // reinstall -- "run as admin or relocate" is the actionable copy).
+    let title;
+    let remediation;
+    let cardClass;
+    let logSeverity;
+    let itemsToShow;
+
+    const isPermissionsOnly =
+      errs.length > 0 &&
+      errs.every(c =>
+        c.id === "logs_writable" ||
+        /writable|permission|access\s*denied/i.test(c.message || "")
+      );
+
+    if (verdict === "error") {
+      cardClass = "notification-card error";
+      logSeverity = "error";
+      itemsToShow = errs;
+      if (isPermissionsOnly) {
+        // User-fixable without a reinstall. Steam-grade: tell them
+        // exactly what to do and why.
+        title = "Permission issue — admin required";
+        remediation =
+          "The app can't write to its install directory. Two safe fixes:" +
+          "<ul style='margin-top:6px;'>" +
+            "<li>Right-click the app shortcut → <b>Run as administrator</b>.</li>" +
+            "<li>Or reinstall to a user-writable location " +
+              "(e.g. <code>%LOCALAPPDATA%\\BOT-MMORPG-AI</code>).</li>" +
+          "</ul>";
+      } else {
+        title = "Backend installation is incomplete";
+        remediation =
+          h.remediation ||
+          "Reinstall the latest installer to restore the missing components.";
+      }
+    } else {
+      // verdict === "warning". Lighter visual + non-blocking copy.
+      cardClass = "notification-card warning";
+      logSeverity = "warning";
+      itemsToShow = warns;
+      title = "Action recommended";
+      remediation =
+        "The app is running, but a non-critical issue was detected. " +
+        "Review the items below — none of them block recording or training.";
+    }
+
+    titleEl.textContent = title;
+    banner.className = cardClass;
+
+    const lines = itemsToShow
+      .map(c => {
+        const label = (c.label || c.id || "").toString();
+        const msg = (c.message || "").toString();
+        const safe = s => s.replace(/[<>&]/g, ch => ({"<":"&lt;",">":"&gt;","&":"&amp;"})[ch]);
+        return `<li><strong>${safe(label)}</strong>${msg ? ` — <span style="opacity:.85">${safe(msg)}</span>` : ""}</li>`;
+      })
+      .join("");
 
     detailEl.innerHTML =
-      (h.remediation || "Reinstall the latest installer to restore the missing components.") +
-      (lines ? `<br><br><strong>Detected:</strong><ul>${lines}</ul>` : "");
+      remediation + (lines ? `<br><br><strong>Detected:</strong><ul>${lines}</ul>` : "");
 
     banner.hidden = false;
     logToTerminal(
-      "Install health: INCOMPLETE -- " + (h.issues || []).join("; "),
-      "error"
+      `Install health: ${verdict.toUpperCase()} -- ` + (h.issues || []).join("; "),
+      logSeverity
     );
     // NOTE: install-health-dismiss / install-health-open-diagnosis click
     // handlers are wired ONCE in the inline DOMContentLoaded block at the

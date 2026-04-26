@@ -530,6 +530,21 @@ fn copy_dir_all(src: &Path, dst: &Path) -> std::io::Result<()> {
 /// - include our portable site-packages dir (absolute path) on sys.path
 ///
 /// Without this, embeddable python may ignore env vars and refuse to import installed deps.
+///
+/// IDEMPOTENCY (added after a Program-Files install hit
+/// "Failed to patch embeddable python _pth: Access is denied"):
+/// the build pipeline already patches _pth at build time, so on the
+/// install machine the file usually already has both required lines.
+/// Re-writing the same bytes from a non-elevated process under
+/// Program Files fails with EACCES even though no actual change is
+/// needed. We now compute the desired content first; if it matches
+/// what's on disk byte-for-byte, we skip the write entirely.
+///
+/// SOFT-FAIL: even when content DOES need updating, a write failure
+/// here is non-fatal -- the build-time patch is normally sufficient
+/// and any embedded-Python launch we do will still find site-packages
+/// via the existing `.\site-packages` line. We log a warning instead
+/// of returning an error so the recording / training flow proceeds.
 fn patch_embedded_python_pth(py_dir: &Path, site_packages: &Path) -> Result<(), String> {
     // Common: python310._pth (or python311._pth, etc.)
     let mut pth_file: Option<PathBuf> = None;
@@ -553,11 +568,8 @@ fn patch_embedded_python_pth(py_dir: &Path, site_packages: &Path) -> Result<(), 
         return Ok(());
     };
 
-    let mut lines: Vec<String> = fs::read_to_string(&pth)
-        .unwrap_or_default()
-        .lines()
-        .map(|s| s.trim_end().to_string())
-        .collect();
+    let existing = fs::read_to_string(&pth).unwrap_or_default();
+    let mut lines: Vec<String> = existing.lines().map(|s| s.trim_end().to_string()).collect();
 
     let sp = site_packages.display().to_string();
 
@@ -571,7 +583,31 @@ fn patch_embedded_python_pth(py_dir: &Path, site_packages: &Path) -> Result<(), 
         lines.push("import site".to_string());
     }
 
-    fs::write(&pth, lines.join("\r\n") + "\r\n").map_err(|e| e.to_string())?;
+    let desired = lines.join("\r\n") + "\r\n";
+
+    // Idempotent fast-path: if the on-disk content already matches
+    // what we'd write, skip the write entirely. This avoids the
+    // EACCES on Program Files installs whose _pth was already
+    // correctly patched at build time.
+    if existing == desired {
+        return Ok(());
+    }
+
+    // Soft-fail: write attempt may fail under Program Files for
+    // unprivileged processes. The build-time patch is usually
+    // sufficient -- log and proceed instead of blocking the user's
+    // recording / training flow.
+    if let Err(e) = fs::write(&pth, &desired) {
+        // We deliberately do NOT return Err -- the caller treats the
+        // return value as fatal (see ensure_python_env), and a
+        // failure here historically blocked Start Recording entirely.
+        eprintln!(
+            "[warn] patch_embedded_python_pth: could not write {}: {} \
+             (proceeding -- build-time patch is likely already sufficient)",
+            pth.display(),
+            e
+        );
+    }
     Ok(())
 }
 
@@ -1280,25 +1316,43 @@ fn start_sidecar_server(app: &AppHandle) -> Result<(SidecarApi, Child), String> 
 // ---------------------------
 // HTTP HELPERS
 // ---------------------------
-/// Wait up to ~5 seconds for the sidecar to become ready, polling every 500ms.
+/// Wait up to ~30 seconds for the sidecar to become ready, polling every 500ms.
+///
+/// Why 30s and not 5s: the bundled Python sidecar imports fastapi +
+/// uvicorn + numpy + torch + cv2 before printing READY. On a cold
+/// disk cache (first launch after install, AV real-time scan, slow
+/// HDD), that easily exceeds 5 seconds. The previous 5s timeout
+/// made `make build-installer` -> install -> launch fire a
+/// FALSE-POSITIVE "Backend installation is incomplete" banner on
+/// every first run. AAA launchers (Steam, Battle.net, Riot Client)
+/// all wait 20-60s for backend services to come up before declaring
+/// failure -- we follow that convention.
+///
+/// Polling stays at 500ms so a fast-starting sidecar (warm cache)
+/// still feels instant -- we just don't give up early.
+const SIDECAR_READY_TIMEOUT_SECS: u64 = 30;
+const SIDECAR_READY_POLL_MS: u64 = 500;
+
 async fn wait_for_sidecar(inner: &Arc<AppStateInner>) -> Result<SidecarApi, String> {
-    for attempt in 0..10 {
+    let total_attempts = (SIDECAR_READY_TIMEOUT_SECS * 1000 / SIDECAR_READY_POLL_MS) as usize;
+    for attempt in 0..total_attempts {
         {
             let guard = inner.sidecar.lock().unwrap();
             if let Some(ref api) = *guard {
                 return Ok(api.clone());
             }
         }
-        if attempt < 9 {
-            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        if attempt + 1 < total_attempts {
+            tokio::time::sleep(std::time::Duration::from_millis(SIDECAR_READY_POLL_MS)).await;
         }
     }
-    Err(
-        "Sidecar API not ready after 5 s. Likely cause: the installer is missing \
-         resources/python, resources/backend, or resources/modelhub. See the terminal \
-         log for [Fatal] Sidecar failed: ... (issues #26, #37, #42)."
-            .to_string(),
-    )
+    Err(format!(
+        "Sidecar API not ready after {} s. Likely cause: the installer is missing \
+         resources/python, resources/backend, or resources/modelhub, OR the embedded \
+         Python crashed on import (check the terminal log for [Fatal] Sidecar failed: \
+         ... -- issues #26, #37, #42).",
+        SIDECAR_READY_TIMEOUT_SECS
+    ))
 }
 
 /// Default timeout on every sidecar HTTP call so a hung Python backend
@@ -2137,6 +2191,17 @@ async fn delete_dataset(
 //   "ready"   — every check is "ok".
 //   "warning" — at least one "warn", no "error".
 //   "error"   — at least one "error".
+
+/// True when the given install dir lives under Program Files on Windows.
+/// Used by install_health to surface a UX warning (writable scratch
+/// dirs require admin elevation under Program Files), and by anything
+/// else that wants to recommend relocation. Case-insensitive match
+/// because Windows filesystems are case-insensitive by default.
+fn _is_under_program_files(p: &Path) -> bool {
+    let s = p.display().to_string().replace('\\', "/").to_ascii_lowercase();
+    s.starts_with("c:/program files") || s.starts_with("c:/program files (x86)")
+}
+
 #[tauri::command]
 async fn install_health(
     state: tauri::State<'_, AppState>,
@@ -2258,6 +2323,25 @@ async fn install_health(
             if logs_writable { "ok" } else { "error" },
             if logs_writable { format!("{}", logs_dir.display()) }
             else { format!("Cannot write to {}. Run as administrator or relocate the install.", logs_dir.display()) }),
+        // Non-blocking: flag Program Files installs as a UX hazard.
+        // Even when logs_writable currently passes (e.g. UAC elevated this
+        // session), the install will fail to write logs / datasets / models
+        // for unprivileged future launches. Surface as warn so the user
+        // can choose to relocate proactively, but do NOT flip the
+        // verdict to "error" -- the install still works, it's just
+        // brittle on that location.
+        row("install_location_privileged", "Install location",
+            if _is_under_program_files(&install_dir) { "warn" } else { "ok" },
+            if _is_under_program_files(&install_dir) {
+                format!(
+                    "Installed under Program Files ({}). Writes to logs/datasets/models \
+                     require admin elevation; consider relocating to %LOCALAPPDATA% \
+                     or another user-writable location to avoid permission errors.",
+                    install_dir.display()
+                )
+            } else {
+                format!("{} (user-writable)", install_dir.display())
+            }),
     ];
 
     let any_error = checks.iter().any(|c| c["severity"] == "error");
@@ -2387,12 +2471,13 @@ fn parse_python_traceback(tb: &str, script_path: &str) -> ErrorEntry {
     }
 }
 
-/// Build the Markdown+JSON bundle the UI's "Copy AI Fix Request"
-/// button writes to the clipboard. Mirrors the Python formatter's
-/// shape so a bundle from either layer is structurally identical.
+/// Build the Markdown+JSON bundle the UI's "Copy AI Bundle" button
+/// writes to the clipboard. Mirrors the Python formatter's shape so a
+/// bundle from either layer is structurally identical.
 fn build_ai_bundle(
     rust_errors: &[ErrorEntry],
     sidecar_entries: &[Value],
+    probe: Option<&Value>,
     app_version: &str,
     install_dir: &str,
 ) -> String {
@@ -2454,19 +2539,123 @@ fn build_ai_bundle(
         idx += 1;
     }
 
+    if let Some(probe_val) = probe {
+        out.push_str(
+            "## System probe\n\n\
+             _Deep diagnostic capture (system info, disk free, network, \
+             embedded-Python health, file integrity, environment, \
+             antivirus). Fired automatically when the runtime verdict \
+             is non-OK._\n\n",
+        );
+        out.push_str("```json\n");
+        out.push_str(
+            &serde_json::to_string_pretty(probe_val).unwrap_or_default(),
+        );
+        out.push_str("\n```\n\n");
+    }
+
     out.push_str(
         "## Usage\n\n\
         Paste this entire block into your AI coding assistant. It has \
         enough context (error type, primary file + line, traceback, \
-        candidate files) to locate the root cause without follow-up \
-        questions. Always review the proposed patch before applying.\n",
+        candidate files, system probe) to locate the root cause without \
+        follow-up questions. Always review the proposed patch before \
+        applying.\n",
     );
     out
 }
 
+/// Run a deep system probe via the bundled embedded Python.
+///
+/// The probe lives in `modelhub.diagnostics.health_probe.deep_probe`
+/// and returns a structured dict with: system info, disk free, network
+/// reachability, embedded-Python health (importable packages),
+/// file-integrity hashes of critical bundled files, filtered env vars,
+/// and an antivirus presence hint.
+///
+/// Two-pathway dispatch:
+///   1. If the sidecar is up, fetch /diagnostics/deep_probe over HTTP.
+///      Cheap, reuses the running interpreter.
+///   2. If the sidecar is dead (the most common case when the user
+///      needs a deep probe), spawn the bundled python.exe directly to
+///      run the same module. We can't ask a dead sidecar to
+///      introspect itself.
+///
+/// Returns None on total failure; the caller proceeds without the
+/// probe field rather than escalating.
+async fn fetch_deep_probe(app: &AppHandle, inner: &Arc<AppStateInner>) -> Option<Value> {
+    // Path 1: sidecar HTTP. Short timeout so a hung sidecar doesn't
+    // block the bundle for long.
+    if let Ok(resp) = api_get_with(inner, "/diagnostics/deep_probe").await {
+        if let Some(probe) = resp.get("probe") {
+            return Some(probe.clone());
+        }
+    }
+
+    // Path 2: spawn embedded python directly. Same code path that
+    // the sidecar would have run, just from Rust.
+    let py_exe = managed_embedded_python_dir(app).join(if is_windows() {
+        "python.exe"
+    } else {
+        "bin/python3"
+    });
+    if !py_exe.exists() {
+        return None;
+    }
+
+    let install_dir = installation_dir();
+    let mut cmd = Command::new(&py_exe);
+    apply_stable_python_env(&mut cmd);
+
+    // PYTHONPATH must reach modelhub.diagnostics.health_probe. The
+    // bundled modelhub package lives at $INSTDIR\resources\modelhub.
+    let sep = if is_windows() { ";" } else { ":" };
+    let pypaths = vec![
+        install_dir.join("resources").display().to_string(),
+        managed_site_packages_dir(app).display().to_string(),
+    ];
+    cmd.env("PYTHONPATH", pypaths.join(sep));
+    cmd.env(
+        "MODELHUB_DATA_ROOT",
+        install_dir.display().to_string(),
+    );
+    cmd.env(
+        "MODELHUB_RESOURCE_ROOT",
+        install_dir.join("resources").display().to_string(),
+    );
+
+    cmd.arg("-c").arg(
+        "import json, sys; \
+         from modelhub.diagnostics.health_probe import deep_probe; \
+         sys.stdout.write(json.dumps(deep_probe()))",
+    );
+    cmd.stdout(Stdio::piped());
+    cmd.stderr(Stdio::piped());
+
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+
+    let output = match cmd.output() {
+        Ok(o) => o,
+        Err(_) => return None,
+    };
+    if !output.status.success() {
+        return None;
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    serde_json::from_str::<Value>(&stdout).ok()
+}
+
 /// Tauri command: returns the AI-ready Markdown bundle. Aggregates
 /// Rust-captured errors with sidecar-captured errors (best-effort HTTP
-/// call; if sidecar is offline we just ship the Rust portion).
+/// call; if sidecar is offline we just ship the Rust portion). Also
+/// runs a deep system probe so the bundle has enough context for an
+/// AI assistant to diagnose issues that didn't produce a structured
+/// error (e.g. sidecar that never started).
 #[tauri::command]
 async fn recent_errors_for_ai(
     state: tauri::State<'_, AppState>,
@@ -2490,11 +2679,16 @@ async fn recent_errors_for_ai(
         Err(_) => Vec::new(),
     };
 
+    // Deep probe: fired unconditionally so the bundle is rich even when
+    // no errors were captured (e.g. silent sidecar startup failure).
+    let probe = fetch_deep_probe(&app, &inner).await;
+
     let version = app.package_info().version.to_string();
     let install_dir = installation_dir().display().to_string();
     Ok(build_ai_bundle(
         &rust_errors,
         &sidecar_entries,
+        probe.as_ref(),
         &version,
         &install_dir,
     ))
@@ -2550,6 +2744,10 @@ async fn support_report(
     state: tauri::State<'_, AppState>,
     app: AppHandle,
 ) -> Result<String, String> {
+    // Clone the AppStateInner Arc BEFORE handing `state` to install_health
+    // -- install_health consumes its state argument, but we still need
+    // the inner reference afterward to drive fetch_deep_probe.
+    let inner = state.inner.clone();
     let h = install_health(state, app.clone()).await?;
 
     let install_dir = installation_dir();
@@ -2559,6 +2757,7 @@ async fn support_report(
     let version = app.package_info().version.to_string();
     let os = std::env::consts::OS;
     let arch = std::env::consts::ARCH;
+    let verdict = h["verdict"].as_str().unwrap_or("?").to_string();
 
     let mut out = String::new();
     out.push_str("# BOT-MMORPG-AI Support Report\n\n");
@@ -2566,7 +2765,7 @@ async fn support_report(
     out.push_str(&format!("- OS / arch: {} / {}\n", os, arch));
     out.push_str(&format!("- Install dir: {}\n", install_dir.display()));
     out.push_str(&format!("- Executable: {}\n", exe_path));
-    out.push_str(&format!("- Verdict: {}\n\n", h["verdict"].as_str().unwrap_or("?")));
+    out.push_str(&format!("- Verdict: {}\n\n", verdict));
 
     out.push_str("## Subsystem checks\n\n");
     if let Some(checks) = h["checks"].as_array() {
@@ -2582,6 +2781,25 @@ async fn support_report(
                 c["label"].as_str().unwrap_or(""),
                 c["message"].as_str().unwrap_or(""),
             ));
+        }
+    }
+
+    // Deep probe -- only when the verdict is non-OK. On a healthy
+    // install we omit it to keep the bundle small; the user is most
+    // likely reporting a real issue when verdict != "ready".
+    if verdict != "ready" {
+        if let Some(probe) = fetch_deep_probe(&app, &inner).await {
+            out.push_str("\n## System probe\n\n");
+            out.push_str(
+                "_Deep diagnostic capture (system info, disk free, network, \
+                 embedded-Python health, file integrity, environment, \
+                 antivirus). Fired automatically when verdict is non-OK._\n\n",
+            );
+            out.push_str("```json\n");
+            out.push_str(
+                &serde_json::to_string_pretty(&probe).unwrap_or_default(),
+            );
+            out.push_str("\n```\n");
         }
     }
 

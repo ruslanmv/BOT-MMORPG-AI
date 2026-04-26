@@ -212,4 +212,92 @@ Re-asserts `hidden`'s semantic above every per-component `display` rule.
 override the UA `[hidden]` rule. Either use `!important` once globally
 (this fix), or write `.my-class[hidden] { display: none }` for every
 class — the global rule is much less maintenance.
+
+## Bug #9 — Prune rule deleted `torch/testing/` from bundled site-packages
+
+**Symptom (in-app log on a fresh `0.0.0-dev` install):**
+
+```
+[Warning] PyTorch failed to import:
+  ModuleNotFoundError: No module named 'torch.testing'
+[Error] PyTorch not available -- training cannot start.
+[System] Process finished: exit_code=-1073741819     # 0xC0000005
+```
+
+The trainer fails BEFORE it does any work. The exit code is a
+Windows access violation, not a clean Python `sys.exit(1)`.
+
+**Cause:** `scripts/build_pipeline.ps1` had a regex that pruned
+unit-test directories from the bundled site-packages to keep the
+NSIS file count under the ~30k cliff:
+
+```powershell
+Where-Object { $_.Name -match "^(tests?|testing)$" }
+```
+
+That pattern matches three names: `test`, `tests`, AND `testing`.
+The third match deleted **public, runtime-required submodules** of
+mainstream scientific-Python wheels:
+
+- `torch/testing/` — `assert_close`, `make_tensor`; transitively
+  imported by `torch._dynamo`, `torch.fx`, several modelhub model
+  registries.
+- `numpy/testing/` — imported transitively by torch on some
+  platforms during init.
+- `pandas/testing/`, `scipy/testing/`, `sympy/testing/` — collateral.
+
+The 0xC0000005 follows the `ModuleNotFoundError`: native extensions
+in `torch._C` finished registering C++ globals, then Python caught
+the import error and started cleanup. During shutdown the half-
+initialized extensions raced against a `sys.modules` that no
+longer references `torch.testing` and crashed with a teardown-phase
+access violation.
+
+The build's pre-prune torch smoke test passed (the package was still
+intact at that point). No post-prune smoke test existed, so a green
+CI build shipped a corrupted installer to users.
+
+**Fix:** two changes in `scripts/build_pipeline.ps1`:
+
+1. Tighten the prune filter to plural-only:
+
+   ```powershell
+   Where-Object { $_.Name -ieq "tests" }
+   ```
+
+   `tests/` (plural) is the strong convention for unit-test
+   directories specifically; the singular `test/` and `testing/`
+   are runtime API surface for several scientific packages.
+
+2. Add a post-prune integrity check that runs the bundled
+   `python.exe` against an explicit list of imports the runtime
+   actually performs:
+
+   ```powershell
+   $postPruneTests = @(
+     "import torch, torch.testing, torch.nn, torch.fx",
+     "import torchvision",
+     "import numpy, numpy.testing",
+     "import fastapi, uvicorn",
+     "import cv2",
+   )
+   ```
+
+   This converts a runtime crash on the user's machine into a
+   build-time failure on CI. If you change the prune rules, add
+   the corresponding `import x.y` line.
+
+3. Regression test at `tests/health/test_bundled_site_packages_intact.py`
+   asserts the same submodules exist on a built/installed copy, so
+   `make verify` / `verify_installer.ps1` catches the same class
+   of regression locally.
+
+**Lesson:** "size optimization" passes that delete files by name
+pattern are dangerous. The `tests/` (plural) convention is real and
+worth honoring; `test/` and `testing/` (singular) are NOT
+test-suite conventions — they are public API directories in the
+science-Python ecosystem. When you must prune, prune by **explicit
+manifest of files known to be safe to drop**, not by directory-name
+regex. Always smoke-test what the user will actually import, AFTER
+every destructive build step.
 {% endraw %}

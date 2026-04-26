@@ -576,9 +576,18 @@ function Ensure-BundledSitePackages {
   Get-ChildItem -Path $sitePkgs -Recurse -Directory -Filter "__pycache__" -ErrorAction SilentlyContinue |
     Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
 
-  # Remove test/tests directories inside packages (not needed at runtime)
+  # Remove unit-test directories ('tests' plural) from packages to
+  # reduce installer file count. NSIS struggles past ~30k files.
+  #
+  # IMPORTANT: only match 'tests' (plural). Do NOT match 'test' or
+  # 'testing' -- those are public, runtime-required submodules of
+  # torch, numpy, pandas, scipy, sympy. Stripping torch/testing/
+  # caused ModuleNotFoundError + STATUS_ACCESS_VIOLATION (0xC0000005)
+  # at training launch in <=0.0.0-dev. The 'tests/' (plural) directory
+  # carries 90%+ of the size of the unit-test suites; losing the
+  # singular 'test/' and 'testing/' strip is a negligible size cost.
   Get-ChildItem -Path $sitePkgs -Recurse -Directory -ErrorAction SilentlyContinue |
-    Where-Object { $_.Name -match "^(tests?|testing)$" } |
+    Where-Object { $_.Name -ieq "tests" } |
     Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
 
   # Remove .dist-info directories (metadata only, not needed at runtime)
@@ -596,6 +605,27 @@ function Ensure-BundledSitePackages {
   $pruneCountAfter = (Get-ChildItem -Path $sitePkgs -Recurse -File -ErrorAction SilentlyContinue | Measure-Object).Count
   $pruned = $pruneCountBefore - $pruneCountAfter
   Log-Ok "Pruned $pruned files from site-packages ($pruneCountBefore -> $pruneCountAfter files)"
+
+  # ---- Post-prune integrity check (MANDATORY) ----
+  # The pre-prune smoke tests above (lines ~552-554) cannot catch a
+  # prune rule that deletes a runtime-required submodule -- the test
+  # passes BEFORE the prune destroys the file. Running these imports
+  # AFTER pruning converts a runtime crash on the user's machine into
+  # a build-time failure here on CI. If you change the prune rules,
+  # add the corresponding `import x.y` line here.
+  Log-Info "Post-prune integrity check: validating runtime imports survived pruning..."
+  $postPruneTests = @(
+    @{ Stmt = "import torch, torch.testing, torch.nn, torch.fx"; Why = "torch.testing was deleted by '^(tests?|testing)$' prune (fixed)" }
+    @{ Stmt = "import torchvision";                              Why = "torchvision required for ML training pipeline" }
+    @{ Stmt = "import numpy, numpy.testing";                     Why = "numpy.testing imported transitively by torch on some platforms" }
+    @{ Stmt = "import fastapi, uvicorn";                         Why = "FastAPI sidecar startup requirement" }
+    @{ Stmt = "import cv2";                                      Why = "OpenCV used by collect_data + training preprocessing" }
+  )
+  foreach ($t in $postPruneTests) {
+    Invoke-Checked -FilePath $pyExe -Arguments @("-c", $t.Stmt) `
+      -ErrorMessage ("Post-prune smoke test failed: '" + $t.Stmt + "' -- " + $t.Why)
+  }
+  Log-Ok "Post-prune integrity check passed (all runtime imports survived)"
 
   Log-Ok "Bundled site-packages ready (production-safe install strategy)."
 }
@@ -1133,11 +1163,80 @@ try {
 
 # Remove the unpacked python/ tree so Tauri's NSIS bundler only sees the zip.
 # (Leaving the tree in would double-bundle it AND re-trigger the handlebars flood.)
+#
+# SAFETY GUARD (added after a preflight failure where backend/modelhub/versions
+# went missing between staging and preflight, suspected catastrophic
+# deletion target). We resolve $pythonDir to its absolute path, assert
+# the leaf directory name is exactly "python", and ONLY then call
+# Remove-Item. If the path ever resolved to something else (e.g. a
+# parent dir thanks to a symlink or a malformed `Join-Path`), this
+# would have wiped the entire src-tauri/resources tree silently.
+# Fail-fast instead.
 try {
-  Remove-Item -Recurse -Force $pythonDir -ErrorAction SilentlyContinue
+  $resolvedPythonDir = (Resolve-Path -LiteralPath $pythonDir -ErrorAction Stop).Path
+  $leaf = Split-Path $resolvedPythonDir -Leaf
+  if ($leaf -ne "python") {
+    throw "Safety stop: expected leaf folder 'python', got: $resolvedPythonDir (leaf='$leaf')"
+  }
+  # Belt+braces: also ensure the parent is exactly src-tauri\resources
+  # so we can never recurse-delete somewhere absurd like C:\.
+  $parent = Split-Path $resolvedPythonDir -Parent
+  $expectedParent = (Resolve-Path -LiteralPath (Join-Path $root "src-tauri\resources") -ErrorAction Stop).Path
+  if ($parent -ne $expectedParent) {
+    throw "Safety stop: python dir parent mismatch. parent=$parent expected=$expectedParent"
+  }
+  Remove-Item -Recurse -Force $resolvedPythonDir -ErrorAction Stop
   Log-Ok "Removed unpacked python/ tree (tauri will bundle python-runtime.zip instead)"
 } catch {
   Log-Warn "Could not remove $pythonDir ; NSIS bundle may be larger than necessary: $_"
+}
+
+# ================================
+# Post-pack sanity check (between STEP 6.7 and STEP 6.9).
+# After packing the runtime zip and removing the python/ tree, the
+# parallel staging dirs (backend/, modelhub/, versions/) MUST still
+# be intact. If they're not, we know the failure happened during the
+# pack/cleanup, not later in preflight -- so the error message can
+# point at the actual culprit instead of the symptom.
+# ================================
+$mustStillExist = @(
+  "src-tauri\resources\backend\entry_main.py",
+  "src-tauri\resources\modelhub\tauri.py",
+  "src-tauri\resources\versions\0.01\1-collect_data.py",
+  "src-tauri\resources\versions\0.01\2-train_model.py",
+  "src-tauri\resources\versions\0.01\3-test_model.py"
+)
+$postPackMissing = @()
+foreach ($rel in $mustStillExist) {
+  $full = Join-Path $root $rel
+  if (-not (Test-Path $full)) {
+    $postPackMissing += $rel
+  }
+}
+if ($postPackMissing.Count -gt 0) {
+  Log-Fail "POST-PACK check failed: the following files were staged earlier but are missing AFTER python-runtime.zip pack/cleanup:"
+  foreach ($p in $postPackMissing) { Log-Fail "  - $p" }
+  Log-Fail "This means STEP 6.7 (or something between 6.6 and 6.9) is wiping files it shouldn't."
+  Log-Fail "Likely culprits: (1) a Remove-Item with a wrong target, (2) anti-virus quarantine,"
+  Log-Fail "(3) OneDrive sync paused / file-on-demand stub, (4) a stale clean step."
+  exit 1
+}
+Log-Ok "Post-pack sanity: backend/modelhub/versions still present"
+
+# Optional verbose dump for the curious. Enable with:
+#   $env:BOT_BUILD_DEBUG = "1"
+# Useful when the post-pack check above passes but preflight still
+# fails (which would mean STEP 6.9 itself has a bug, not the staging).
+if ($env:BOT_BUILD_DEBUG -eq "1") {
+  Log-Info "BOT_BUILD_DEBUG=1 -> dumping every file under src-tauri\resources:"
+  $resourcesRoot = Join-Path $root "src-tauri\resources"
+  if (Test-Path $resourcesRoot) {
+    Get-ChildItem -Path $resourcesRoot -Recurse -File -ErrorAction SilentlyContinue |
+      Select-Object -ExpandProperty FullName |
+      ForEach-Object { Log-Info "  $_" }
+  } else {
+    Log-Warn "  (src-tauri\resources does not exist!)"
+  }
 }
 
 # ================================
@@ -1225,7 +1324,37 @@ if ($badSpaceFiles.Count -gt 0) {
 
 if ($preflightErrors.Count -gt 0) {
   Log-Fail ("Preflight failed with {0} issue(s). Aborting to prevent shipping a broken installer." -f $preflightErrors.Count)
+
+  # Auto-dump the actual on-disk state so the failure is debuggable
+  # without re-running with BOT_BUILD_DEBUG. Goal: tell the user
+  # "here is exactly what IS in src-tauri\resources right now" so
+  # they can see whether the file is in a wrong path, has a typo'd
+  # name, or genuinely vanished. Capped at 200 lines so a healthy-
+  # but-misnamed install doesn't flood the log.
+  Log-Info ""
+  Log-Info "Actual state of src-tauri\resources (first 200 entries):"
+  $resourcesRoot = Join-Path $root "src-tauri\resources"
+  if (Test-Path $resourcesRoot) {
+    $count = 0
+    Get-ChildItem -Path $resourcesRoot -Recurse -File -ErrorAction SilentlyContinue |
+      ForEach-Object {
+        if ($count -lt 200) {
+          $rel = $_.FullName.Substring($root.Length).TrimStart('\','/')
+          Log-Info ("  {0,12:N0}  {1}" -f $_.Length, $rel)
+          $count++
+        }
+      }
+    if ($count -eq 0) {
+      Log-Warn "  (resources directory is EMPTY -- something wiped it)"
+    }
+  } else {
+    Log-Fail "  (src-tauri\resources directory does not exist at all!)"
+  }
+
+  Log-Info ""
   Log-Info "Re-run earlier steps (wheelhouse, Python bundling, site-packages install, Step 6.5/6.6/6.7)."
+  Log-Info "If the dump above shows the files are present but in a different path, the preflight"
+  Log-Info "expected-paths list (around scripts/build_pipeline.ps1:1220) may be out of date."
   exit 1
 }
 

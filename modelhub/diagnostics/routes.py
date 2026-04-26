@@ -6,14 +6,16 @@ All routes are read-only (GET) except `clear` (DELETE). No mutating
 operation here can affect the rest of the sidecar — by construction
 the diagnostic layer only observes.
 """
+
 from __future__ import annotations
 
 import os
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Header, HTTPException
 
-from . import collector, formatter
+from . import collector, formatter, health_probe
 
 router = APIRouter(prefix="/diagnostics", tags=["diagnostics"])
 
@@ -32,7 +34,9 @@ def _auth_or_401(provided: Optional[str], expected: Optional[str]) -> None:
         raise HTTPException(status_code=401, detail="invalid x-auth-token")
 
 
-def make_router(*, expected_token: Optional[str], repo_root: Optional[str] = None) -> APIRouter:
+def make_router(
+    *, expected_token: Optional[str], repo_root: Optional[str] = None
+) -> APIRouter:
     """
     Factory so modelhub.tauri can pass the same token + repo root used
     by the rest of its routes. Returns the configured APIRouter.
@@ -89,5 +93,26 @@ def make_router(*, expected_token: Optional[str], repo_root: Optional[str] = Non
         _auth_or_401(x_auth_token, expected_token)
         cleared = collector.clear()
         return {"ok": True, "cleared": cleared}
+
+    @router.get("/deep_probe")
+    async def deep_probe(
+        x_auth_token: Optional[str] = Header(default=None),
+    ) -> Dict[str, Any]:
+        """
+        Returns a deep system probe (system info, disk, network, file
+        integrity, embedded-Python health, environment, antivirus
+        hint). Fired by the Rust side when verdict != "ready" so the
+        AI bundle and support report have enough context for
+        root-cause analysis without follow-up questions.
+
+        Pure read-only: every probe is wrapped in try/except inside
+        health_probe.deep_probe so this route never raises.
+        """
+        _auth_or_401(x_auth_token, expected_token)
+        install_dir = os.environ.get("MODELHUB_DATA_ROOT", "").strip()
+        result = health_probe.deep_probe(
+            install_dir=Path(install_dir) if install_dir else None,
+        )
+        return {"ok": True, "probe": result}
 
     return router

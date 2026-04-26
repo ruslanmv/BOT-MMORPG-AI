@@ -196,6 +196,102 @@ class TestPhase2Training:
         script = ROOT / "versions" / "0.01" / "2-train_model.py"
         py_compile.compile(str(script), doraise=True)
 
+    def test_train_model_loads_when_torch_unavailable(self):
+        """
+        Regression guard for: NameError: name 'Dataset' is not defined.
+
+        2-train_model.py imports `from torch.utils.data import Dataset`
+        inside a try/except. If torch isn't installed, `Dataset` is
+        undefined at module top-level. A previous revision then declared
+        `class GameplayDataset(Dataset):` UNCONDITIONALLY at module
+        load time -- which raised NameError before main() could check
+        PYTORCH_AVAILABLE and exit cleanly. Spawned-script users on
+        machines where torch failed to import would get a
+        NameError + STATUS_ACCESS_VIOLATION (-1073741819) instead of
+        the script's intended "[Warning] PyTorch not installed"
+        message.
+
+        Fix: introduce `BaseDataset = Dataset if PYTORCH_AVAILABLE
+        else object` after the try/except, then declare the class as
+        `class GameplayDataset(BaseDataset)`. Module always parses,
+        main() runs, exits cleanly when torch is missing.
+
+        This test simulates the torch-missing case by hooking
+        builtins.__import__ to raise ImportError for any torch.* import.
+        """
+        import builtins
+        import sys
+        import types
+
+        real_import = builtins.__import__
+
+        def block_torch(name, *a, **kw):
+            if name == "torch" or name.startswith("torch."):
+                raise ImportError("simulated: torch not installed")
+            return real_import(name, *a, **kw)
+
+        # Block torch via __import__ + shim out cv2/numpy and the
+        # bot_mmorpg helper module so we isolate this test to the
+        # torch-fallback fix only.
+        previous_modules = {
+            k: sys.modules.get(k)
+            for k in ("cv2", "numpy", "bot_mmorpg", "bot_mmorpg.scripts")
+        }
+        sys.modules["cv2"] = types.ModuleType("mock-cv2")
+        sys.modules["numpy"] = types.ModuleType("mock-numpy")
+        sys.modules["bot_mmorpg"] = types.ModuleType("mock-bot_mmorpg")
+        sys.modules["bot_mmorpg.scripts"] = types.ModuleType("mock-bot_mmorpg.scripts")
+
+        builtins.__import__ = block_torch
+        try:
+            script = ROOT / "versions" / "0.01" / "2-train_model.py"
+            src = script.read_text(encoding="utf-8")
+            ns: dict = {"__name__": "fake_module", "__file__": str(script)}
+
+            try:
+                exec(compile(src, str(script), "exec"), ns)
+            except SystemExit:
+                # Acceptable: script may sys.exit() under torch-missing
+                pass
+
+            # Module-load surface
+            assert ns.get("PYTORCH_AVAILABLE") is False, (
+                "Expected PYTORCH_AVAILABLE=False under simulated torch absence"
+            )
+            assert ns.get("BaseDataset") is object, (
+                "BaseDataset fallback must be `object` when torch is missing"
+            )
+            cls = ns.get("GameplayDataset")
+            assert cls is not None, "GameplayDataset must be defined"
+            assert object in cls.__bases__, (
+                "GameplayDataset must inherit from BaseDataset (object) "
+                "when torch is missing -- not from undefined `Dataset`"
+            )
+
+            # Phase 2 regression: the actual exception must be captured so
+            # the operator (and the AI Fix Bundle) can see WHY torch failed,
+            # not just THAT it failed. A bare ImportError catch with no
+            # message would mask DLL-load failures, AV quarantine, and
+            # CPU-feature mismatches under the misleading "PyTorch not
+            # installed" line.
+            captured = ns.get("PYTORCH_IMPORT_ERROR")
+            assert captured is not None, (
+                "PYTORCH_IMPORT_ERROR must be set when torch import fails"
+            )
+            assert isinstance(captured, BaseException), (
+                "PYTORCH_IMPORT_ERROR must hold the actual exception object"
+            )
+            assert "simulated" in str(captured), (
+                f"Captured exception must preserve original message; got: {captured!r}"
+            )
+        finally:
+            builtins.__import__ = real_import
+            for k, v in previous_modules.items():
+                if v is None:
+                    sys.modules.pop(k, None)
+                else:
+                    sys.modules[k] = v
+
     @requires_pytorch
     def test_training_loop_converges(self, tmp_path):
         """A minimal training loop must converge (loss decreases)."""

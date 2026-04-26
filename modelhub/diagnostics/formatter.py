@@ -15,6 +15,7 @@ any AI coding assistant or LLM chat that has file-read access:
 The formatter is pure: no imports from collector, no I/O. The
 caller passes in the entries, the formatter produces a string.
 """
+
 from __future__ import annotations
 
 import json
@@ -72,7 +73,9 @@ def _candidate_files(entry: Dict[str, Any], repo_root: Optional[str]) -> List[st
     return uniq
 
 
-def format_one(entry: Dict[str, Any], repo_root: Optional[str] = None) -> Dict[str, Any]:
+def format_one(
+    entry: Dict[str, Any], repo_root: Optional[str] = None
+) -> Dict[str, Any]:
     """
     Convert a collector entry into the dictionary that gets serialized
     into the AI bundle. Pure transformation.
@@ -92,7 +95,9 @@ def format_one(entry: Dict[str, Any], repo_root: Optional[str] = None) -> Dict[s
         "error": {
             "type": entry.get("error_type"),
             "message": entry.get("message"),
-            "primary_file": _to_repo_relative(entry.get("primary_file") or "", repo_root),
+            "primary_file": _to_repo_relative(
+                entry.get("primary_file") or "", repo_root
+            ),
             "primary_line": entry.get("primary_line") or 0,
             "traceback": entry.get("traceback") or "",
         },
@@ -114,6 +119,7 @@ def format_bundle(
     app_version: Optional[str] = None,
     install_dir: Optional[str] = None,
     log_tail: Optional[str] = None,
+    system_probe: Optional[Dict[str, Any]] = None,
 ) -> str:
     """
     Build the final Markdown+JSON bundle the user copies and pastes.
@@ -167,6 +173,20 @@ def format_bundle(
         lines.append("")
         lines.append("```")
         lines.append(log_tail.rstrip())
+        lines.append("```")
+        lines.append("")
+
+    if system_probe:
+        lines.append("## System probe")
+        lines.append("")
+        lines.append(
+            "_Deep diagnostic capture (system info, disk free, network, "
+            "embedded-Python health, file integrity, environment, antivirus). "
+            "Fired automatically when the runtime verdict is non-OK._"
+        )
+        lines.append("")
+        lines.append("```json")
+        lines.append(json.dumps(system_probe, indent=2, default=str))
         lines.append("```")
         lines.append("")
 

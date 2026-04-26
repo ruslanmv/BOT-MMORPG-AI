@@ -80,6 +80,30 @@ class as the previous bug.
 
 ## Runtime symptoms (install OK, app launches, but features fail)
 
+### `ModuleNotFoundError: No module named 'torch.testing'` followed by exit `-1073741819`
+
+The build pipeline's site-packages prune rule deleted runtime-required
+submodules. `import torch` succeeds at the package level (the directory
+is intact); a transitive `import torch.testing` then raises, and the
+half-initialized native `torch._C` extensions crash on interpreter
+shutdown with `STATUS_ACCESS_VIOLATION` (0xC0000005, exit code
+`-1073741819`).
+
+- **File:** `scripts/build_pipeline.ps1` (prune rule around line 580).
+- **Affected packages:** `torch/testing`, `numpy/testing`, and any other
+  `*/testing/` directory in mainstream scientific-Python wheels.
+- **Fix:** the prune `Where-Object` filter must match `tests` (plural)
+  only — never `test` or `testing`. Also: a post-prune integrity check
+  must `import` every required submodule under the bundled python.exe
+  so a future regression breaks the build, not the user's machine.
+- **End-user recovery (no rebuild):**
+  ```powershell
+  & "C:\Program Files\BOT-MMORPG-AI\runtime\py\python\python.exe" `
+    -m pip install --upgrade --force-reinstall --no-deps `
+    --index-url https://download.pytorch.org/whl/cpu torch torchvision
+  ```
+- **See:** `05-case-studies.md` Bug #9.
+
 ### "Sidecar API not ready after 5 s"
 
 The Python sidecar didn't print `READY url=...` to stdout within 5
