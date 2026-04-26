@@ -647,6 +647,47 @@ async function loadCatalog(gameId) {
   }
 
   updateDashboardStats();
+  refreshRunBotGate();
+}
+
+// Mirror the Rust-side gate for start_bot. 3-test_model.py declares
+// --model as required; start_bot in main.rs refuses to spawn without
+// an active model. Reflect that prerequisite in the UI so the user
+// sees the block before the click rather than as a runtime error.
+function refreshRunBotGate() {
+  const card  = document.getElementById('run-bot-card');
+  const badge = document.getElementById('run-bot-state-badge');
+  const hint  = document.getElementById('run-bot-hint');
+  const btn   = document.getElementById('btnStartBot');
+  if (!card || !badge || !btn) return;
+
+  const active = currentCatalog?.active;
+  const hasActive = !!(active && (active.model_dir || active.path));
+
+  if (hasActive) {
+    card.dataset.state = 'ready';
+    badge.className = 'diag-verdict ready';
+    badge.textContent = '● Ready';
+    btn.disabled = false;
+    btn.style.opacity = '';
+    btn.style.cursor = '';
+    if (hint) {
+      const name = active.name || active.model_id || active.model_dir || '(unnamed)';
+      hint.innerHTML = `Active model: <b>${String(name).replace(/[<>&]/g, '')}</b>`;
+    }
+  } else {
+    card.dataset.state = 'no-model';
+    badge.className = 'diag-verdict warning';
+    badge.textContent = '● No active model';
+    btn.disabled = true;
+    btn.style.opacity = '0.55';
+    btn.style.cursor = 'not-allowed';
+    if (hint) {
+      hint.innerHTML =
+        'No active model set. Open <b>ModelHub</b>, pick a trained model, ' +
+        'click <b>Set Active</b>, then come back here to start the bot.';
+    }
+  }
 }
 
 async function setActiveModelFromUI() {
@@ -780,10 +821,17 @@ window.toggleRecord = async function (btn) {
         status.innerText = "🔴 Recording... Switch to game window!";
         status.style.color = "#FF5252";
       }
+      window.notifyInfo?.("Recording started", `Capturing dataset "${dataset_name}" for ${game_id}.`);
       // Only start live preview if user has it enabled (default: disabled)
       maybeStartLivePreviewTauri("teach");
     } catch (err) {
       logToTerminal(`Error starting recording: ${err}`, "error");
+      window.notifyError?.("Recording failed to start", String(err), [
+        { label: "Run Diagnosis", onClick: () => {
+          window.openSettings?.(); window.switchSettingsTab?.('system-tools');
+          document.getElementById('btn-run-diagnosis')?.click();
+        }},
+      ]);
       isRecording = false;
     } finally {
       btn.disabled = false;
@@ -800,11 +848,13 @@ window.toggleRecord = async function (btn) {
         status.innerText = "✓ Recording saved.";
         status.style.color = "var(--success)";
       }
+      window.notifySuccess?.("Recording saved", "Dataset is ready for training.");
       // Refresh dataset list after recording
       await refreshDatasetListTauri();
       await loadCatalog(selectedGameId);
     } catch (err) {
       logToTerminal(`Error stopping recording: ${err}`, "error");
+      window.notifyError?.("Could not stop recording cleanly", String(err));
     } finally {
       btn.disabled = false;
     }
@@ -832,8 +882,15 @@ window.startTraining = async function () {
 
     const res = await invoke("start_training", { game_id, model_name, dataset_id, arch });
     logToTerminal(res, "success");
+    window.notifyInfo?.("Training started", `${model_name} • ${arch} on dataset ${dataset_id || "(default)"}`);
   } catch (err) {
     logToTerminal(`Training failed to start: ${err}`, "error");
+    window.notifyError?.("Training failed to start", String(err), [
+      { label: "Run Diagnosis", onClick: () => {
+        window.openSettings?.(); window.switchSettingsTab?.('system-tools');
+        document.getElementById('btn-run-diagnosis')?.click();
+      }},
+    ]);
     if (btn) btn.disabled = false;
   }
 };
@@ -874,7 +931,13 @@ window.toggleBot = async function (btn) {
     try {
       logToTerminal("Initializing autonomous bot...", "info");
       btn.disabled = true;
-      const res = await invoke("start_bot", { monitor_id: monitorId, resolution });
+      // start_bot now requires game_id so the Rust side can resolve the
+      // active model from /modelhub/catalog?game_id=... If the user
+      // hasn't picked a model the Rust command returns a clear error
+      // and we surface it as a toast instead of opening a doomed
+      // subprocess that would die on argparse.
+      const game_id = selectedGameId || DEFAULT_GAME_ID;
+      const res = await invoke("start_bot", { game_id, monitor_id: monitorId, resolution });
       logToTerminal(res, "success");
       btn.innerText = "■ STOP BOT";
       btn.style.background = "var(--accent)";
@@ -884,9 +947,14 @@ window.toggleBot = async function (btn) {
       maybeStartLivePreviewTauri("run");
     } catch (err) {
       logToTerminal(`Failed to start bot: ${err}`, "error");
+      window.notifyError?.("Cannot start bot", String(err), [
+        { label: "Open ModelHub", primary: true,
+          onClick: () => window.showTab && window.showTab('models') },
+      ]);
       isBotRunning = false;
     } finally {
       btn.disabled = false;
+      refreshRunBotGate();
     }
   } else {
     try {
@@ -910,17 +978,41 @@ window.toggleBot = async function (btn) {
 window.installDrivers = async function () {
   if (!invoke) return alert("Tauri backend not found.");
   logToTerminal("Installing drivers (admin)...", "info");
+  window.notifyInfo?.("Driver installer launching", "Approve the UAC prompt to continue.");
   try {
     const res = await invoke("install_drivers");
     if (res && res.ok) {
       logToTerminal("Driver installer launched.", "success");
       const st = getEl("drivers-status");
       if (st) st.textContent = "Installer launched";
+      window.notifySuccess?.(
+        "Drivers installed",
+        "Interception + vJoy installer finished. Restart the app if you didn't already."
+      );
+      // Re-run health so the Diagnosis panel + Drivers card pick up the new state.
+      checkInstallHealth?.();
     } else {
-      logToTerminal(`Driver install failed: ${JSON.stringify(res)}`, "warning");
+      const reason = res?.error || JSON.stringify(res);
+      logToTerminal(`Driver install failed: ${reason}`, "warning");
+      window.notifyError?.(
+        "Driver install failed",
+        reason,
+        [
+          { label: "Run Diagnosis", onClick: () => {
+              window.openSettings?.();
+              window.switchSettingsTab?.('system-tools');
+              document.getElementById('btn-run-diagnosis')?.click();
+          }},
+          { label: "Copy Details", onClick: async () => {
+              try { await navigator.clipboard.writeText(`Driver install failed: ${reason}`); }
+              catch (e) {}
+          }, primary: false },
+        ]
+      );
     }
   } catch (e) {
     logToTerminal(`Driver install error: ${e}`, "error");
+    window.notifyError?.("Driver install error", String(e));
   }
 };
 
@@ -1006,6 +1098,20 @@ document.addEventListener("DOMContentLoaded", async () => {
       }
     }).catch((err) => logToTerminal(`Config Load Warning: ${err}`, "warning"));
 
+    // Pull installed version + channel from Rust and paint the sidebar.
+    // Doing this BEFORE the GitHub-releases probe so the user sees a
+    // real version on screen even when offline. The "Latest" line below
+    // it is filled in later by checkForUpdate() if a newer release is
+    // published.
+    invoke("app_info").then((info) => {
+      const ver = document.getElementById("sv-installed-version");
+      const ch  = document.getElementById("sv-installed-channel");
+      if (ver && info?.version) ver.textContent = "v" + info.version;
+      if (ch  && info?.channel) ch.textContent  = "(" + info.channel + ")";
+      // Stash for the support_report copy path / Settings -> Runtime tab.
+      window.__appInfo = info;
+    }).catch((err) => console.warn("app_info failed:", err));
+
     await refreshModelhubAvailability();
 
     // Health probe: detect a broken install (the v0.2.0 case where the
@@ -1013,6 +1119,13 @@ document.addEventListener("DOMContentLoaded", async () => {
     // user sees an actionable banner instead of clicking "Start Recording"
     // and getting "Script not found" with no idea what to do about it.
     await checkInstallHealth();
+
+    // Update probe: hits the GitHub Releases API via the Rust-side
+    // reqwest client (no extra HTTP allowlist needed) and renders the
+    // #update-banner if a newer version is published. Runs after
+    // install_health so it appears below the more important error
+    // banner when both fire.
+    checkForUpdate();
   } else {
     updateBackendStatus("Offline", "Running in Offline Mode");
     logToTerminal("Running in offline mode - using default configurations", "warning");
@@ -1030,36 +1143,225 @@ async function checkInstallHealth() {
   if (!invoke) return;
   try {
     const h = await invoke("install_health");
+
+    // Stash for the Settings -> Runtime tab to read without re-invoking.
+    window.__lastHealth = h;
+
+    // Sidebar gear gets a red dot when any check is severity=error.
+    const dot = document.getElementById("settings-health-dot");
+    if (dot) {
+      const anyErr = Array.isArray(h.checks)
+        ? h.checks.some(c => c.severity === "error")
+        : !h.healthy;
+      dot.hidden = !anyErr;
+    }
+
     const banner   = document.getElementById("install-health-banner");
     const detailEl = document.getElementById("install-health-detail");
-    const dismiss  = document.getElementById("install-health-dismiss");
     if (!banner || !detailEl) return;
 
     if (h.healthy) {
-      banner.style.display = "none";
+      banner.hidden = true;
       logToTerminal("Install health: OK", "success");
       return;
     }
 
-    const issues = (h.issues || []).map(s => `• ${s}`).join("<br>");
-    detailEl.innerHTML = (h.remediation || "")
-      + (issues ? `<br><br><strong>Detected:</strong><br>${issues}` : "");
-    banner.style.display = "block";
+    // Build a clean summary list of failing checks. Prefer the rich
+    // `checks` array (severity=error) over the legacy `issues` strings.
+    const errs = Array.isArray(h.checks)
+      ? h.checks.filter(c => c.severity === "error")
+      : (h.issues || []).map(s => ({ label: s, message: "" }));
+
+    const lines = errs.map(c => {
+      const label = (c.label || c.id || "").toString();
+      const msg   = (c.message || "").toString();
+      const safe  = (s) => s.replace(/[<>&]/g, ch => ({'<':'&lt;','>':'&gt;','&':'&amp;'})[ch]);
+      return `<li><strong>${safe(label)}</strong>${msg ? ` — <span style="opacity:.85">${safe(msg)}</span>` : ""}</li>`;
+    }).join("");
+
+    detailEl.innerHTML =
+      (h.remediation || "Reinstall the latest installer to restore the missing components.") +
+      (lines ? `<br><br><strong>Detected:</strong><ul>${lines}</ul>` : "");
+
+    banner.hidden = false;
     logToTerminal(
       "Install health: INCOMPLETE -- " + (h.issues || []).join("; "),
       "error"
     );
-
-    if (dismiss) {
-      dismiss.onclick = () => { banner.style.display = "none"; };
-    }
+    // NOTE: install-health-dismiss / install-health-open-diagnosis click
+    // handlers are wired ONCE in the inline DOMContentLoaded block at the
+    // bottom of index.html (so they fire even if this function throws
+    // before reaching the wiring lines). Don't re-bind here.
   } catch (e) {
-    // If the install_health command itself isn't registered we silently
-    // skip -- this only happens on legacy app builds that predate the
-    // probe being added. The user has bigger problems in that case.
     console.warn("install_health probe failed:", e);
   }
+
+  refreshDriversCard();
 }
+
+// GitHub-releases update probe. Renders #update-banner when a newer
+// version is published. Silently no-ops on network failure (offline
+// users shouldn't see a scary error for a non-critical check).
+async function checkForUpdate() {
+  if (!invoke) return;
+  try {
+    const u = await invoke("check_for_update");
+    if (!u || !u.ok || !u.update_available) return;
+
+    // Stash so the patch-notes button (wired statically in index.html)
+    // can read the latest release info without re-fetching.
+    window.__lastUpdate = u;
+
+    const banner = document.getElementById("update-banner");
+    const pill   = document.getElementById("update-version-pill");
+    const msg    = document.getElementById("update-banner-msg");
+    if (!banner) return;
+
+    if (pill) pill.textContent = `v${u.current_version} → v${u.latest_version}`;
+    if (msg)  msg.textContent  =
+      `A newer release of BOT-MMORPG-AI is published on GitHub. Updating preserves your models and datasets.`;
+    banner.hidden = false;
+
+    // Surface the "Latest" line in the sidebar version block. Hidden
+    // until now (only shown when an update is genuinely available)
+    // so users on the freshest build don't see a misleading empty
+    // "Latest:" row.
+    const updateRow  = document.getElementById("sv-update-row");
+    const latestVerEl = document.getElementById("sv-latest-version");
+    if (latestVerEl) latestVerEl.textContent = "v" + u.latest_version;
+    if (updateRow)   updateRow.hidden = false;
+    // NOTE: update-close / btn-update-later / btn-update-notes click
+    // handlers are wired ONCE in the inline DOMContentLoaded block at
+    // the bottom of index.html. Don't re-bind here.
+
+    // Also drop a quieter toast so users who dismiss the banner still
+    // see one passing reminder. Persistent because update-class.
+    // Note: notifyUpdate's button onClicks route through window.open
+    // which goes through the global <a> interceptor's fallback path
+    // (the toast buttons aren't <a> elements so they need an explicit
+    // shell.open call here too).
+    const openExternal = (url) => {
+      const open = window.__TAURI__?.shell?.open;
+      if (typeof open === "function") {
+        open(url).catch(() => window.open(url, "_blank", "noopener,noreferrer"));
+      } else {
+        window.open(url, "_blank", "noopener,noreferrer");
+      }
+    };
+    window.notifyUpdate?.(
+      `Update available: v${u.latest_version}`,
+      u.release_notes ? u.release_notes.split("\n").slice(0, 3).join(" ") : "",
+      [
+        { label: "Update Now", primary: true, onClick: () => openExternal(u.release_url) },
+        { label: "View Notes", onClick: () => window.openPatchNotes && window.openPatchNotes(u) },
+      ]
+    );
+  } catch (e) {
+    console.warn("check_for_update probe failed:", e);
+  }
+}
+
+// State-aware Drivers card. Decides between three states based on the
+// most recent install_health response (window.__lastHealth):
+//
+//   "ready"   - All hard prerequisites OK (sidecar, python, backend,
+//               modelhub, scripts). Show the Install Drivers button as
+//               normal. Driver-specific checks are still warn-level
+//               and surface in the Settings -> Diagnosis panel.
+//   "blocked" - Any error-severity check is failing. Hide the install
+//               button, show the recovery panel ([Run Diagnosis]
+//               [Copy Details] [Download Latest Installer]).
+//   "checking"- No probe result yet (page loaded before checkInstallHealth
+//               returned). Show a neutral checking state.
+function refreshDriversCard() {
+  const card     = document.getElementById('drivers-card');
+  const badge    = document.getElementById('drivers-state-badge');
+  const ready    = document.getElementById('drivers-pane-ready');
+  const blocked  = document.getElementById('drivers-pane-blocked');
+  const list     = document.getElementById('drivers-missing-list');
+  const installBtn = document.getElementById('btnInstallDrivers');
+  if (!card || !badge || !ready || !blocked) return;
+
+  const h = window.__lastHealth;
+
+  // No probe yet -> neutral
+  if (!h) {
+    card.dataset.state = 'checking';
+    badge.className = 'diag-verdict warning';
+    badge.textContent = '● Checking';
+    ready.hidden = false;
+    blocked.hidden = true;
+    return;
+  }
+
+  // Hard prerequisites = every error-severity check.
+  const hardErrors = Array.isArray(h.checks)
+    ? h.checks.filter(c => c.severity === 'error')
+    : (h.healthy ? [] : (h.issues || []).map(s => ({ label: s, message: '' })));
+
+  if (hardErrors.length === 0) {
+    card.dataset.state = 'ready';
+    badge.className = 'diag-verdict ready';
+    badge.textContent = '● Ready';
+    ready.hidden = false;
+    blocked.hidden = true;
+    if (installBtn) installBtn.disabled = false;
+  } else {
+    card.dataset.state = 'blocked';
+    badge.className = 'diag-verdict error';
+    badge.textContent = '● Setup incomplete';
+    ready.hidden = true;
+    blocked.hidden = false;
+    if (installBtn) installBtn.disabled = true;
+
+    if (list) {
+      list.innerHTML = hardErrors.map(c => {
+        const label = (c.label || c.id || '').toString();
+        const msg   = (c.message || '').toString();
+        const lblHtml = label.replace(/[<>&]/g, '');
+        const msgHtml = msg.replace(/[<>&]/g, '');
+        return `<li><strong>${lblHtml}</strong>${msg ? ' — <span style="color: var(--text-dim);">' + msgHtml + '</span>' : ''}</li>`;
+      }).join('');
+    }
+  }
+}
+
+// Wire the recovery actions inside the blocked-state Drivers panel.
+// We do this once on DOMContentLoaded; the buttons live in static HTML
+// so they're always present even when the panel is hidden.
+document.addEventListener('DOMContentLoaded', () => {
+  const runBtn = document.getElementById('btn-drivers-run-diagnosis');
+  if (runBtn) runBtn.addEventListener('click', () => {
+    if (typeof window.openSettings === 'function') window.openSettings();
+    if (typeof window.switchSettingsTab === 'function') window.switchSettingsTab('system-tools');
+    document.getElementById('btn-run-diagnosis')?.click();
+  });
+
+  const copyBtn = document.getElementById('btn-drivers-copy-details');
+  if (copyBtn) copyBtn.addEventListener('click', async () => {
+    if (!invoke) return;
+    const orig = copyBtn.textContent;
+    copyBtn.disabled = true; copyBtn.textContent = '⏳ Copying...';
+    try {
+      let report = await invoke('support_report');
+      const term = document.getElementById('terminal');
+      if (term) {
+        const lines = Array.from(term.querySelectorAll('.log-entry'))
+          .map(el => el.textContent.replace(/\s+/g, ' ').trim());
+        if (lines.length) {
+          report += '\n\n## Recent in-app log\n\n```\n' + lines.slice(-200).join('\n') + '\n```\n';
+        }
+      }
+      await navigator.clipboard.writeText(report);
+      copyBtn.textContent = '✓ Copied!';
+    } catch (e) {
+      copyBtn.textContent = '✗ Failed';
+      console.warn('support_report failed:', e);
+    } finally {
+      setTimeout(() => { copyBtn.disabled = false; copyBtn.textContent = orig; }, 1500);
+    }
+  });
+});
 
 // Wire Dashboard Quick Action cards to navigate to tabs
 function wireDashboardButtons() {

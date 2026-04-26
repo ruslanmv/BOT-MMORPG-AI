@@ -31,6 +31,11 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
 # build side.
 zip = { version = "0.6", default-features = false, features = ["deflate"] }
 
+# Proper semver comparison for the GitHub-releases update checker.
+# Without this we'd be doing string compares which break on pre-release
+# tags like "0.2.1-rc.1" vs "0.2.1".
+semver = "1"
+
 [features]
 default = ["custom-protocol"]
 custom-protocol = ["tauri/custom-protocol"]

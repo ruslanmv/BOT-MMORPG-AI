@@ -552,13 +552,50 @@ class TestInstallerAssets:
         assert nsis.exists()
 
     def test_nsis_template_has_correct_escaping(self):
-        """NSIS template variables must be double-escaped for Rust handlebars."""
+        """NSIS template follows the canonical tauri-bundler 1.6.6+
+        pattern: a !define indirection for the main binary name (so we
+        never inline {{main_binary_name}} in a path string), and
+        double-backslash escape on the resources_dirs each-loop where
+        a handlebars expression DOES live inside an NSIS path string.
+
+        The previous version of this test asserted the literal
+        `\\{{main_binary_name}}` pattern, but our template stopped
+        inlining that variable in path strings entirely (commit
+        943f9f8 in branch claude/verify-directory-structure-DLUt1)
+        because it was the cause of the literal-{{this}}-named-folders
+        bug at install time. The safer architecture is to keep
+        handlebars expressions OUT of NSIS path strings whenever
+        possible, and double-escape the few places they must appear.
+        """
         nsis = ROOT / "installer" / "nsis_template.nsi"
         if not nsis.exists():
             pytest.skip("NSIS template not found")
 
         content = nsis.read_text(encoding="utf-8", errors="replace")
-        assert r"\\{{main_binary_name}}" in content
+
+        # Invariant 1: MAINBINARYNAME is an NSIS macro, referenced via
+        # ${MAINBINARYNAME} from File / shortcut / registry directives.
+        assert '!define MAINBINARYNAME "BOT-MMORPG-AI"' in content, (
+            "NSIS template must define MAINBINARYNAME as an NSIS macro "
+            "instead of inlining {{main_binary_name}} in path strings."
+        )
+        assert "${MAINBINARYNAME}.exe" in content, (
+            "NSIS template must reference ${MAINBINARYNAME} from File "
+            "/ shortcut directives."
+        )
+
+        # Invariant 2: where handlebars DO appear in NSIS path strings
+        # (the resources_dirs each-loop), the path uses double backslash
+        # before `{{`. handlebars-rust treats `\\{{` as the escape
+        # sequence for a literal `{{` (suppressing expression parsing),
+        # so single-backslash here would render as the literal text
+        # "{{this}}" and NSIS would create a folder by that exact name.
+        assert r'"$INSTDIR\\{{this}}"' in content, (
+            "resources_dirs CreateDirectory must use DOUBLE backslash "
+            "before {{this}} -- single backslash is the handlebars "
+            "escape sequence for literal {{ and produces folders "
+            "literally named '{{this}}' at install time."
+        )
 
     def test_license_file_exists(self):
         """License file must exist for installer."""
