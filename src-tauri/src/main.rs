@@ -2387,12 +2387,13 @@ fn parse_python_traceback(tb: &str, script_path: &str) -> ErrorEntry {
     }
 }
 
-/// Build the Markdown+JSON bundle the UI's "Copy AI Fix Request"
-/// button writes to the clipboard. Mirrors the Python formatter's
-/// shape so a bundle from either layer is structurally identical.
+/// Build the Markdown+JSON bundle the UI's "Copy AI Bundle" button
+/// writes to the clipboard. Mirrors the Python formatter's shape so a
+/// bundle from either layer is structurally identical.
 fn build_ai_bundle(
     rust_errors: &[ErrorEntry],
     sidecar_entries: &[Value],
+    probe: Option<&Value>,
     app_version: &str,
     install_dir: &str,
 ) -> String {
@@ -2454,19 +2455,123 @@ fn build_ai_bundle(
         idx += 1;
     }
 
+    if let Some(probe_val) = probe {
+        out.push_str(
+            "## System probe\n\n\
+             _Deep diagnostic capture (system info, disk free, network, \
+             embedded-Python health, file integrity, environment, \
+             antivirus). Fired automatically when the runtime verdict \
+             is non-OK._\n\n",
+        );
+        out.push_str("```json\n");
+        out.push_str(
+            &serde_json::to_string_pretty(probe_val).unwrap_or_default(),
+        );
+        out.push_str("\n```\n\n");
+    }
+
     out.push_str(
         "## Usage\n\n\
         Paste this entire block into your AI coding assistant. It has \
         enough context (error type, primary file + line, traceback, \
-        candidate files) to locate the root cause without follow-up \
-        questions. Always review the proposed patch before applying.\n",
+        candidate files, system probe) to locate the root cause without \
+        follow-up questions. Always review the proposed patch before \
+        applying.\n",
     );
     out
 }
 
+/// Run a deep system probe via the bundled embedded Python.
+///
+/// The probe lives in `modelhub.diagnostics.health_probe.deep_probe`
+/// and returns a structured dict with: system info, disk free, network
+/// reachability, embedded-Python health (importable packages),
+/// file-integrity hashes of critical bundled files, filtered env vars,
+/// and an antivirus presence hint.
+///
+/// Two-pathway dispatch:
+///   1. If the sidecar is up, fetch /diagnostics/deep_probe over HTTP.
+///      Cheap, reuses the running interpreter.
+///   2. If the sidecar is dead (the most common case when the user
+///      needs a deep probe), spawn the bundled python.exe directly to
+///      run the same module. We can't ask a dead sidecar to
+///      introspect itself.
+///
+/// Returns None on total failure; the caller proceeds without the
+/// probe field rather than escalating.
+async fn fetch_deep_probe(app: &AppHandle, inner: &Arc<AppStateInner>) -> Option<Value> {
+    // Path 1: sidecar HTTP. Short timeout so a hung sidecar doesn't
+    // block the bundle for long.
+    if let Ok(resp) = api_get_with(inner, "/diagnostics/deep_probe").await {
+        if let Some(probe) = resp.get("probe") {
+            return Some(probe.clone());
+        }
+    }
+
+    // Path 2: spawn embedded python directly. Same code path that
+    // the sidecar would have run, just from Rust.
+    let py_exe = managed_embedded_python_dir(app).join(if is_windows() {
+        "python.exe"
+    } else {
+        "bin/python3"
+    });
+    if !py_exe.exists() {
+        return None;
+    }
+
+    let install_dir = installation_dir();
+    let mut cmd = Command::new(&py_exe);
+    apply_stable_python_env(&mut cmd);
+
+    // PYTHONPATH must reach modelhub.diagnostics.health_probe. The
+    // bundled modelhub package lives at $INSTDIR\resources\modelhub.
+    let sep = if is_windows() { ";" } else { ":" };
+    let pypaths = vec![
+        install_dir.join("resources").display().to_string(),
+        managed_site_packages_dir(app).display().to_string(),
+    ];
+    cmd.env("PYTHONPATH", pypaths.join(sep));
+    cmd.env(
+        "MODELHUB_DATA_ROOT",
+        install_dir.display().to_string(),
+    );
+    cmd.env(
+        "MODELHUB_RESOURCE_ROOT",
+        install_dir.join("resources").display().to_string(),
+    );
+
+    cmd.arg("-c").arg(
+        "import json, sys; \
+         from modelhub.diagnostics.health_probe import deep_probe; \
+         sys.stdout.write(json.dumps(deep_probe()))",
+    );
+    cmd.stdout(Stdio::piped());
+    cmd.stderr(Stdio::piped());
+
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+
+    let output = match cmd.output() {
+        Ok(o) => o,
+        Err(_) => return None,
+    };
+    if !output.status.success() {
+        return None;
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    serde_json::from_str::<Value>(&stdout).ok()
+}
+
 /// Tauri command: returns the AI-ready Markdown bundle. Aggregates
 /// Rust-captured errors with sidecar-captured errors (best-effort HTTP
-/// call; if sidecar is offline we just ship the Rust portion).
+/// call; if sidecar is offline we just ship the Rust portion). Also
+/// runs a deep system probe so the bundle has enough context for an
+/// AI assistant to diagnose issues that didn't produce a structured
+/// error (e.g. sidecar that never started).
 #[tauri::command]
 async fn recent_errors_for_ai(
     state: tauri::State<'_, AppState>,
@@ -2490,11 +2595,16 @@ async fn recent_errors_for_ai(
         Err(_) => Vec::new(),
     };
 
+    // Deep probe: fired unconditionally so the bundle is rich even when
+    // no errors were captured (e.g. silent sidecar startup failure).
+    let probe = fetch_deep_probe(&app, &inner).await;
+
     let version = app.package_info().version.to_string();
     let install_dir = installation_dir().display().to_string();
     Ok(build_ai_bundle(
         &rust_errors,
         &sidecar_entries,
+        probe.as_ref(),
         &version,
         &install_dir,
     ))
@@ -2550,6 +2660,10 @@ async fn support_report(
     state: tauri::State<'_, AppState>,
     app: AppHandle,
 ) -> Result<String, String> {
+    // Clone the AppStateInner Arc BEFORE handing `state` to install_health
+    // -- install_health consumes its state argument, but we still need
+    // the inner reference afterward to drive fetch_deep_probe.
+    let inner = state.inner.clone();
     let h = install_health(state, app.clone()).await?;
 
     let install_dir = installation_dir();
@@ -2559,6 +2673,7 @@ async fn support_report(
     let version = app.package_info().version.to_string();
     let os = std::env::consts::OS;
     let arch = std::env::consts::ARCH;
+    let verdict = h["verdict"].as_str().unwrap_or("?").to_string();
 
     let mut out = String::new();
     out.push_str("# BOT-MMORPG-AI Support Report\n\n");
@@ -2566,7 +2681,7 @@ async fn support_report(
     out.push_str(&format!("- OS / arch: {} / {}\n", os, arch));
     out.push_str(&format!("- Install dir: {}\n", install_dir.display()));
     out.push_str(&format!("- Executable: {}\n", exe_path));
-    out.push_str(&format!("- Verdict: {}\n\n", h["verdict"].as_str().unwrap_or("?")));
+    out.push_str(&format!("- Verdict: {}\n\n", verdict));
 
     out.push_str("## Subsystem checks\n\n");
     if let Some(checks) = h["checks"].as_array() {
@@ -2582,6 +2697,25 @@ async fn support_report(
                 c["label"].as_str().unwrap_or(""),
                 c["message"].as_str().unwrap_or(""),
             ));
+        }
+    }
+
+    // Deep probe -- only when the verdict is non-OK. On a healthy
+    // install we omit it to keep the bundle small; the user is most
+    // likely reporting a real issue when verdict != "ready".
+    if verdict != "ready" {
+        if let Some(probe) = fetch_deep_probe(&app, &inner).await {
+            out.push_str("\n## System probe\n\n");
+            out.push_str(
+                "_Deep diagnostic capture (system info, disk free, network, \
+                 embedded-Python health, file integrity, environment, \
+                 antivirus). Fired automatically when verdict is non-OK._\n\n",
+            );
+            out.push_str("```json\n");
+            out.push_str(
+                &serde_json::to_string_pretty(&probe).unwrap_or_default(),
+            );
+            out.push_str("\n```\n");
         }
     }
 
