@@ -1,5 +1,6 @@
 # 01 — Files & Responsibilities
 
+{% raw %}
 The seven files that govern installer behavior, in execution order.
 Edit the file matching the layer where your bug lives.
 
@@ -110,3 +111,4 @@ on demand via `make test-installer`).
 
 **Edit when:** you've changed a template invariant the tests no longer
 match. Update the test to assert the new invariant — don't just delete.
+{% endraw %}

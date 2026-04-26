@@ -1,5 +1,6 @@
 # 04 — Bug Index
 
+{% raw %}
 Symptom → file → fix-pattern. Ordered roughly by frequency on this
 project. **Start here when a user reports an installer or runtime bug.**
 
@@ -178,3 +179,4 @@ Does `make build-installer` itself fail?
    build_pipeline  build_pipeline      OR  the .py script itself
    .ps1            .ps1
 ```
+{% endraw %}

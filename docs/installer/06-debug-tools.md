@@ -1,5 +1,6 @@
 # 06 — Debug Tools
 
+{% raw %}
 Copy-paste PowerShell + bash to diagnose installer and runtime bugs.
 
 ## Diagnostic A — Verify a live install matches the expected layout
@@ -153,3 +154,4 @@ Existing checks:
 
 To add: `\\\\{{` regex (double backslash escape). Currently checked
 indirectly via `tests/test_tauri_production_readiness.py`.
+{% endraw %}

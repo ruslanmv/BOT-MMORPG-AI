@@ -1541,42 +1541,41 @@
 
               <!-- AI debug-loop section. Pulls captured runtime errors
                    from the Rust ring buffer + sidecar /diagnostics/recent
-                   and packages them as a Markdown+JSON bundle the user
-                   pastes directly into Claude Code. Distinct from the
-                   "Support Report" above: that one is for human triage
-                   (GitHub issues, Discord). This one is for AI fixes. -->
-              <h3 style="margin-top: 24px; display: flex; align-items: center; gap: 8px;">
-                <span>AI Fix Loop</span>
+                   and packages them as a vendor-neutral Markdown+JSON
+                   bundle. Distinct from "Support Report" above: that one
+                   targets human triage (GitHub / Discord). This one
+                   targets an AI coding assistant. -->
+              <h3 style="margin-top: 22px; display: flex; align-items: center; gap: 8px; font-size: 13px;">
+                <span>AI Fix Bundle</span>
                 <span id="ai-errors-count"
                       class="diag-verdict ready"
                       style="font-size: 10px;"
                       hidden>0 captured</span>
               </h3>
-              <p style="font-size: 12px; color: var(--text-dim); margin: 0 0 10px;">
-                When something fails, the runtime captures the error
-                (Python tracebacks from spawned scripts, FastAPI exceptions
-                from the sidecar). Click below to copy a structured bundle
-                into your clipboard, then paste into Claude Code or any
-                LLM with file access — the bundle has enough context for
-                the model to find the bug without further questions.
+              <p style="font-size: 11px; color: var(--text-dim); margin: 0 0 8px; line-height: 1.5;">
+                Captures runtime errors (Python tracebacks, sidecar
+                exceptions) as a structured bundle. Paste into your AI
+                coding assistant for a focused root-cause fix.
               </p>
-              <div style="display: flex; gap: 8px; flex-wrap: wrap;">
-                <button type="button" id="btn-copy-ai-bundle" class="btn">
-                  🤖 Copy AI Fix Request
+              <div style="display: flex; gap: 6px; flex-wrap: wrap;">
+                <button type="button" id="btn-copy-ai-bundle" class="btn"
+                        style="padding: 6px 12px; font-size: 11px;">
+                  Copy AI Bundle
                 </button>
-                <button type="button" id="btn-clear-ai-errors" class="btn btn-secondary">
-                  🧹 Clear Captured Errors
+                <button type="button" id="btn-clear-ai-errors" class="btn btn-secondary"
+                        style="padding: 6px 12px; font-size: 11px;">
+                  Clear Captured
                 </button>
               </div>
 
-              <h3 style="margin-top: 24px;">Reporting a problem (humans)</h3>
-              <p style="font-size: 12px; color: var(--text-dim); margin: 0;">
-                Use <strong>Copy Support Report</strong> after running a diagnosis,
-                then paste it into a
+              <h3 style="margin-top: 22px; font-size: 13px;">Human Support Channels</h3>
+              <p style="font-size: 11px; color: var(--text-dim); margin: 0; line-height: 1.5;">
+                For human triage, use <strong>Copy Support Report</strong>
+                above and attach to a
                 <a href="https://github.com/ruslanmv/BOT-MMORPG-AI/issues/new"
                    target="_blank" rel="noreferrer"
                    style="color: var(--accent);">GitHub issue</a>
-                or your support channel.
+                or your team's support channel.
               </p>
             </section>
 
@@ -1784,11 +1783,12 @@
       document.getElementById('btn-copy-support-report')?.addEventListener('click', copySupportReport);
       document.getElementById('btn-copy-logs')?.addEventListener('click', copyRecentLogs);
 
-      // AI Fix Loop buttons. Pulls the structured bundle from the
+      // AI Fix Bundle buttons. Pulls the structured bundle from the
       // recent_errors_for_ai Tauri command (which itself merges Rust
       // ring-buffer errors with sidecar /diagnostics/recent/ai entries),
       // appends the last 200 in-app log lines for context, then writes
-      // to clipboard. The user pastes into Claude Code.
+      // to clipboard. The bundle is vendor-neutral -- works in any AI
+      // coding assistant or LLM chat with file-read access.
       const aiCopyBtn  = document.getElementById('btn-copy-ai-bundle');
       const aiClearBtn = document.getElementById('btn-clear-ai-errors');
       const aiCount    = document.getElementById('ai-errors-count');
@@ -1816,7 +1816,7 @@
             }
           }
           await navigator.clipboard.writeText(bundle);
-          aiCopyBtn.textContent = '✓ Copied — paste into Claude Code';
+          aiCopyBtn.textContent = '✓ Copied to clipboard';
         } catch (e) {
           console.warn('recent_errors_for_ai failed:', e);
           aiCopyBtn.textContent = '✗ Failed';

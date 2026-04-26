@@ -1,5 +1,6 @@
 # 03 — Runtime Flow (what the installed .exe does)
 
+{% raw %}
 Two distinct runtime layers. Bugs at one layer often look like bugs at
 the other — read carefully before editing.
 
@@ -141,3 +142,4 @@ The diagnostic in `06-debug-tools.md` distinguishes these cleanly:
 | `.env` file appears at $INSTDIR | Layer B — `ensure_env_file` wrote it. |
 | "Sidecar API not ready after 5 s" | Layer B — sidecar spawn timing or import crash. Not the installer. |
 | `Script '2-train_model.py' not found` | Could be either layer — the installer might have not extracted, OR the resolver is searching wrong paths. Run the diagnostic to tell which. |
+{% endraw %}

@@ -39,6 +39,26 @@ function Write-Info($msg) {
     Write-Host "[INFO] $msg" -ForegroundColor Cyan
 }
 
+# Normalize a Windows path to its canonical long form so string-compares
+# don't fail on 8.3 short names. CI runners often have $env:TEMP =
+# "C:\Users\RUNNER~1\AppData\..." (where RUNNER~1 is the auto-generated
+# 8.3 short name for "runneradmin"), while NSIS resolves the install
+# directory to its long form before writing shortcut targets. Pure
+# string comparison then reports the shortcut as wrong even though both
+# paths point at the same file.
+#
+# Get-Item walks the actual filesystem and returns the canonical
+# long-name form via .FullName. If the path doesn't exist yet, we fall
+# back to GetFullPath which at least normalizes . / .. / case.
+function Resolve-LongPath([string]$Path) {
+    if (-not $Path) { return $null }
+    try {
+        return (Get-Item -LiteralPath $Path -ErrorAction Stop).FullName
+    } catch {
+        return [System.IO.Path]::GetFullPath($Path)
+    }
+}
+
 $root = Resolve-Path "$(Split-Path -Parent $MyInvocation.MyCommand.Path)\.." | % Path
 $errors = @()
 
@@ -399,13 +419,19 @@ if ($env:SKIP_INSTALL_DRYRUN -eq "1") {
                             continue
                         }
 
-                        # Case-insensitive path equality (NTFS is case-insensitive
-                        # by default, and lnk targets are stored in whatever
-                        # case the creator used).
-                        if ($actualTarget -ieq $sc.Target) {
+                        # Case-insensitive path equality after resolving 8.3
+                        # short names. NTFS is case-insensitive by default,
+                        # and lnk targets are stored in whatever long-form
+                        # NSIS expanded $INSTDIR to -- which doesn't always
+                        # match the (possibly 8.3-short) value we built
+                        # $sc.Target from. Resolve-LongPath canonicalizes
+                        # both sides before comparing.
+                        $expectedNorm = Resolve-LongPath $sc.Target
+                        $actualNorm   = Resolve-LongPath $actualTarget
+                        if ($actualNorm -ieq $expectedNorm) {
                             Write-Success ("{0} -> {1}" -f $sc.Label, $actualTarget)
                         } else {
-                            Write-Failure ("{0} points to wrong target.`n  expected: {1}`n  actual:   {2}" -f $sc.Label, $sc.Target, $actualTarget)
+                            Write-Failure ("{0} points to wrong target.`n  expected: {1}`n  actual:   {2}`n  (normalized: {3} vs {4})" -f $sc.Label, $sc.Target, $actualTarget, $expectedNorm, $actualNorm)
                             $errors += ("{0} target mismatch" -f $sc.Label)
                         }
 

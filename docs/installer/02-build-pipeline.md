@@ -1,5 +1,6 @@
 # 02 — Build Pipeline (build time)
 
+{% raw %}
 What happens between `make build-installer` and a finished `.exe`.
 
 ## End-to-end diagram
@@ -98,3 +99,4 @@ Read `06-debug-tools.md` for the exact PowerShell to grep this.
 | `8ef898d` | tests/test_tauri_production_readiness.py — update template invariants |
 
 See `05-case-studies.md` for the full debug story behind each.
+{% endraw %}

@@ -717,16 +717,29 @@ fn ensure_python_env(app: &AppHandle, window: &Window) -> Result<PathBuf, String
     // so this is a no-op there. No collision.
     let sitecustomize = target_dir.join("sitecustomize.py");
     let _ = fs::create_dir_all(&target_dir);
-    let _ = fs::write(
-        &sitecustomize,
-        "# Auto-injected by main.rs#ensure_python_env. Re-enables sibling-module\n\
-         # imports for scripts launched via run_python_script under embedded\n\
-         # Python's _pth-isolated mode (where PYTHONPATH is ignored).\n\
-         import os, sys\n\
-         _vdir = os.environ.get('BOT_VERSION_DIR', '').strip()\n\
-         if _vdir and os.path.isdir(_vdir) and _vdir not in sys.path:\n\
-             sys.path.insert(0, _vdir)\n",
-    );
+    // IMPORTANT: build the file content as a Vec of one-line strings
+    // joined by "\n" so leading whitespace inside the body of the `if`
+    // is preserved verbatim. A previous version of this code used a
+    // single Rust string literal with `\` line continuations -- which
+    // collapsed every "\n\<spaces>" sequence into just "\n", silently
+    // dedenting the `sys.path.insert(...)` line and making Python
+    // reject sitecustomize.py with:
+    //   IndentationError: expected an indented block after 'if' statement
+    // When sitecustomize.py fails to load, BOT_VERSION_DIR is never
+    // injected and `from grabscreen import grab_screen` (the very bug
+    // this file exists to prevent) returns. Per-line strings avoid
+    // the whitespace-mangling pitfall entirely.
+    let sitecustomize_lines: &[&str] = &[
+        "# Auto-injected by main.rs#ensure_python_env. Re-enables sibling-",
+        "# module imports for scripts launched via run_python_script under",
+        "# embedded Python's _pth-isolated mode (where PYTHONPATH is ignored).",
+        "import os, sys",
+        "_vdir = os.environ.get('BOT_VERSION_DIR', '').strip()",
+        "if _vdir and os.path.isdir(_vdir) and _vdir not in sys.path:",
+        "    sys.path.insert(0, _vdir)",
+        "",
+    ];
+    let _ = fs::write(&sitecustomize, sitecustomize_lines.join("\n"));
 
     // 2) Patch _pth to include our portable site-packages (always do this)
     patch_embedded_python_pth(&local_py_dir, &target_dir).map_err(|e| {
@@ -2286,7 +2299,8 @@ async fn install_health(
 // captures FastAPI exceptions; this captures (a) Python tracebacks
 // emitted on subprocess stderr and (b) explicit failures in Rust
 // code paths. Both feed `recent_errors_for_ai` which builds a
-// Markdown+JSON bundle the user pastes into Claude Code.
+// vendor-neutral Markdown+JSON bundle the user pastes into any AI
+// coding assistant or LLM chat with file-read access.
 // ─────────────────────────────────────────────────────────────────────
 
 fn now_ms() -> u64 {
@@ -2397,7 +2411,7 @@ fn build_ai_bundle(
     let mut idx = 1;
     for e in rust_errors {
         let formatted = json!({
-            "claude_code_task": "fix_runtime_error",
+            "task": "fix_runtime_error",
             "summary": format!("{}: {}", e.error_type, e.message),
             "source": e.source,
             "timestamp_ms": e.timestamp_ms,
@@ -2441,11 +2455,11 @@ fn build_ai_bundle(
     }
 
     out.push_str(
-        "## How to use this report\n\n\
-        Paste the entire block above into Claude Code (or any LLM with file \
-        access). The model has enough context — error type, primary file + \
-        line, traceback, candidate_files list — to locate the bug without \
-        further questions. Review every patch before applying.\n",
+        "## Usage\n\n\
+        Paste this entire block into your AI coding assistant. It has \
+        enough context (error type, primary file + line, traceback, \
+        candidate files) to locate the root cause without follow-up \
+        questions. Always review the proposed patch before applying.\n",
     );
     out
 }
