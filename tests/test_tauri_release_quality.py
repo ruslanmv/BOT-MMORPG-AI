@@ -120,9 +120,23 @@ class TestReleaseConfiguration:
         assert ci.exists(), "CI workflow missing"
 
     def test_release_workflow_exists(self):
-        """Release workflow must exist for automated releases."""
-        release = ROOT / ".github" / "workflows" / "release.yml"
-        assert release.exists(), "Release workflow missing"
+        """Release workflow must exist for automated releases.
+
+        Either of two candidate filenames is acceptable. The legacy
+        `release.yml` was retired during the containerized-runtime
+        migration because it bypassed build_pipeline.ps1 (and therefore
+        the runtime-integrity check that gates Bug #9 / Bug #10
+        regressions). The current workflow is `release-windows-installer.yml`.
+        """
+        candidates = [
+            ROOT / ".github" / "workflows" / "release.yml",
+            ROOT / ".github" / "workflows" / "release-windows-installer.yml",
+        ]
+        found = any(c.exists() for c in candidates)
+        assert found, (
+            "Release workflow missing -- expected either release.yml "
+            "(legacy) or release-windows-installer.yml"
+        )
 
     def test_build_installer_workflow_exists(self):
         """Windows installer build workflow must exist."""

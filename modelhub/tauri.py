@@ -18,6 +18,54 @@ Requirements:
 
 from __future__ import annotations
 
+import sys as _sys
+
+
+# Phase 18: suppress the benign Windows-only ProactorEventLoop close
+# race that uvicorn triggers every time a keep-alive HTTP connection
+# is closed by the supervisor's liveness watch. Pattern:
+#
+#     [Sidecar stderr] Exception in callback _ProactorBasePipeTransport._call_connection_lost(None)
+#     [Sidecar stderr] handle: <Handle ...>
+#     [Sidecar stderr] Traceback (most recent call last):
+#     [Sidecar stderr]   File "...\asyncio\proactor_events.py", line 165, in _call_connection_lost
+#     [Sidecar stderr]     self._sock.shutdown(socket.SHUT_RDWR)
+#     [Sidecar stderr] ConnectionResetError: [WinError 10054] An existing connection was forcibly closed
+#
+# Root cause: ProactorEventLoop calls socket.shutdown(SHUT_RDWR) on a
+# transport whose remote side already sent a TCP RST. The HTTP request
+# has already completed successfully -- this is purely cleanup noise.
+# CPython upstream tracker: https://github.com/python/cpython/issues/87419
+#
+# We monkey-patch the proactor transport's `_call_connection_lost` to
+# silently swallow the specific 10054 case BEFORE asyncio's exception
+# handler logs it. Other exceptions bubble through unchanged so a real
+# socket bug is still surfaced.
+def _suppress_proactor_winerror_10054() -> None:
+    if _sys.platform != "win32":
+        return
+    try:
+        from asyncio import proactor_events as _pe
+
+        _orig = _pe._ProactorBasePipeTransport._call_connection_lost
+
+        def _patched(self, exc):  # noqa: ANN001 -- internal asyncio API
+            try:
+                _orig(self, exc)
+            except ConnectionResetError as e:
+                # Filter ONLY the keep-alive close race (10054).
+                # Anything else (e.g. genuine connection issues
+                # during real I/O) re-raises as before.
+                if getattr(e, "winerror", None) == 10054:
+                    return
+                raise
+        _pe._ProactorBasePipeTransport._call_connection_lost = _patched
+    except Exception:  # noqa: BLE001 -- patch is best-effort
+        pass
+
+
+_suppress_proactor_winerror_10054()
+
 import argparse
 import os
 import secrets
@@ -461,6 +509,43 @@ def create_app(token: str):
         mh_set_active_model(gid, model_id, path)
         return {"ok": True}
 
+    # Phase 22: dedicated /modelhub/datasets endpoint. Previously the
+    # Rust shell's `list_datasets` Tauri command called this URL, but
+    # NO matching route existed -- the sidecar always returned 404 and
+    # the Rust side reported `{datasets: []}` to the UI. So even after
+    # a successful recording, the Train tab and the Teach -> Datasets
+    # card both showed "No datasets found" forever. The Catalog endpoint
+    # /modelhub/catalog DID surface datasets via mh_get_datasets, but
+    # only as part of the bigger catalog response.
+    #
+    # This endpoint scans `<DATA_ROOT>/datasets/<game>/` (the same path
+    # collect_data.py writes to via session_manager.begin_recording)
+    # and returns the dataset directories as JSON. Falls back to the
+    # ModelHub registry when available so test datasets registered via
+    # the API also surface.
+    @app.get("/modelhub/datasets")
+    async def modelhub_datasets(
+        game_id: Optional[str] = None,
+        x_auth_token: Optional[str] = Header(default=None),
+    ):
+        _auth(x_auth_token)
+        gid = _normalize_game_id(game_id)
+        # Filesystem scan -- canonical source of truth, works even
+        # without ModelHub registry init.
+        datasets = _scan_datasets_fs(DATA_ROOT, gid)
+        # Augment with ModelHub registry entries (test fixtures, etc.)
+        # that may not be on disk under the standard layout.
+        if MODELHUB_AVAILABLE and mh_get_datasets is not None:
+            try:
+                seen_ids = {d.get("id") for d in datasets}
+                for ds in mh_get_datasets(gid) or []:
+                    if ds.get("id") not in seen_ids:
+                        datasets.append(ds)
+                        seen_ids.add(ds.get("id"))
+            except Exception:
+                pass
+        return {"ok": True, "datasets": datasets, "game_id": gid}
+
     @app.post("/modelhub/delete")
     async def modelhub_delete(payload: Dict[str, Any], x_auth_token: Optional[str] = Header(default=None)):
         _auth(x_auth_token)
@@ -546,6 +631,17 @@ def create_app(token: str):
         # sidecar starts regardless.
         print(f"[Sidecar] diagnostics router not mounted: {_diag_err}", flush=True)
 
+    # MVP-3: sidecar-owned job runner. Tauri now POSTs /jobs/* instead of
+    # spawning Python directly. Crashes in training/collection are
+    # contained inside the sidecar's process tree, never reach the UI.
+    # Same soft-fail pattern as diagnostics: if the module won't import,
+    # the sidecar still serves /modelhub/* + /diagnostics/*.
+    try:
+        from .jobs.routes import make_router as _make_jobs_router
+        app.include_router(_make_jobs_router(expected_token=token))
+    except Exception as _jobs_err:  # noqa: BLE001
+        print(f"[Sidecar] jobs router not mounted: {_jobs_err}", flush=True)
+
     return app
 
 
@@ -620,7 +716,13 @@ def main(argv: Optional[list[str]] = None) -> int:
     except KeyboardInterrupt:
         return 0
     except Exception as e:
-        print(f"FAILED error={e}", flush=True)
+        # Phase 8: route the canonical FAILED marker to STDERR.
+        # The Rust supervisor's fast-fail parser (main.rs stderr
+        # thread) looks for `FAILED ` only on stderr -- printing it
+        # to stdout (Python's `print` default) meant the supervisor
+        # waited the full 60s timeout instead of bailing immediately.
+        # Mirror in entry_main.py's wrapper for the import-time path.
+        print(f"FAILED error={e}", file=sys.stderr, flush=True)
         return 1
 
 

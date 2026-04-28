@@ -15,6 +15,16 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <!-- Phase 22: defeat WebView2 / browser-cache. Without these, Tauri 1.x
+       on Windows caches main.js and styles between dev sessions, so JS
+       changes pulled from git don't take effect until the developer
+       force-refreshes (Ctrl+R / Ctrl+F5) or wipes the WebView2 cache.
+       That bit us with the dataset-name auto-generate fix in Phase 21:
+       the file on disk had the fix, but the running window kept showing
+       pre-fix behaviour. -->
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+  <meta http-equiv="Pragma" content="no-cache" />
+  <meta http-equiv="Expires" content="0" />
   <title>BOT-MMORPG-AI Launcher</title>
 
   <!-- Fonts (allowed by CSP in tauri.conf.json) -->
@@ -44,6 +54,33 @@
 
       --glass: rgba(255,255,255,0.05);
       --glass-strong: rgba(255,255,255,0.08);
+
+      /* ------------------------------------------------------------
+         UI polish tokens (additive). Existing --primary, --bg-*, etc.
+         remain authoritative for legacy components. New components
+         and the polish pass below opt into the --ui-* family for a
+         consistent gamer-meets-enterprise hierarchy.
+
+         Type ladder: 32-36 / 20-24 / 14-16 / 12-13 px.
+         Spacing rhythm: section 28, card 24, stack 14.
+         ------------------------------------------------------------ */
+      --ui-fs-page-title:    clamp(2rem, 2.4vw, 2.25rem);
+      --ui-fs-section-title: clamp(1.25rem, 1.8vw, 1.5rem);
+      --ui-fs-body:          0.9375rem;
+      --ui-fs-helper:        0.75rem;
+
+      --ui-space-section: 28px;
+      --ui-space-card:    24px;
+      --ui-space-stack:   14px;
+
+      --ui-radius-md: 10px;
+      --ui-radius-lg: 12px;
+
+      --ui-border-soft: 1px solid rgba(255, 255, 255, 0.08);
+      --ui-panel-bg:    rgba(255, 255, 255, 0.02);
+
+      --ui-glow-primary: 0 0 12px rgba(187, 134, 252, 0.40);
+      --ui-glow-secondary: 0 0 16px rgba(3, 218, 198, 0.18);
     }
 
     * { margin: 0; padding: 0; box-sizing: border-box; user-select: none; }
@@ -593,6 +630,73 @@
        always wins over the per-component `display` rules below. */
     [hidden] { display: none !important; }
 
+    /* ---------- Sidecar status chip (UI-Phase A) ----------
+       Live indicator that drives off the [Sidecar] heartbeat lines
+       emitted by start_sidecar_server. Replaces the bad UX where the
+       UI looked frozen for 60 seconds during cold-disk first launch. */
+    .sidecar-chip {
+      display: inline-flex; align-items: center; gap: 8px;
+      padding: 6px 12px; margin: 0 0 10px;
+      border-radius: 999px;
+      font-size: 12px; font-weight: 500;
+      background: rgba(255,255,255,0.03);
+      border: 1px solid rgba(255,255,255,0.07);
+      transition: background 0.2s, border-color 0.2s;
+    }
+    .sidecar-chip-dot {
+      width: 8px; height: 8px; border-radius: 50%;
+      background: #f59e0b;
+      box-shadow: 0 0 0 2px rgba(245,158,11,0.18);
+    }
+    .sidecar-chip[data-state="starting"] .sidecar-chip-dot {
+      animation: sidecar-pulse 1.4s infinite;
+    }
+    .sidecar-chip[data-state="ready"]   .sidecar-chip-dot { background: #10b981; box-shadow: 0 0 0 2px rgba(16,185,129,0.18); }
+    .sidecar-chip[data-state="failed"]  .sidecar-chip-dot { background: #ef4444; box-shadow: 0 0 0 2px rgba(239,68,68,0.18); }
+    .sidecar-chip[data-state="offline"] .sidecar-chip-dot { background: #6b7280; box-shadow: 0 0 0 2px rgba(107,114,128,0.18); }
+    .sidecar-chip-label   { color: rgba(255,255,255,0.55); }
+    .sidecar-chip-state   { color: rgba(255,255,255,0.92); font-weight: 600; }
+    .sidecar-chip-elapsed { color: rgba(255,255,255,0.55); font-variant-numeric: tabular-nums; }
+    .sidecar-chip[data-state="failed"]  { background: rgba(248,113,113,0.10); border-color: rgba(248,113,113,0.35); }
+    .sidecar-chip[data-state="offline"] { background: rgba(107,114,128,0.08); border-color: rgba(107,114,128,0.30); }
+    .sidecar-chip-actions { display: inline-flex; gap: 6px; margin-left: 6px; }
+    .btn.btn-sm {
+      padding: 4px 10px; font-size: 11px; line-height: 1.2;
+      border-radius: 8px;
+    }
+    @keyframes sidecar-pulse {
+      0%, 100% { transform: scale(1);   opacity: 1; }
+      50%      { transform: scale(1.4); opacity: 0.6; }
+    }
+
+    /* ---------- Runtime doctor table (UI-Phase D.2) ----------
+       Per-check structured display in Settings → Runtime. */
+    .doctor-table {
+      width: 100%; border-collapse: collapse;
+      font-size: 12px; margin: 0 0 14px;
+      table-layout: fixed;
+    }
+    .doctor-table th, .doctor-table td {
+      padding: 6px 10px;
+      text-align: left;
+      border-bottom: 1px solid rgba(255,255,255,0.06);
+      vertical-align: top;
+    }
+    .doctor-table th {
+      color: var(--text-dim);
+      font-weight: 500;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+    .doctor-table td.doctor-name    { font-family: ui-monospace, monospace; color: rgba(255,255,255,0.85); width: 180px; }
+    .doctor-table td.doctor-status  { width: 80px;  font-weight: 600; }
+    .doctor-table td.doctor-detail  { color: rgba(255,255,255,0.65); word-break: break-word; }
+    .doctor-table td.doctor-elapsed { width: 70px; text-align: right; color: var(--text-dim); font-variant-numeric: tabular-nums; }
+    .doctor-status[data-status="ok"]    { color: #10b981; }
+    .doctor-status[data-status="warn"]  { color: #f59e0b; }
+    .doctor-status[data-status="error"] { color: #ef4444; }
+
     .notification-card {
       position: relative;
       display: flex; gap: 14px; align-items: stretch;
@@ -645,6 +749,74 @@
     .notification-msg li { margin: 2px 0; }
     .notification-actions { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
     .notification-actions .btn { padding: 7px 14px; font-size: 12px; }
+    /* Phase 5: Advanced fixes details inside the install-health banner.
+       Keeps four expert-grade actions one click away without flooding
+       the landing page. The summary mimics a small text link. */
+    .install-health-advanced { margin-top: 14px; }
+    .install-health-advanced > summary {
+      cursor: pointer; font-size: 11px; color: var(--text-dim);
+      list-style: none; user-select: none;
+      padding: 4px 0; opacity: 0.85;
+    }
+    .install-health-advanced > summary:hover { color: var(--text-main); opacity: 1; }
+    .install-health-advanced > summary::before { content: '▸ '; font-size: 10px; }
+    .install-health-advanced[open] > summary::before { content: '▾ '; }
+    .install-health-advanced > summary::-webkit-details-marker { display: none; }
+
+    /* Phase 11: enterprise-console toolbar button.
+       The base .btn is a large CTA-style purple block with glow --
+       fine for "Run Bot" on the dashboard, too loud inside Settings →
+       System Tools where every action is a small operational task.
+       .btn-toolbar is the System Tools variant: compact padding,
+       12px text, weight 600, subtle border, no glow. Pair with
+       .btn-toolbar--primary for the section's one primary action
+       (purple accent), and .btn-toolbar--ghost for secondary
+       inline actions (text-link feel). */
+    .btn-toolbar {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 7px 12px;
+      font-size: 12px;
+      font-weight: 600;
+      letter-spacing: 0.01em;
+      line-height: 1.2;
+      border: 1px solid var(--border, rgba(255,255,255,0.10));
+      border-radius: 6px;
+      background: rgba(255,255,255,0.03);
+      color: var(--text-main);
+      cursor: pointer;
+      transition: background 0.15s, border-color 0.15s;
+      box-shadow: none;
+    }
+    .btn-toolbar:hover:not([disabled]) {
+      background: rgba(255,255,255,0.06);
+      border-color: rgba(255,255,255,0.18);
+    }
+    .btn-toolbar[disabled] { opacity: 0.5; cursor: not-allowed; }
+    .btn-toolbar--primary {
+      border-color: var(--accent);
+      background: color-mix(in srgb, var(--accent) 16%, transparent);
+      color: var(--text-main);
+    }
+    .btn-toolbar--primary:hover:not([disabled]) {
+      background: color-mix(in srgb, var(--accent) 28%, transparent);
+    }
+    .btn-toolbar--ghost {
+      border-color: transparent;
+      background: transparent;
+      color: var(--accent);
+      padding: 7px 10px;
+    }
+    .btn-toolbar--ghost:hover:not([disabled]) {
+      background: rgba(255,255,255,0.04);
+    }
+    .toolbar-row {
+      display: flex; gap: 8px; flex-wrap: wrap; align-items: center;
+    }
+    .toolbar-row--secondary {
+      margin-top: 10px; gap: 4px;
+    }
     .notification-close {
       position: absolute; top: 10px; right: 12px;
       background: transparent; border: none; cursor: pointer;
@@ -681,6 +853,139 @@
     @keyframes toast-slide-out {
       from { opacity: 1; transform: translateX(0); }
       to   { opacity: 0; transform: translateX(28px); }
+    }
+
+    /* ============================================================
+       UI polish pass (P1) -- additive only.
+       Every selector below either:
+         (a) targets a class that has no prior rule
+             (.ui-*, .btn--*, .wizard-*), OR
+         (b) augments an existing rule via :focus / :hover ONLY for
+             visual feedback.
+       No existing layout, ID, or click handler is affected.
+       ============================================================ */
+
+    /* Type ladder utilities */
+    .ui-page-title    { font-size: var(--ui-fs-page-title);    font-weight: 800; line-height: 1.15; letter-spacing: -0.01em; }
+    .ui-section-title { font-size: var(--ui-fs-section-title); font-weight: 700; line-height: 1.25; letter-spacing: -0.005em; }
+    .ui-body          { font-size: var(--ui-fs-body);          font-weight: 400; line-height: 1.55; }
+    .ui-helper        { font-size: var(--ui-fs-helper);        opacity: 0.72; }
+    .ui-h-icon        { display: inline-block; margin-right: 6px; transform: translateY(-1px); }
+
+    /* Card primitive (opt-in via class="card ui-card") */
+    .ui-card {
+      background: var(--ui-panel-bg);
+      border: var(--ui-border-soft);
+      border-radius: var(--ui-radius-lg);
+      padding: var(--ui-space-card);
+      box-shadow: 0 1px 0 rgba(255,255,255,0.02) inset, 0 12px 30px rgba(0,0,0,0.20);
+    }
+    .ui-card + .ui-card { margin-top: var(--ui-space-stack); }
+
+    /* Button BEM variants. Layered ON TOP of .btn / .btn-secondary so
+       legacy buttons keep their look; only buttons that opt in via
+       class="btn btn--primary" get the upgraded prominence. */
+    .btn.btn--primary {
+      min-height: 48px;
+      padding: 0 22px;
+      border-radius: var(--ui-radius-md);
+      font-weight: 700;
+      letter-spacing: 0.3px;
+      box-shadow: var(--ui-glow-primary), 0 14px 30px rgba(0,0,0,0.20);
+    }
+    .btn.btn--primary:hover {
+      box-shadow: 0 0 18px rgba(187, 134, 252, 0.55), 0 14px 30px rgba(0,0,0,0.24);
+    }
+    .btn.btn--secondary {
+      min-height: 38px;
+      padding: 0 16px;
+      border-radius: var(--ui-radius-md);
+    }
+    .btn.btn--secondary:hover { transform: translateY(-1px); }
+
+    /* Slightly strengthened focus ring for inputs (visual only).
+       Uses the same primary color as the existing rule so theme
+       continuity is preserved. */
+    .form-input:focus, .form-select:focus {
+      box-shadow:
+        0 0 0 2px rgba(187, 134, 252, 0.20),
+        0 0 10px rgba(187, 134, 252, 0.20);
+    }
+
+    /* ---------- Quick Start (Wizard) ---------- */
+    /* Every selector below was previously undefined in CSS; the
+       markup at #tab-wizard uses these class names as semantic
+       hooks. Adding rules here only changes the Quick Start tab. */
+    .wizard-container {
+      max-width: 720px;
+      margin: 0 auto;
+      padding: var(--ui-space-section);
+    }
+    .wizard-header { margin-bottom: var(--ui-space-section); text-align: center; }
+    .wizard-title {
+      font-size: var(--ui-fs-page-title);
+      font-weight: 800;
+      letter-spacing: -0.01em;
+      margin-bottom: 6px;
+    }
+    .wizard-subtitle {
+      font-size: var(--ui-fs-helper);
+      color: var(--text-dim);
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+    .wizard-progress {
+      display: flex;
+      gap: 6px;
+      margin: 0 0 var(--ui-space-section);
+      align-items: center;
+    }
+    .wizard-progress-step {
+      flex: 1;
+      height: 8px;
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.06);
+      position: relative;
+      font-size: 0; /* hide the text label visually; screen readers still see it */
+      transition: background 0.25s ease, box-shadow 0.25s ease;
+    }
+    .wizard-progress-step.complete {
+      background: linear-gradient(90deg, rgba(3,218,198,0.55), rgba(3,218,198,0.85));
+    }
+    .wizard-progress-step.active {
+      background: linear-gradient(90deg, rgba(187,134,252,0.65), rgba(187,134,252,0.95));
+      box-shadow: 0 0 10px rgba(187, 134, 252, 0.55);
+    }
+    .wizard-body {
+      background: var(--ui-panel-bg);
+      border: var(--ui-border-soft);
+      border-radius: var(--ui-radius-lg);
+      padding: var(--ui-space-section);
+      min-height: 220px;
+    }
+    .wizard-step-content {
+      animation: ui-step-in 0.18s ease-out;
+    }
+    .wizard-step-content h2 {
+      font-size: var(--ui-fs-section-title);
+      font-weight: 700;
+      margin-bottom: 8px;
+    }
+    .wizard-step-content p {
+      font-size: var(--ui-fs-body);
+      line-height: 1.55;
+      color: var(--text-dim);
+    }
+    .wizard-footer {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      margin-top: var(--ui-space-section);
+    }
+    @keyframes ui-step-in {
+      from { opacity: 0; transform: translateY(4px); }
+      to   { opacity: 1; transform: translateY(0); }
     }
   </style>
 </head>
@@ -781,24 +1086,87 @@
       icons, animations) so they're visually consistent. Transient
       events render into #toast-container further down.
     -->
+    <!--
+      Sidecar status chip. Tracks the in-flight start_sidecar_server
+      heartbeat lines from the terminal_update channel and renders
+      live progress so the user is not staring at a frozen UI for the
+      full 60s warm-up budget on first launch.
+
+      States:
+        starting (yellow) -- "[Sidecar] still warming up... 12s/60s"
+        ready    (green)  -- auto-fades after 3s
+        failed   (red)    -- shows Restart Sidecar / Run Diagnosis /
+                             Repair Runtime / Add AV Exclusion buttons
+        offline  (grey)   -- terminal state when restart was attempted
+                             and gave up; same recovery buttons
+    -->
+    <div id="sidecar-status-chip" class="sidecar-chip" data-state="starting" hidden>
+      <span class="sidecar-chip-dot" aria-hidden="true"></span>
+      <span class="sidecar-chip-label">Sidecar:</span>
+      <span class="sidecar-chip-state" id="sidecar-chip-state">Starting...</span>
+      <span class="sidecar-chip-elapsed" id="sidecar-chip-elapsed"></span>
+      <div class="sidecar-chip-actions" id="sidecar-chip-actions" hidden>
+        <button type="button" class="btn btn-sm" id="btn-restart-sidecar">↻ Restart</button>
+        <button type="button" class="btn btn-sm btn-secondary" id="btn-chip-diagnosis">▶ Diagnosis</button>
+        <button type="button" class="btn btn-sm btn-secondary" id="btn-chip-repair">🔧 Repair</button>
+      </div>
+    </div>
+
+    <!--
+      Phase 5 redesign: max 2 visible actions on the landing-page
+      banner (Retry + Open logs). Everything else (Restart Sidecar,
+      Repair Runtime, Repair PyTorch, Add AV Exclusion) collapses
+      under "Advanced fixes ▼" so a user with a startup failure
+      sees one clear next step instead of a six-button panic UI.
+      The full set still lives in Settings → System Tools.
+    -->
     <div id="install-health-banner" class="notification-card error" hidden>
       <div class="notification-icon">⚠</div>
       <div class="notification-body">
         <div class="notification-title" id="install-health-title">
-          Backend installation is incomplete
+          Backend failed to start
         </div>
         <div class="notification-msg" id="install-health-detail"></div>
         <div class="notification-actions">
-          <button type="button" class="btn" id="install-health-open-diagnosis">
-            ▶ Run Diagnosis
+          <!-- Primary: re-runs install_health which (after Phase 3.1)
+               pings /health for real, and also re-arms the buttons.
+               Wired from JS to also kick restart_sidecar when the
+               last verdict was "error" so the user gets one button
+               that means "fix it". -->
+          <button type="button" class="btn" id="install-health-retry">
+            ↻ Retry
           </button>
-          <a class="btn btn-secondary"
-             href="https://github.com/ruslanmv/BOT-MMORPG-AI/releases/latest"
-             target="_blank" rel="noreferrer"
-             style="text-decoration:none;">
-            ⬇ Download Latest Installer
-          </a>
+          <button type="button" class="btn btn-secondary" id="install-health-open-logs">
+            📂 Open logs
+          </button>
         </div>
+
+        <!-- Advanced fixes -- collapsed by default. The four expert-
+             grade actions below used to live as flat buttons in the
+             banner, which created decision overload. Hidden behind a
+             single toggle keeps the landing page calm while leaving
+             the full toolbox one click away. -->
+        <details class="install-health-advanced">
+          <summary>Advanced fixes</summary>
+          <div class="notification-actions" style="margin-top: 8px;">
+            <button type="button" class="btn btn-secondary" id="install-health-restart-sidecar">
+              ↻ Restart Sidecar
+            </button>
+            <button type="button" class="btn btn-secondary" id="install-health-repair">
+              🔧 Repair Runtime
+            </button>
+            <button type="button" class="btn btn-secondary" id="install-health-pip-repair"
+                    title="Deepest recovery: re-downloads torch + torchvision + numpy from PyPI. Slow (2-5 min) but bypasses both the bundled zip and AV interference.">
+              🩺 Repair PyTorch (pip)
+            </button>
+            <button type="button" class="btn btn-secondary" id="install-health-av">
+              🛡 Add AV Exclusion
+            </button>
+            <button type="button" class="btn btn-secondary" id="install-health-open-diagnosis">
+              ▶ Run Full Diagnosis
+            </button>
+          </div>
+        </details>
       </div>
       <button class="notification-close" id="install-health-dismiss"
               aria-label="Dismiss">×</button>
@@ -872,9 +1240,9 @@
           <p>Run your trained AI bot, or set up a new game in seconds.</p>
         </div>
         <div class="dash-hero-cta-actions">
-          <button class="btn" type="button"
+          <button class="btn btn--primary" type="button"
                   onclick="window.showTab && window.showTab('run')">▶ Run Bot</button>
-          <button class="btn btn-secondary" type="button"
+          <button class="btn btn-secondary btn--secondary" type="button"
                   onclick="window.showTab && window.showTab('wizard')">⚡ Quick Setup</button>
         </div>
       </div>
@@ -963,88 +1331,98 @@
       </div>
     </div>
 
-    <!-- TEACH -->
+    <!-- TEACH -- Phase 21 enterprise polish:
+         - Single guided workflow (Screen → Capture → Recording → Datasets)
+         - Sentence-case labels, no BETA tag, no "Neural networks expect..." noise
+         - Start Recording uses primary accent (was btn-danger pink, looked like an error)
+         - Tighter copy + clearer hierarchy
+    -->
     <div id="tab-teach" class="tab-content">
-      <!-- Screen Preview -->
+      <!-- 1. SCREEN PREVIEW -->
       <div class="card" style="cursor: default; margin-bottom: 14px;">
         <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
-          <h3 style="margin:0;">Screen Preview</h3>
+          <h3 style="margin:0;">Screen preview</h3>
           <div style="display:flex; gap:10px; align-items:center;">
-            <label class="form-label" style="margin:0;">Monitor:</label>
+            <label class="form-label" style="margin:0;">Monitor</label>
             <select class="form-select" id="teach-monitor-select" style="width:150px;">
               <option value="1">Monitor 1</option>
             </select>
-            <button class="btn btn-small btn-secondary" id="btnRefreshTeachPreview">Refresh</button>
+            <button class="btn btn-small btn-secondary" id="btnRefreshTeachPreview">↻ Refresh</button>
             <label style="display:flex; align-items:center; gap:6px; cursor:pointer; font-size:12px; color:var(--text-dim);">
               <input type="checkbox" id="teach-live-preview-toggle">
-              Live (2fps)
+              Live (2 fps)
             </label>
           </div>
         </div>
-        <div id="teach-preview-container" style="background:#111; border:2px dashed var(--border); border-radius:12px; display:flex; align-items:center; justify-content:center; min-height:170px; overflow:hidden;">
+        <div id="teach-preview-container" style="background:#111; border:1px solid var(--border); border-radius:10px; display:flex; align-items:center; justify-content:center; min-height:170px; overflow:hidden;">
           <img id="teach-preview-img" style="max-width:100%; max-height:170px; display:none;" />
           <div id="teach-preview-placeholder" style="color:var(--text-dim); text-align:center;">
-            <div style="font-size:40px; margin-bottom:10px;">🎮</div>
-            <p>Click "Refresh" to see screen preview</p>
-            <p style="font-size:11px; margin-top:6px;">Neural networks expect <strong>480x270</strong> (16:9)</p>
+            <div style="font-size:36px; margin-bottom:8px; opacity:0.7;">🎮</div>
+            <p style="margin:0;">Click <strong>Refresh</strong> to capture a preview frame</p>
           </div>
         </div>
-        <!-- Resolution Settings -->
-        <div style="display:flex; gap:12px; align-items:center; margin-top:10px; padding-top:10px; border-top:1px solid var(--border);">
-          <label class="form-label" style="margin:0; white-space:nowrap;">Capture Resolution:</label>
-          <select class="form-select" id="teach-capture-resolution" style="width:220px;">
-            <option value="480x270" data-recommended="true">480x270 (Best Performance) *</option>
-            <option value="640x360">640x360 (Good Balance)</option>
-            <option value="960x540" data-experimental="true">960x540 (Slower Training)</option>
-            <option value="1280x720" data-experimental="true">1280x720 (HD - Experimental)</option>
-            <option value="native" data-experimental="true">Native (Experimental)</option>
+      </div>
+
+      <!-- 2. CAPTURE SETTINGS -->
+      <div class="card" style="cursor: default; margin-bottom: 14px;">
+        <h3 style="margin-bottom: 12px;">Capture settings</h3>
+
+        <div style="display:flex; gap:14px; align-items:center; margin-bottom:10px; flex-wrap:wrap;">
+          <label class="form-label" style="margin:0; white-space:nowrap; min-width:120px;">Resolution</label>
+          <select class="form-select" id="teach-capture-resolution" style="width:240px;">
+            <option value="480x270" data-recommended="true">480 × 270 (recommended)</option>
+            <option value="640x360">640 × 360</option>
+            <option value="960x540" data-experimental="true">960 × 540</option>
+            <option value="1280x720" data-experimental="true">1280 × 720</option>
+            <option value="native" data-experimental="true">Native (experimental)</option>
           </select>
-          <span id="teach-resolution-hint" style="font-size:11px; color:var(--text-dim);">* Recommended for best performance</span>
+          <span id="teach-resolution-hint" style="font-size:11px; color:var(--text-dim);">Best balance of speed and accuracy</span>
         </div>
-        <!-- Mouse Capture Toggle (Beta, disabled by default) -->
-        <div style="display:flex; gap:12px; align-items:center; margin-top:8px; padding-top:8px; border-top:1px solid var(--border);">
-          <label style="display:flex; align-items:center; gap:6px; cursor:pointer;">
+
+        <div style="display:flex; gap:14px; align-items:center; flex-wrap:wrap;">
+          <label class="form-label" style="margin:0; white-space:nowrap; min-width:120px;">Mouse input</label>
+          <label style="display:flex; align-items:center; gap:8px; cursor:pointer;">
             <input type="checkbox" id="teach-capture-mouse">
-            <span style="font-size:12px;">Record Mouse Input</span>
-            <span style="font-size:10px; padding:1px 6px; border-radius:4px; background:var(--accent); color:#fff; opacity:0.7;">BETA</span>
+            <span style="font-size:13px;">Record mouse position and clicks</span>
           </label>
-          <span style="font-size:11px; color:var(--text-dim);">Adds mouse position &amp; clicks to training data (optional)</span>
+          <span style="font-size:11px; color:var(--text-dim);">Optional. Useful for click-driven games.</span>
         </div>
       </div>
 
+      <!-- 3. RECORDING SESSION -->
       <div class="card" style="cursor: default; margin-bottom: 14px;">
-        <h3 style="margin-bottom: 10px;">Recording Session</h3>
+        <h3 style="margin-bottom: 12px;">Recording session</h3>
 
-        <label class="form-label">Game ID</label>
-        <input class="form-input" id="teach-game-id" value="genshin_impact" />
+        <div style="display:grid; grid-template-columns: 120px 1fr; gap:10px 14px; align-items:center;">
+          <label class="form-label" style="margin:0;">Game</label>
+          <input class="form-input" id="teach-game-id" value="genshin_impact" />
 
-        <div style="height:10px;"></div>
-
-        <label class="form-label">Dataset name</label>
-        <div style="display:flex; gap:10px;">
-          <input class="form-input" id="teach-dataset-name" placeholder="e.g. bridge_route_01" style="flex:1;" />
-          <button class="btn btn-small btn-secondary" id="btnAutoGenDataset">Auto</button>
+          <label class="form-label" style="margin:0;">Dataset name</label>
+          <div style="display:flex; gap:8px;">
+            <input class="form-input" id="teach-dataset-name" placeholder="auto-generated on Start" style="flex:1;" />
+            <button class="btn btn-small btn-secondary" id="btnAutoGenDataset" title="Generate a name from game + timestamp">✨ Auto</button>
+          </div>
         </div>
 
-        <div style="height:12px;"></div>
+        <div style="height:14px;"></div>
 
-        <button class="btn btn-danger btn-wide" id="btnRecord">
-          <span>●</span> Start Recording
+        <button class="btn btn--primary btn-wide" id="btnRecord" style="background: var(--accent); border-color: var(--accent);">
+          <span>▶</span> Start recording
         </button>
 
-        <div style="margin-top:10px; color:var(--text-dim);" id="record-status">
-          Press to start capturing data…
+        <div style="margin-top:10px; font-size:12px; color:var(--text-dim);" id="record-status">
+          Captures gameplay frames and inputs into a dataset for training.
         </div>
       </div>
 
-      <!-- Dataset Management -->
+      <!-- 4. DATASETS -->
       <div class="card" style="cursor: default;">
         <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
-          <h3 style="margin:0;">Your Datasets</h3>
-          <button class="btn btn-small btn-secondary" id="btnRefreshDatasets">Refresh</button>
+          <h3 style="margin:0;">Your datasets</h3>
+          <button class="btn btn-small btn-secondary" id="btnRefreshDatasets">↻ Refresh</button>
         </div>
         <div id="teach-dataset-list" style="max-height:180px; overflow-y:auto;">
-          <div style="color:var(--text-dim); font-size:12px;">Loading datasets...</div>
+          <div style="color:var(--text-dim); font-size:12px;">Loading datasets…</div>
         </div>
       </div>
     </div>
@@ -1365,7 +1743,7 @@
             <p style="color: var(--text-dim); margin: 15px 0 25px;">
               Configure your game, select a task, and the AI will auto-configure everything else.
             </p>
-            <button class="btn btn-wide" id="btn-start-wizard" style="max-width: 300px;">
+            <button class="btn btn--primary btn-wide" id="btn-start-wizard" style="max-width: 300px;">
               ⚡ Begin Setup
             </button>
           </div>
@@ -1507,71 +1885,111 @@
                 <span class="settings-row-value" id="rt-install-dir">—</span>
               </div>
               <div class="settings-row">
+                <span class="settings-row-label">Local data dir</span>
+                <span class="settings-row-value" id="rt-local-data-dir">—</span>
+              </div>
+              <div class="settings-row">
                 <span class="settings-row-label">App version</span>
                 <span class="settings-row-value" id="rt-version">—</span>
               </div>
+
+              <!-- Runtime doctor table (UI-Phase D.2). Driven by the
+                   structured runtime_doctor JSON cached on
+                   window.__lastDoctor. Each row maps a check name to
+                   a status icon + detail. The table is the operator-
+                   facing surface that removes "what's wrong with my
+                   install" guesswork: every failure is a named row
+                   with a specific remediation pointer. -->
+              <h3 style="display:flex; align-items:center; justify-content:space-between;">
+                <span>Runtime doctor</span>
+                <span style="display:flex; gap:6px;">
+                  <button type="button" id="btn-doctor-rerun"
+                          class="btn btn-sm">↻ Re-run</button>
+                  <button type="button" id="btn-doctor-copy"
+                          class="btn btn-sm btn-secondary">📋 Copy JSON</button>
+                </span>
+              </h3>
+              <div id="doctor-summary" style="font-size:12px; color: var(--text-dim);
+                   margin: 0 0 10px;">Click <strong>Re-run</strong> to query the bundled
+                   Python's self-test (~3-5s on warm disk).</div>
+              <table id="doctor-table" class="doctor-table" hidden>
+                <thead>
+                  <tr><th>Check</th><th>Status</th><th>Detail</th><th>Elapsed</th></tr>
+                </thead>
+                <tbody id="doctor-table-body"></tbody>
+              </table>
             </section>
 
-            <!-- SYSTEM TOOLS (Diagnosis + logs) ====================== -->
+            <!-- SYSTEM TOOLS (Diagnosis + logs) ======================
+                 Phase 4 redesign: one primary action per section,
+                 secondary actions demoted to text links, descriptions
+                 capped at one line, generous vertical rhythm.
+            -->
             <section class="settings-section" data-settings-pane="system-tools">
-              <h3 style="display: flex; align-items: center; justify-content: space-between;">
-                <span>System Diagnosis</span>
+
+              <!-- 1. SYSTEM DIAGNOSTICS ========================== -->
+              <h3 style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px;">
+                <span style="font-weight: 500;">System diagnostics</span>
                 <span id="diag-verdict" class="diag-verdict ready" hidden></span>
               </h3>
               <p style="font-size: 12px; color: var(--text-dim); margin: 0 0 14px;">
-                Run a health check across every subsystem the app depends on. If a check
-                fails, the message tells you exactly which file or service is missing.
+                Verify the runtime, sidecar, and shipped resources. Surfaces missing files and broken services.
               </p>
 
-              <div id="diag-results" style="margin-bottom: 14px; min-height: 60px;
-                   display: flex; align-items: center; justify-content: center;
+              <div id="diag-results" style="margin-bottom: 12px; min-height: 36px;
+                   display: flex; align-items: center;
                    color: var(--text-dim); font-size: 12px;">
-                Click <strong style="margin: 0 4px;">Run Diagnosis</strong>
-                to begin.
+                Click <strong style="margin: 0 4px;">Run diagnostics</strong> to begin.
               </div>
 
-              <div style="display: flex; gap: 8px; flex-wrap: wrap;">
-                <button type="button" id="btn-run-diagnosis" class="btn">▶ Run Diagnosis</button>
-                <button type="button" id="btn-copy-support-report" class="btn btn-secondary"
-                        disabled title="Run a diagnosis first">📋 Copy Support Report</button>
-                <button type="button" id="btn-copy-logs" class="btn btn-secondary">
-                  📜 Copy Recent Logs
-                </button>
+              <!-- Phase 11: compact enterprise toolbar buttons. One
+                   primary action per section (toolbar--primary), the
+                   rest as ghost links (toolbar--ghost) sized to match. -->
+              <div class="toolbar-row">
+                <button type="button" id="btn-run-diagnosis" class="btn-toolbar btn-toolbar--primary">▶ Run diagnostics</button>
+              </div>
+              <div class="toolbar-row toolbar-row--secondary">
+                <button type="button" id="btn-copy-support-report" class="btn-toolbar btn-toolbar--ghost"
+                        disabled title="Run diagnostics first">Copy support report</button>
+                <button type="button" id="btn-copy-logs" class="btn-toolbar btn-toolbar--ghost">Copy recent logs</button>
               </div>
 
-              <!-- AI debug-loop section. Pulls captured runtime errors
-                   from the Rust ring buffer + sidecar /diagnostics/recent
-                   and packages them as a vendor-neutral Markdown+JSON
-                   bundle. Distinct from "Support Report" above: that one
-                   targets human triage (GitHub / Discord). This one
-                   targets an AI coding assistant. -->
-              <h3 style="margin-top: 22px; display: flex; align-items: center; gap: 8px; font-size: 13px;">
-                <span>AI Fix Bundle</span>
+              <!-- 2. DEBUG BUNDLE ================================
+                   Phase 4 + 10 + 11: the canonical "everything a
+                   maintainer needs to debug a startup failure or
+                   backend crash" export. Now leads with bundle
+                   metadata, the sidecar launch report (command, env,
+                   stdout, stderr, /health), a paste-ready repro
+                   command, ranked likely causes (analyze_launch_report
+                   rules), and an install-layout snapshot when the
+                   sidecar failed.
+              -->
+              <hr style="border: none; border-top: 1px solid var(--border); margin: 28px 0 18px;">
+
+              <h3 style="display: flex; align-items: center; gap: 8px; margin-bottom: 4px; font-weight: 500;">
+                <span>Debug bundle</span>
                 <span id="ai-errors-count"
                       class="diag-verdict ready"
                       style="font-size: 10px;"
                       hidden>0 captured</span>
               </h3>
-              <p style="font-size: 11px; color: var(--text-dim); margin: 0 0 8px; line-height: 1.5;">
-                Captures runtime errors (Python tracebacks, sidecar
-                exceptions) as a structured bundle. Paste into your AI
-                coding assistant for a focused root-cause fix.
+              <p style="font-size: 12px; color: var(--text-dim); margin: 0 0 14px; line-height: 1.55;">
+                Exports startup context, stderr tracebacks, environment, and runtime checks in a structured bundle for AI-assisted triage or a GitHub issue.
               </p>
-              <div style="display: flex; gap: 6px; flex-wrap: wrap;">
-                <button type="button" id="btn-copy-ai-bundle" class="btn"
-                        style="padding: 6px 12px; font-size: 11px;">
-                  Copy AI Bundle
-                </button>
-                <button type="button" id="btn-clear-ai-errors" class="btn btn-secondary"
-                        style="padding: 6px 12px; font-size: 11px;">
-                  Clear Captured
-                </button>
+
+              <div class="toolbar-row">
+                <button type="button" id="btn-copy-ai-bundle" class="btn-toolbar btn-toolbar--primary">📋 Copy debug bundle</button>
+              </div>
+              <div class="toolbar-row toolbar-row--secondary">
+                <button type="button" id="btn-clear-ai-errors" class="btn-toolbar btn-toolbar--ghost">Clear captured errors</button>
               </div>
 
-              <h3 style="margin-top: 22px; font-size: 13px;">Human Support Channels</h3>
-              <p style="font-size: 11px; color: var(--text-dim); margin: 0; line-height: 1.5;">
-                For human triage, use <strong>Copy Support Report</strong>
-                above and attach to a
+              <!-- 3. NEED HELP FROM A HUMAN? ===================== -->
+              <hr style="border: none; border-top: 1px solid var(--border); margin: 28px 0 18px;">
+
+              <h3 style="margin-bottom: 4px; font-weight: 500;">Need help from a human?</h3>
+              <p style="font-size: 12px; color: var(--text-dim); margin: 0; line-height: 1.55;">
+                Share your debug bundle in a
                 <a href="https://github.com/ruslanmv/BOT-MMORPG-AI/issues/new"
                    target="_blank" rel="noreferrer"
                    style="color: var(--accent);">GitHub issue</a>
@@ -1638,6 +2056,89 @@
         info
           ? `v${info.version} (${info.channel})${latest ? `  •  Latest: v${latest}` : ''}`
           : '—');
+      // Local data dir: pulled from the install_health row added in MVP-1.
+      const ldRow = window.__lastHealth?.checks?.find(c => c.id === 'local_data_root');
+      set('rt-local-data-dir', ldRow?.message?.split(' (')[0] || '—');
+
+      // Render the doctor table from cached data (populated by
+      // checkInstallHealth on launch). User can click Re-run to refresh.
+      renderDoctorTable(window.__lastDoctor);
+    }
+
+    // Renders the runtime-doctor JSON into a structured table. Hides
+    // the table and shows a hint when no doctor data is available.
+    function renderDoctorTable(doctor) {
+      const tbody = document.getElementById('doctor-table-body');
+      const tbl   = document.getElementById('doctor-table');
+      const sum   = document.getElementById('doctor-summary');
+      if (!tbody || !tbl || !sum) return;
+      if (!doctor || !Array.isArray(doctor.checks)) {
+        tbl.hidden = true;
+        sum.innerHTML = 'Click <strong>Re-run</strong> to query the bundled Python\'s self-test (~3-5s on warm disk).';
+        return;
+      }
+      const verdict = String(doctor.verdict || '?');
+      const badgeColor =
+        verdict === 'ok'      ? '#10b981' :
+        verdict === 'warning' ? '#f59e0b' :
+                                '#ef4444';
+      sum.innerHTML =
+        `Verdict: <span style="color:${badgeColor}; font-weight:600;">${verdict.toUpperCase()}</span>` +
+        ` &nbsp;•&nbsp; <span style="color:var(--text-dim);">elapsed ${doctor.elapsed_ms || 0}ms</span>` +
+        (doctor.platform?.python_version
+          ? ` &nbsp;•&nbsp; <span style="color:var(--text-dim);">Python ${doctor.platform.python_version}</span>`
+          : '');
+      tbody.innerHTML = doctor.checks.map(c => {
+        const status = String(c.status || '?').toLowerCase();
+        const icon = status === 'ok' ? '✓ OK'
+                   : status === 'warn' ? '! WARN'
+                   : status === 'error' ? '✗ ERR'
+                   : status;
+        const detail = (c.detail || '')
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;');
+        return `
+          <tr>
+            <td class="doctor-name">${c.name || '?'}</td>
+            <td class="doctor-status" data-status="${status}">${icon}</td>
+            <td class="doctor-detail">${detail}</td>
+            <td class="doctor-elapsed">${c.elapsed_ms || 0}ms</td>
+          </tr>`;
+      }).join('');
+      tbl.hidden = false;
+    }
+
+    async function rerunDoctor() {
+      const btn = document.getElementById('btn-doctor-rerun');
+      const sum = document.getElementById('doctor-summary');
+      if (!window.__TAURI__?.invoke) return;
+      if (btn) { btn.disabled = true; btn.textContent = '↻ Running...'; }
+      if (sum) sum.textContent = 'Running runtime doctor (~3-5s on warm disk; up to 60s on cold disk)...';
+      try {
+        const doctor = await window.__TAURI__.invoke('runtime_doctor');
+        window.__lastDoctor = doctor;
+        renderDoctorTable(doctor);
+      } catch (e) {
+        if (sum) sum.innerHTML = `<span style="color:#ef4444;">Doctor failed: ${e}</span>`;
+      } finally {
+        if (btn) { btn.disabled = false; btn.textContent = '↻ Re-run'; }
+      }
+    }
+
+    async function copyDoctorJson() {
+      const doctor = window.__lastDoctor;
+      if (!doctor) {
+        window.notifyError?.('No doctor data', 'Click Re-run first.');
+        return;
+      }
+      const text = JSON.stringify(doctor, null, 2);
+      try {
+        await navigator.clipboard.writeText(text);
+        window.notifySuccess?.('Doctor JSON copied', 'Paste it into a bug report or AI assistant.');
+      } catch (e) {
+        window.notifyError?.('Copy failed', String(e));
+      }
     }
 
     function ensureDiagnosisIdle() {
@@ -1715,17 +2216,22 @@
       } catch (e) {
         if (results) results.textContent = 'Diagnosis failed: ' + e;
       } finally {
-        if (btn) { btn.disabled = false; btn.textContent = '▶ Run Again'; }
+        if (btn) { btn.disabled = false; btn.textContent = '▶ Run again'; }
       }
     }
 
+    // Phase 4 redesign: secondary actions are now compact text links.
+    // Their original labels ("Copy Support Report", "Copy Recent
+    // Logs") were replaced with short verbs ("Copy report", "Copy
+    // logs"); the JS keeps the same logic but writes back the new
+    // labels on success/error timeouts.
     async function copySupportReport() {
       const btn = document.getElementById('btn-copy-support-report');
       if (!window.__TAURI__?.invoke) return;
-      if (btn) { btn.disabled = true; btn.textContent = '⏳ Copying...'; }
+      const orig = btn?.textContent || 'Copy report';
+      if (btn) btn.textContent = 'Copying...';
       try {
         let report = await window.__TAURI__.invoke('support_report');
-        // Append the in-app terminal buffer so support has runtime context.
         const term = document.getElementById('terminal-output')
                   || document.querySelector('[data-terminal]');
         if (term) {
@@ -1734,14 +2240,12 @@
                   + '\n```\n';
         }
         await navigator.clipboard.writeText(report);
-        if (btn) btn.textContent = '✓ Copied!';
+        if (btn) btn.textContent = '✓ Copied';
       } catch (e) {
         if (btn) btn.textContent = '✗ Failed';
         console.warn('support_report failed:', e);
       } finally {
-        setTimeout(() => {
-          if (btn) { btn.disabled = false; btn.textContent = '📋 Copy Support Report'; }
-        }, 1500);
+        setTimeout(() => { if (btn) btn.textContent = orig; }, 1500);
       }
     }
 
@@ -1751,16 +2255,15 @@
                 || document.getElementById('terminal-output')
                 || document.querySelector('[data-terminal]');
       if (!term) return;
+      const orig = btn?.textContent || 'Copy logs';
       const text = term.textContent.split('\n').slice(-200).join('\n').trim();
       try {
         await navigator.clipboard.writeText(text);
-        if (btn) { btn.textContent = '✓ Copied!'; }
+        if (btn) btn.textContent = '✓ Copied';
       } catch (e) {
-        if (btn) { btn.textContent = '✗ Failed'; }
+        if (btn) btn.textContent = '✗ Failed';
       }
-      setTimeout(() => {
-        if (btn) btn.textContent = '📜 Copy Recent Logs';
-      }, 1500);
+      setTimeout(() => { if (btn) btn.textContent = orig; }, 1500);
     }
 
     // ✅ NEW: production-safe bindings for Settings only (prevents inline handler quirks in installed exe)
@@ -1783,12 +2286,17 @@
       document.getElementById('btn-copy-support-report')?.addEventListener('click', copySupportReport);
       document.getElementById('btn-copy-logs')?.addEventListener('click', copyRecentLogs);
 
-      // AI Fix Bundle buttons. Pulls the structured bundle from the
-      // recent_errors_for_ai Tauri command (which itself merges Rust
-      // ring-buffer errors with sidecar /diagnostics/recent/ai entries),
-      // appends the last 200 in-app log lines for context, then writes
-      // to clipboard. The bundle is vendor-neutral -- works in any AI
-      // coding assistant or LLM chat with file-read access.
+      // Runtime doctor (Settings -> Runtime tab)
+      document.getElementById('btn-doctor-rerun')?.addEventListener('click', rerunDoctor);
+      document.getElementById('btn-doctor-copy')?.addEventListener('click', copyDoctorJson);
+
+      // Debug Bundle buttons (Phase 4 rename of "AI Fix Bundle").
+      // recent_errors_for_ai now leads its output with the Sidecar
+      // Launch Report (command, env, stdout, stderr, /health), so
+      // a user copying the bundle never has to ask "what got
+      // launched and what came back?" -- it's right at the top.
+      // Vendor-neutral Markdown: works in any AI coding assistant,
+      // a GitHub issue, or a Discord paste.
       const aiCopyBtn  = document.getElementById('btn-copy-ai-bundle');
       const aiClearBtn = document.getElementById('btn-clear-ai-errors');
       const aiCount    = document.getElementById('ai-errors-count');
@@ -1828,11 +2336,11 @@
         }
       });
 
-      if (aiClearBtn) aiClearBtn.addEventListener('click', async () => {
+      if (aiClearBtn) aiClearBtn.addEventListener('click', async (e) => {
+        e.preventDefault?.();
         if (!window.__TAURI__?.invoke) return;
         const orig = aiClearBtn.textContent;
-        aiClearBtn.disabled = true;
-        aiClearBtn.textContent = '⏳ Clearing...';
+        aiClearBtn.textContent = 'Clearing...';
         try {
           const n = await window.__TAURI__.invoke('clear_recent_errors');
           aiClearBtn.textContent = `✓ Cleared ${n}`;
@@ -1840,14 +2348,11 @@
             aiCount.hidden = true;
             aiCount.textContent = '0 captured';
           }
-        } catch (e) {
-          console.warn('clear_recent_errors failed:', e);
+        } catch (err) {
+          console.warn('clear_recent_errors failed:', err);
           aiClearBtn.textContent = '✗ Failed';
         } finally {
-          setTimeout(() => {
-            aiClearBtn.disabled = false;
-            aiClearBtn.textContent = orig;
-          }, 1500);
+          setTimeout(() => { aiClearBtn.textContent = orig; }, 1500);
         }
       });
 
@@ -1951,11 +2456,33 @@
     });
   </script>
 
-  <!-- Training School Wizard -->
-  <script src="./js/wizard.js"></script>
-
-  <!-- IMPORTANT: load your Tauri JS last -->
-  <script src="./main.js"></script>
+  <!-- Phase 23-D: defeat WebView2's resource cache by appending a
+       unique-per-load query string. Tauri 1.x dev mode has been
+       observed serving stale main.js for hours after a `git pull`
+       because Edge Chromium caches `tauri://` resources by default.
+       The cache-control meta tags only help once a fresh HTML loads;
+       this bootstrap loader guarantees the JS is re-fetched every
+       time, regardless of cache state. Production installs benefit
+       too: re-installing the .exe over an old one no longer
+       inherits the previous build's JS from cache. -->
+  <script>
+    (function() {
+      var ver = (window.__BUILD_TAG__ && window.__BUILD_TAG__ !== '%BUILD_TAG%')
+                  ? window.__BUILD_TAG__
+                  : Date.now();
+      var w = document.createElement('script');
+      w.src = './js/wizard.js?_=' + ver;
+      document.body.appendChild(w);
+      var m = document.createElement('script');
+      m.src = './main.js?_=' + ver;
+      document.body.appendChild(m);
+    })();
+  </script>
+  <!-- Original static includes kept as fallback comments so a
+       future maintainer can find them via grep:
+         <script src="./js/wizard.js"></script>
+         <script src="./main.js"></script>
+  -->
 
   <!-- Wizard initialization -->
   <script>
@@ -2226,17 +2753,123 @@
       document.getElementById('btn-close-patch-notes')?.addEventListener('click', hidePatch);
       document.getElementById('btn-patch-notes-dismiss')?.addEventListener('click', hidePatch);
 
-      // Install-health banner: dismiss + open Diagnosis
+      // Install-health banner: dismiss + open Diagnosis + recovery actions
       const healthBanner = document.getElementById('install-health-banner');
       document.getElementById('install-health-dismiss')?.addEventListener('click', () => {
         if (healthBanner) healthBanner.hidden = true;
       });
-      document.getElementById('install-health-open-diagnosis')?.addEventListener('click', () => {
+      const openDiagnosisFlow = () => {
         if (typeof window.openSettings === 'function') window.openSettings();
         document.getElementById('settings-modal-overlay')?.classList.add('open');
         if (typeof window.switchSettingsTab === 'function') window.switchSettingsTab('system-tools');
         document.getElementById('btn-run-diagnosis')?.click();
+      };
+      document.getElementById('install-health-open-diagnosis')?.addEventListener('click', openDiagnosisFlow);
+      document.getElementById('btn-chip-diagnosis')?.addEventListener('click', openDiagnosisFlow);
+
+      // Phase 5: single primary "Retry" button on the banner. Means
+      // "do whatever a normal user would mean by 'try again'":
+      //   1. Restart the sidecar (so a wedged process gets cleared).
+      //   2. Re-run install_health + runtime_doctor so the banner /
+      //      hero / header chip refresh on the new state.
+      // Buttons stay enabled even on failure so the user can retry.
+      document.getElementById('install-health-retry')?.addEventListener('click', async (e) => {
+        const btn = e.currentTarget;
+        if (!window.__TAURI__?.invoke) return;
+        const orig = btn?.textContent || '↻ Retry';
+        if (btn) { btn.disabled = true; btn.textContent = '⏳ Retrying...'; }
+        try {
+          await window.__TAURI__.invoke('restart_sidecar').catch(() => {});
+          // Give the sidecar a brief warmup window before re-probing.
+          await new Promise(r => setTimeout(r, 750));
+          if (typeof window.checkInstallHealth === 'function') {
+            await window.checkInstallHealth();
+          }
+        } catch (err) {
+          window.notifyError?.('Retry failed', String(err));
+        } finally {
+          setTimeout(() => {
+            if (btn) { btn.disabled = false; btn.textContent = orig; }
+          }, 800);
+        }
       });
+
+      // Wire the four recovery buttons. Each one calls a Tauri command
+      // and surfaces success / failure via the existing toast system.
+      // Buttons stay enabled even on failure so the user can retry.
+      const invokeWithToast = async (cmd, successTitle, successBody, failTitle) => {
+        if (!window.__TAURI__?.invoke) return;
+        try {
+          await window.__TAURI__.invoke(cmd);
+          window.notifySuccess?.(successTitle, successBody);
+        } catch (e) {
+          window.notifyError?.(failTitle, String(e));
+        }
+      };
+      const wireRestart = btn => btn?.addEventListener('click', () =>
+        invokeWithToast(
+          'restart_sidecar',
+          'Sidecar restart requested',
+          'Watch the terminal log for the next [Sidecar] READY line.',
+          'Sidecar restart failed'
+        ));
+      wireRestart(document.getElementById('install-health-restart-sidecar'));
+      wireRestart(document.getElementById('btn-restart-sidecar'));
+
+      const wireRepair = btn => btn?.addEventListener('click', () =>
+        invokeWithToast(
+          'repair_runtime',
+          'Repair Runtime started',
+          'Re-extracting python-runtime.zip into %LOCALAPPDATA%. Watch the terminal log.',
+          'Repair Runtime failed'
+        ));
+      wireRepair(document.getElementById('install-health-repair'));
+      wireRepair(document.getElementById('btn-chip-repair'));
+
+      document.getElementById('install-health-av')?.addEventListener('click', () =>
+        invokeWithToast(
+          'add_av_exclusion',
+          'AV exclusion requested',
+          'Accept the UAC prompt to add %LOCALAPPDATA%\\com.bot.mmorpg.ai\\runtime\\ to Defender exclusions.',
+          'AV exclusion failed'
+        ));
+
+      // Repair PyTorch via pip is the nuclear-option recovery for the
+      // bug-#9 pattern (torch/testing missing on disk). Slow -- so we
+      // confirm intent before invoking, and warn the user it's a 2-5
+      // minute operation. This is structurally distinct from Repair
+      // Runtime: that re-extracts the zip; this one re-downloads
+      // torch + torchvision + numpy from upstream PyPI.
+      document.getElementById('install-health-pip-repair')?.addEventListener('click', async () => {
+        if (!window.__TAURI__?.invoke) return;
+        const ok = window.confirm(
+          'Repair PyTorch via pip will download torch + torchvision + numpy from PyPI ' +
+          '(~250 MB). This bypasses the bundled zip AND any AV interference. ' +
+          'Takes 2-5 minutes. Continue?'
+        );
+        if (!ok) return;
+        try {
+          window.notifyInfo?.(
+            'Repair PyTorch started',
+            'Watch the terminal log for (pip stdout) lines. This takes 2-5 minutes.'
+          );
+          await window.__TAURI__.invoke('repair_pytorch_via_pip');
+          window.notifySuccess?.(
+            'Repair PyTorch complete',
+            'Click Run Diagnosis to verify torch.testing is now importable.'
+          );
+        } catch (e) {
+          window.notifyError?.('Repair PyTorch failed', String(e));
+        }
+      });
+
+      document.getElementById('install-health-open-logs')?.addEventListener('click', () =>
+        invokeWithToast(
+          'open_local_data_folder',
+          'Opened local data folder',
+          'Browse runtime/, datasets/, models/, logs/ in Explorer.',
+          'Open folder failed'
+        ));
 
       // Update banner: close, Later, View Patch Notes
       const updateBanner = document.getElementById('update-banner');

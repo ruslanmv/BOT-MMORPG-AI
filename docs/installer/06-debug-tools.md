@@ -18,6 +18,12 @@ $expect = @(
   "resources\backend\entry_main.py",
   "resources\backend\main_backend.py",
   "resources\modelhub\tauri.py",
+  # Sidecar-owned job runner (MVP-3a/3b)
+  "resources\modelhub\jobs\__init__.py",
+  "resources\modelhub\jobs\runner.py",
+  "resources\modelhub\jobs\routes.py",
+  # Runtime self-test (MVP-2)
+  "resources\scripts\runtime_doctor.py",
   "resources\versions\0.01\1-collect_data.py",
   "resources\versions\0.01\2-train_model.py",
   "resources\versions\0.01\3-test_model.py",
@@ -142,6 +148,88 @@ In the WebView devtools console (right-click → Inspect Element →
 Console) you'll see them logged. Useful when the in-app log console
 isn't visible (e.g. on the Run Bot tab).
 
+## Diagnostic G — Verify the bundled runtime tree (post-MVP-1)
+
+After MVP-1 the runtime extracts to `%LOCALAPPDATA%\com.bot.mmorpg.ai\`,
+not `$INSTDIR`. Use this when the doctor reports `torch_intact: error`
+and you need to know whether the on-disk tree is healthy.
+
+```powershell
+$RT = "$env:LOCALAPPDATA\com.bot.mmorpg.ai\runtime\py\python"
+$SP = "$RT\site-packages"
+
+# 1. Bundled python boots cleanly
+& "$RT\python.exe" --version
+
+# 2. Critical submodules exist on disk -- the smoking-gun probe for
+#    the AV-quarantine pattern (Bug #11 in 04-bug-index.md).
+@(
+  "$SP\torch\__init__.py",
+  "$SP\torch\testing\__init__.py",     # Bug #9 / #11 deletes this
+  "$SP\torch\fx\__init__.py",
+  "$SP\torchvision\__init__.py",
+  "$SP\numpy\__init__.py",
+  "$SP\numpy\testing\__init__.py",     # Bug #11 also deletes this
+  "$SP\fastapi\__init__.py",
+  "$SP\uvicorn\__init__.py",
+  "$SP\cv2\__init__.py"
+) | ForEach-Object {
+    $rel = $_.Replace("$SP\", "")
+    if (Test-Path $_) {
+        Write-Host ("  [OK]   {0}" -f $rel) -ForegroundColor Green
+    } else {
+        Write-Host ("  [MISS] {0}" -f $rel) -ForegroundColor Red
+    }
+}
+
+# 3. Run the runtime doctor against the bundled python
+& "$RT\python.exe" "C:\Program Files\BOT-MMORPG-AI\resources\scripts\runtime_doctor.py" `
+   --selftest --pretty --data-dir "$env:LOCALAPPDATA\com.bot.mmorpg.ai"
+```
+
+The third command emits the same JSON the Tauri command `runtime_doctor`
+returns to the UI. Useful when the UI itself isn't running (early-boot
+debug, headless reproductions).
+
+## Diagnostic H — In-app recovery ladder (post-MVP-3)
+
+Click order matters. From the install-health banner or chip:
+
+| Step | Button | What it does | When to use |
+|---|---|---|---|
+| 1 | `[↻ Restart Sidecar]` | Re-runs `start_sidecar_server` | Transient startup stall; first-launch cold-disk timeout |
+| 2 | `[🛡 Add AV Exclusion]` | UAC prompt → `Add-MpPreference -ExclusionPath` for the runtime tree | Doctor reports `torch_testing_dir_exists=False` |
+| 3 | `[🔧 Repair Runtime]` | Re-extracts `python-runtime.zip` into `%LOCALAPPDATA%\…\runtime\py\` | After AV exclusion, OR partial extract |
+| 4 | `[🩺 Repair PyTorch (pip)]` | `pip install --force-reinstall --no-deps torch torchvision numpy` | Bundled zip itself is broken (pre-MVP-4 installer); 2-5 min, ~250 MB |
+| 5 | `[📂 Open Logs Folder]` | Explorer at `%LOCALAPPDATA%\…\logs\` | Need to attach logs to a bug report |
+
+Each maps to a Tauri command in `src-tauri/src/main.rs`:
+`restart_sidecar`, `add_av_exclusion`, `repair_runtime`,
+`repair_pytorch_via_pip`, `open_local_data_folder`.
+
+After steps 2 + 3 (or step 4), click `[▶ Run Diagnosis]` to flip the
+doctor verdict. Green chip = OK; red dot on the sidebar gear = error.
+
+## Diagnostic I — Read the doctor JSON from outside the app
+
+The doctor's full JSON output is what feeds the AI Fix Bundle, the
+install-health banner, and the Settings → Runtime table. To inspect
+it directly without the UI:
+
+```powershell
+$RT = "$env:LOCALAPPDATA\com.bot.mmorpg.ai\runtime\py\python"
+$DOC = "C:\Program Files\BOT-MMORPG-AI\resources\scripts\runtime_doctor.py"
+$DATA = "$env:LOCALAPPDATA\com.bot.mmorpg.ai"
+
+& "$RT\python.exe" $DOC --selftest --pretty --data-dir $DATA |
+  Out-File -Encoding utf8 "$env:TEMP\bot-mmorpg-doctor.json"
+notepad "$env:TEMP\bot-mmorpg-doctor.json"
+```
+
+The `verdict` field rolls up to the worst per-check status. The
+`checks[].detail` field carries the enriched failure context for
+the bug-#9 pattern (torch_root + torch_testing_dir_exists).
+
 ## Build-time invariant checks
 
 The build pipeline already greps the template for known bad patterns
@@ -152,6 +240,13 @@ Existing checks:
 - `File /a /oname={{` (unquoted `/oname=`)
 - Any whitespace in staged resource filenames
 
-To add: `\\\\{{` regex (double backslash escape). Currently checked
-indirectly via `tests/test_tauri_production_readiness.py`.
+Plus the **runtime integrity check** added in MVP-4 at line 622-634:
+runs the bundled python.exe against an explicit list of imports
+(`torch.testing`, `numpy.testing`, `fastapi`, `uvicorn`, `cv2`,
+`importlib.metadata.version()`) post-prune. Fails the build if any
+import or version lookup fails — converts a runtime crash on the
+user's machine into a build-time failure on CI.
+
+To add a new check there: append a `@{ Stmt = ...; Why = ... }`
+hashtable to `$integrityTests`.
 {% endraw %}

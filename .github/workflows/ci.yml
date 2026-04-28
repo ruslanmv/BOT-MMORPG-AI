@@ -80,8 +80,12 @@ jobs:
         run: uv venv
 
       - name: Install dependencies
+        # The [backend] extra installs fastapi + uvicorn so the
+        # tests/test_jobs_routes.py route-plumbing tests actually run
+        # instead of skipping. Same need for test_diagnostics_smoke.py
+        # (currently skips when fastapi is unavailable).
         run: |
-          uv pip install -e ".[dev]"
+          uv pip install -e ".[dev,backend]"
           uv pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
 
       - name: Run tests with coverage

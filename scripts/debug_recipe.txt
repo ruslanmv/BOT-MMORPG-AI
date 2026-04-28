@@ -1,0 +1,78 @@
+===========================================================================
+ BOT-MMORPG-AI -- DEBUG RECIPE (AAA-grade)
+===========================================================================
+
+ Symptom: the sidecar fails to start / "No module named modelhub" /
+ backend not running / app shows "System Issue".
+
+ Don't guess. Walk this ladder top to bottom -- the FIRST tier that
+ fails IS the bug. Every tier costs less than the one above.
+
+ --------------------------------------------------------
+ TIER 0 -- IS THE BACKEND CODE EVEN CORRECT?  (~5 seconds)
+ --------------------------------------------------------
+   make dev-sidecar-test
+
+   Spawns Python sidecar standalone, waits for READY, hits /health,
+   confirms auth works, kills it. Pure Python, no Tauri, no installer.
+   PASS -> backend code is fine. Move to Tier 1.
+   FAIL -> the bug is in modelhub/ or backend/. Read the printed stderr.
+
+ --------------------------------------------------------
+ TIER 1 -- DOES THE FULL APP WORK FROM SOURCE? (~30 seconds first build)
+ --------------------------------------------------------
+   make dev
+
+   cargo tauri dev. Full Tauri shell + sidecar from source. Hot reload.
+   Click around -- Train, Record, Bot, Settings -> System Tools.
+   PASS -> the entire app works. Move to Tier 2.
+   FAIL -> the bug is in src-tauri/ (Rust shell), tauri-ui/ (frontend),
+           or in how the Rust shell builds PYTHONPATH / spawns the
+           sidecar. NOT in modelhub/ (Tier 0 already proved that).
+
+ --------------------------------------------------------
+ TIER 2 -- DOES THE INSTALLER PRODUCE A WORKING .EXE?  (~5 minutes)
+ --------------------------------------------------------
+   make artifact
+
+   Builds python-runtime.zip, NSIS installer, signs, runs verify.
+   Install + launch the .exe.
+   PASS -> ship it.
+   FAIL -> the bug is in PACKAGING ONLY. Open Settings -> System Tools
+           -> Copy debug bundle. The bundle's "## Likely Causes"
+           section pattern-matches against known packaging failures
+           (\\?\ extended-prefix, _pth-overrides-PYTHONPATH, missing
+           __init__.py, AV quarantine, DLL load fail, etc.) and gives
+           you the exact fix.
+
+ --------------------------------------------------------
+ ONE-COMMAND ALL-TIERS:  make doctor
+ --------------------------------------------------------
+
+ Runs Tier 0 (import sanity) + Tier 1 (sidecar smoke) + Tier 2
+ (pytest backend subset) in sequence. Stops at the first failure.
+ Use this to gate "make artifact" -- if doctor is green, the only
+ thing that can break the installer is the packaging layer.
+
+ --------------------------------------------------------
+ STUCK ON "Logs / Datasets directory: Cannot write"?
+ --------------------------------------------------------
+
+ The fix is automatic from now on -- "make dev" uses an isolated
+ dev data dir (<repo>/.dev-data/) and does NOT touch the production
+ install's %LOCALAPPDATA%/com.bot.mmorpg.ai/ tree. If you are seeing
+ the writability error, you are on a build from before that fix.
+ Pull the branch and re-run.
+
+ To reset dev state (datasets, models, logs created by "make dev"):
+
+   make dev-clean
+
+ Cross-platform; nukes <repo>/.dev-data/ entirely. The next "make dev"
+ recreates it.
+
+ If the error appears in the INSTALLED app (post "make artifact"),
+ not in dev mode, the diagnostic message in install_health tells you
+ exactly which Remove-Item PowerShell command to run.
+
+===========================================================================

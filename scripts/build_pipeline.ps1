@@ -566,36 +566,72 @@ function Ensure-BundledSitePackages {
     Log-Info "TensorFlow not detected (optional ml-legacy); skipping tf import test."
   }
 
-  # ---- Prune site-packages to reduce NSIS file count ----
-  # NSIS can fail or timeout when bundling >30k files. Remove unnecessary items.
-  Log-Info "Pruning bundled site-packages to reduce installer file count..."
+  # ---- Strip auto-generated artifacts (MVP-4) ----
+  #
+  # Background: STEP 6.7 packs the entire python/ tree into a single
+  # python-runtime.zip. From NSIS's perspective the bundle has ONE
+  # file regardless of how many files are inside the zip, so the
+  # historical "prune to stay under 30k files" rationale is obsolete.
+  # We now only strip files that are EITHER auto-generated (caches,
+  # .pyc) OR pure metadata that the bundled runtime never reads at
+  # runtime (.pyi type stubs).
+  #
+  # Specifically we no longer strip:
+  #   - tests/ (plural) -- low size win, zero failure surface but
+  #     also zero load-bearing benefit; keep what pip installed.
+  #   - *.dist-info     -- importlib.metadata.version() and entry-
+  #     point lookup require these. Removing them broke uvicorn's
+  #     cli on at least one wheel layout (issue not in tracker
+  #     because the symptom was just "uvicorn entry point missing").
+  #   - test/, testing/ -- already shown to be runtime-required
+  #     submodules of torch/numpy in Bug #9 (the 0.0.0-dev crash).
+  #
+  # If file size becomes a concern again, the right fix is to
+  # upgrade the zip compressor from DEFLATE to LZMA2 (~30% smaller
+  # bundle), not to delete files pip installed.
+  Log-Info "Stripping auto-generated artifacts from bundled site-packages..."
 
   $pruneCountBefore = (Get-ChildItem -Path $sitePkgs -Recurse -File -ErrorAction SilentlyContinue | Measure-Object).Count
 
-  # Remove __pycache__ directories and .pyc files (not needed for embedded python)
+  # Remove __pycache__ directories (auto-regenerated on first import).
   Get-ChildItem -Path $sitePkgs -Recurse -Directory -Filter "__pycache__" -ErrorAction SilentlyContinue |
     Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
 
-  # Remove test/tests directories inside packages (not needed at runtime)
-  Get-ChildItem -Path $sitePkgs -Recurse -Directory -ErrorAction SilentlyContinue |
-    Where-Object { $_.Name -match "^(tests?|testing)$" } |
-    Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
-
-  # Remove .dist-info directories (metadata only, not needed at runtime)
-  Get-ChildItem -Path $sitePkgs -Directory -Filter "*.dist-info" -ErrorAction SilentlyContinue |
-    Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
-
-  # Remove stray .pyc files outside __pycache__
+  # Remove stray .pyc files outside __pycache__ (auto-regenerated).
   Get-ChildItem -Path $sitePkgs -Recurse -File -Filter "*.pyc" -ErrorAction SilentlyContinue |
     Remove-Item -Force -ErrorAction SilentlyContinue
 
-  # Remove type stubs (.pyi files) - not needed at runtime
+  # Remove type stubs (.pyi). Not loaded by CPython at runtime;
+  # only consumed by IDE / type-checker tooling that the bundled
+  # runtime never runs.
   Get-ChildItem -Path $sitePkgs -Recurse -File -Filter "*.pyi" -ErrorAction SilentlyContinue |
     Remove-Item -Force -ErrorAction SilentlyContinue
 
   $pruneCountAfter = (Get-ChildItem -Path $sitePkgs -Recurse -File -ErrorAction SilentlyContinue | Measure-Object).Count
   $pruned = $pruneCountBefore - $pruneCountAfter
-  Log-Ok "Pruned $pruned files from site-packages ($pruneCountBefore -> $pruneCountAfter files)"
+  Log-Ok "Stripped $pruned auto-generated files ($pruneCountBefore -> $pruneCountAfter files)"
+
+  # ---- Runtime integrity check (MANDATORY) ----
+  # The pre-strip smoke tests above (lines ~552-554) cannot catch a
+  # rule that deletes a runtime-required artifact -- the test passes
+  # BEFORE the strip destroys it. Running these imports AFTER stripping
+  # converts a runtime crash on the user's machine into a build-time
+  # failure here on CI. If you change the strip rules, add the
+  # corresponding `import x.y` line here.
+  Log-Info "Runtime integrity check: validating bundled runtime survived all strip steps..."
+  $integrityTests = @(
+    @{ Stmt = "import torch, torch.testing, torch.nn, torch.fx"; Why = "torch.testing was deleted by '^(tests?|testing)$' prune in 0.0.0-dev (Bug #9)" }
+    @{ Stmt = "import torchvision";                              Why = "torchvision required for ML training pipeline" }
+    @{ Stmt = "import numpy, numpy.testing";                     Why = "numpy.testing imported transitively by torch on some platforms" }
+    @{ Stmt = "import fastapi, uvicorn";                         Why = "FastAPI sidecar startup requirement" }
+    @{ Stmt = "import cv2";                                      Why = "OpenCV used by collect_data + training preprocessing" }
+    @{ Stmt = "import importlib.metadata as m; assert m.version('uvicorn'); assert m.version('fastapi')"; Why = "*.dist-info presence (importlib.metadata + entry-point lookup needs them)" }
+  )
+  foreach ($t in $integrityTests) {
+    Invoke-Checked -FilePath $pyExe -Arguments @("-c", $t.Stmt) `
+      -ErrorMessage ("Runtime integrity check failed: '" + $t.Stmt + "' -- " + $t.Why)
+  }
+  Log-Ok "Runtime integrity check passed (all required modules + metadata present)"
 
   Log-Ok "Bundled site-packages ready (production-safe install strategy)."
 }
@@ -895,6 +931,26 @@ if (Test-Path $modelsScriptSrc) {
   Log-Warn "Download models script not found: $modelsScriptSrc"
 }
 
+# Runtime self-test (MVP-2). Stages scripts/runtime_doctor.py into
+# resources/scripts/ so the Tauri shell can invoke it after every
+# launch:
+#
+#   <bundled python.exe> resources\scripts\runtime_doctor.py --selftest --data-dir <appdata>
+#
+# Output JSON with verdict + per-check status drives the install-health
+# banner. Catches partial-install regressions (deleted submodules,
+# missing VC++, AV-quarantined DLLs) at first launch instead of mid-
+# feature. See scripts/runtime_doctor.py for the contract + tests/
+# test_runtime_doctor.py for the schema guard.
+$doctorSrc = Join-Path $root "scripts\runtime_doctor.py"
+$doctorDst = Join-Path $resScripts "runtime_doctor.py"
+if (Test-Path $doctorSrc) {
+  Copy-Item -Force $doctorSrc $doctorDst
+  Log-Ok "Runtime doctor copied"
+} else {
+  Log-Warn "Runtime doctor not found: $doctorSrc"
+}
+
 
 Log-Step 6.5 "Bundling versions into resources (runtime files only)"
 
@@ -1133,11 +1189,80 @@ try {
 
 # Remove the unpacked python/ tree so Tauri's NSIS bundler only sees the zip.
 # (Leaving the tree in would double-bundle it AND re-trigger the handlebars flood.)
+#
+# SAFETY GUARD (added after a preflight failure where backend/modelhub/versions
+# went missing between staging and preflight, suspected catastrophic
+# deletion target). We resolve $pythonDir to its absolute path, assert
+# the leaf directory name is exactly "python", and ONLY then call
+# Remove-Item. If the path ever resolved to something else (e.g. a
+# parent dir thanks to a symlink or a malformed `Join-Path`), this
+# would have wiped the entire src-tauri/resources tree silently.
+# Fail-fast instead.
 try {
-  Remove-Item -Recurse -Force $pythonDir -ErrorAction SilentlyContinue
+  $resolvedPythonDir = (Resolve-Path -LiteralPath $pythonDir -ErrorAction Stop).Path
+  $leaf = Split-Path $resolvedPythonDir -Leaf
+  if ($leaf -ne "python") {
+    throw "Safety stop: expected leaf folder 'python', got: $resolvedPythonDir (leaf='$leaf')"
+  }
+  # Belt+braces: also ensure the parent is exactly src-tauri\resources
+  # so we can never recurse-delete somewhere absurd like C:\.
+  $parent = Split-Path $resolvedPythonDir -Parent
+  $expectedParent = (Resolve-Path -LiteralPath (Join-Path $root "src-tauri\resources") -ErrorAction Stop).Path
+  if ($parent -ne $expectedParent) {
+    throw "Safety stop: python dir parent mismatch. parent=$parent expected=$expectedParent"
+  }
+  Remove-Item -Recurse -Force $resolvedPythonDir -ErrorAction Stop
   Log-Ok "Removed unpacked python/ tree (tauri will bundle python-runtime.zip instead)"
 } catch {
   Log-Warn "Could not remove $pythonDir ; NSIS bundle may be larger than necessary: $_"
+}
+
+# ================================
+# Post-pack sanity check (between STEP 6.7 and STEP 6.9).
+# After packing the runtime zip and removing the python/ tree, the
+# parallel staging dirs (backend/, modelhub/, versions/) MUST still
+# be intact. If they're not, we know the failure happened during the
+# pack/cleanup, not later in preflight -- so the error message can
+# point at the actual culprit instead of the symptom.
+# ================================
+$mustStillExist = @(
+  "src-tauri\resources\backend\entry_main.py",
+  "src-tauri\resources\modelhub\tauri.py",
+  "src-tauri\resources\versions\0.01\1-collect_data.py",
+  "src-tauri\resources\versions\0.01\2-train_model.py",
+  "src-tauri\resources\versions\0.01\3-test_model.py"
+)
+$postPackMissing = @()
+foreach ($rel in $mustStillExist) {
+  $full = Join-Path $root $rel
+  if (-not (Test-Path $full)) {
+    $postPackMissing += $rel
+  }
+}
+if ($postPackMissing.Count -gt 0) {
+  Log-Fail "POST-PACK check failed: the following files were staged earlier but are missing AFTER python-runtime.zip pack/cleanup:"
+  foreach ($p in $postPackMissing) { Log-Fail "  - $p" }
+  Log-Fail "This means STEP 6.7 (or something between 6.6 and 6.9) is wiping files it shouldn't."
+  Log-Fail "Likely culprits: (1) a Remove-Item with a wrong target, (2) anti-virus quarantine,"
+  Log-Fail "(3) OneDrive sync paused / file-on-demand stub, (4) a stale clean step."
+  exit 1
+}
+Log-Ok "Post-pack sanity: backend/modelhub/versions still present"
+
+# Optional verbose dump for the curious. Enable with:
+#   $env:BOT_BUILD_DEBUG = "1"
+# Useful when the post-pack check above passes but preflight still
+# fails (which would mean STEP 6.9 itself has a bug, not the staging).
+if ($env:BOT_BUILD_DEBUG -eq "1") {
+  Log-Info "BOT_BUILD_DEBUG=1 -> dumping every file under src-tauri\resources:"
+  $resourcesRoot = Join-Path $root "src-tauri\resources"
+  if (Test-Path $resourcesRoot) {
+    Get-ChildItem -Path $resourcesRoot -Recurse -File -ErrorAction SilentlyContinue |
+      Select-Object -ExpandProperty FullName |
+      ForEach-Object { Log-Info "  $_" }
+  } else {
+    Log-Warn "  (src-tauri\resources does not exist!)"
+  }
 }
 
 # ================================
@@ -1225,7 +1350,37 @@ if ($badSpaceFiles.Count -gt 0) {
 
 if ($preflightErrors.Count -gt 0) {
   Log-Fail ("Preflight failed with {0} issue(s). Aborting to prevent shipping a broken installer." -f $preflightErrors.Count)
+
+  # Auto-dump the actual on-disk state so the failure is debuggable
+  # without re-running with BOT_BUILD_DEBUG. Goal: tell the user
+  # "here is exactly what IS in src-tauri\resources right now" so
+  # they can see whether the file is in a wrong path, has a typo'd
+  # name, or genuinely vanished. Capped at 200 lines so a healthy-
+  # but-misnamed install doesn't flood the log.
+  Log-Info ""
+  Log-Info "Actual state of src-tauri\resources (first 200 entries):"
+  $resourcesRoot = Join-Path $root "src-tauri\resources"
+  if (Test-Path $resourcesRoot) {
+    $count = 0
+    Get-ChildItem -Path $resourcesRoot -Recurse -File -ErrorAction SilentlyContinue |
+      ForEach-Object {
+        if ($count -lt 200) {
+          $rel = $_.FullName.Substring($root.Length).TrimStart('\','/')
+          Log-Info ("  {0,12:N0}  {1}" -f $_.Length, $rel)
+          $count++
+        }
+      }
+    if ($count -eq 0) {
+      Log-Warn "  (resources directory is EMPTY -- something wiped it)"
+    }
+  } else {
+    Log-Fail "  (src-tauri\resources directory does not exist at all!)"
+  }
+
+  Log-Info ""
   Log-Info "Re-run earlier steps (wheelhouse, Python bundling, site-packages install, Step 6.5/6.6/6.7)."
+  Log-Info "If the dump above shows the files are present but in a different path, the preflight"
+  Log-Info "expected-paths list (around scripts/build_pipeline.ps1:1220) may be out of date."
   exit 1
 }
 

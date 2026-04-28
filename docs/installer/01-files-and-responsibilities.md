@@ -1,8 +1,14 @@
 # 01 — Files & Responsibilities
 
 {% raw %}
+> **Read [09-architecture-end-to-end.md](./09-architecture-end-to-end.md) first** for the post-migration big picture.
+> This file is the per-file reference; 09 is the architectural one.
+
 The seven files that govern installer behavior, in execution order.
-Edit the file matching the layer where your bug lives.
+Edit the file matching the layer where your bug lives. Post-migration
+the runtime stack also touches `modelhub/jobs/` (sidecar-owned spawn,
+see 09 §3-§4) and `scripts/runtime_doctor.py` (per-launch self-test,
+see 09 §5).
 
 ## 1. The single source of truth for installer instructions
 

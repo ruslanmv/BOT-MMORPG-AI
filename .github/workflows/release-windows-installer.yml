@@ -41,7 +41,10 @@ jobs:
           version: "latest"
 
       - name: Install dev deps
-        run: uv pip install --system -e ".[dev]"
+        # [backend] extra is required so the route-plumbing tests
+        # (tests/test_jobs_routes.py, tests/test_diagnostics_smoke.py)
+        # actually run instead of skipping due to missing fastapi.
+        run: uv pip install --system -e ".[dev,backend]"
 
       - name: Run pytest
         run: python -m pytest -q

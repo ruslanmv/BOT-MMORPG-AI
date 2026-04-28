@@ -7,6 +7,15 @@ so the AI can locate and fix the bug with minimal further questions.
 **Read this when:** the app is throwing an error and you want to copy
 the error context into Claude Code as a single paste.
 
+> Post-migration the bundle now includes the runtime doctor's
+> structured per-check verdict (commit `b0c2ac3`) plus the on-disk
+> path enrichment for torch/numpy failures (commit `52dae2e`). When
+> a sidecar-owned job ends with `status=failed` the UI also surfaces
+> a persistent crash-reporter notification with a one-click `[Copy
+> AI Bundle]` button so the user grabs context immediately. See
+> [09-architecture-end-to-end.md](./09-architecture-end-to-end.md)
+> §5 for the per-check reference.
+
 ## What it is
 
 A *parallel observation layer*, not a surgery on the existing app.

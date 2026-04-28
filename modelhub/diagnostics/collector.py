@@ -6,6 +6,7 @@ operations that need atomicity. No persistence — by design. Errors that
 matter to AI debugging are the ones happening RIGHT NOW; if the sidecar
 restarts, the buffer resets and that's correct.
 """
+
 from __future__ import annotations
 
 import threading
