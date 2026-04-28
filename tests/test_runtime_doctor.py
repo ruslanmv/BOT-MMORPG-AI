@@ -89,6 +89,7 @@ def test_run_check_captures_value_error(doctor):
 
 def test_run_check_captures_os_error(doctor):
     """OSError is the shape of torch DLL load failure on Windows."""
+
     def bad():
         raise OSError("[WinError 126] The specified module could not be found")
 
@@ -100,6 +101,7 @@ def test_run_check_captures_os_error(doctor):
 
 def test_run_check_captures_systemexit(doctor):
     """A misbehaving import should not be able to kill the doctor."""
+
     def evil():
         raise SystemExit(99)
 
@@ -111,6 +113,7 @@ def test_run_check_captures_systemexit(doctor):
 def test_run_check_forces_correct_name(doctor):
     """If a check returns a CheckResult with the wrong name field, the
     runner must fix it. This protects the JSON schema from drift."""
+
     def returns_with_wrong_name():
         return doctor.CheckResult("OOPS_WRONG", "ok", "")
 
@@ -274,7 +277,9 @@ def test_torch_intact_failure_detail_carries_path_context(doctor, monkeypatch):
     assert "torch_testing_dir_exists=" in result.detail
     # Remediation hint must reference both buttons in the UI flow.
     assert "AV Exclusion" in result.detail or "AV exclusion" in result.detail.lower()
-    assert "Repair Runtime" in result.detail or "repair runtime" in result.detail.lower()
+    assert (
+        "Repair Runtime" in result.detail or "repair runtime" in result.detail.lower()
+    )
 
 
 def test_numpy_intact_failure_detail_carries_path_context(doctor, monkeypatch):
@@ -313,4 +318,6 @@ def test_torchvision_failure_explains_collateral(doctor, monkeypatch):
     monkeypatch.setattr(builtins, "__import__", fake_import)
     result = doctor._check_torchvision_intact()
     assert result.status == "error"
-    assert "downstream" in result.detail.lower() or "collateral" in result.detail.lower()
+    assert (
+        "downstream" in result.detail.lower() or "collateral" in result.detail.lower()
+    )

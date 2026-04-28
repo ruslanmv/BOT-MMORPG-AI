@@ -987,6 +987,593 @@
       from { opacity: 0; transform: translateY(4px); }
       to   { opacity: 1; transform: translateY(0); }
     }
+
+    /* ====================================================================
+       TEACH TAB -- Phase 24 enterprise 2-column layout.
+       Visual on the left (preview gets the real estate), controls on the
+       right (recording is the primary action surface). Mirrors the
+       OBS / Unity / Unreal split between "live view" and "inspector".
+       ==================================================================== */
+    .teach-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1.05fr) minmax(0, 0.95fr);
+      gap: 18px;
+      align-items: start;
+    }
+    @media (max-width: 1180px) {
+      .teach-grid { grid-template-columns: minmax(0, 1fr); }
+    }
+
+    .teach-col-left,
+    .teach-col-right {
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+      min-width: 0;
+    }
+
+    .teach-card {
+      padding: 18px 20px;
+    }
+    /* Primary card -- the recording session. Subtle accent stripe so the
+       eye lands on it first, matching the "right column = controls,
+       primary action highlighted" pattern. */
+    .teach-card-primary {
+      border-left: 3px solid var(--primary);
+      box-shadow: var(--shadow-soft), 0 0 0 1px rgba(187,134,252,0.10);
+    }
+
+    .teach-card-header {
+      display: flex;
+      align-items: baseline;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin-bottom: 14px;
+    }
+    .teach-card-header h3 {
+      font-size: 1.05rem;
+      font-weight: 600;
+      margin: 0;
+      letter-spacing: 0.2px;
+    }
+
+    .teach-muted {
+      font-size: var(--ui-fs-helper);
+      color: var(--text-dim);
+      line-height: 1.4;
+    }
+
+    /* ----- LEFT: SCREEN PREVIEW ----- */
+    .teach-preview-stage {
+      position: relative;
+      width: 100%;
+      aspect-ratio: 16 / 9;
+      background:
+        radial-gradient(ellipse at center, rgba(187,134,252,0.06) 0%, transparent 70%),
+        linear-gradient(180deg, #0e0e16 0%, #07070c 100%);
+      border: 1px solid var(--border);
+      border-radius: var(--ui-radius-md);
+      overflow: hidden;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      box-shadow: inset 0 0 30px rgba(0,0,0,0.55);
+    }
+    .teach-preview-stage img {
+      max-width: 100%;
+      max-height: 100%;
+      width: auto;
+      height: auto;
+      object-fit: contain;
+      display: block;
+    }
+    .teach-preview-stage img:not([src]),
+    .teach-preview-stage img[src=""] {
+      display: none;
+    }
+    .teach-preview-empty {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+      gap: 6px;
+      color: var(--text-dim);
+      pointer-events: none;
+    }
+    .teach-preview-empty p { font-size: 0.875rem; margin: 0; }
+    .teach-preview-icon {
+      font-size: 2.4rem;
+      opacity: 0.55;
+      margin-bottom: 4px;
+      filter: drop-shadow(0 0 8px rgba(187,134,252,0.25));
+    }
+    .teach-preview-toolbar {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      flex-wrap: wrap;
+      margin-top: 12px;
+      padding-top: 12px;
+      border-top: 1px dashed var(--border);
+    }
+    .teach-select-narrow { width: 140px; min-width: 0; }
+
+    /* ----- LEFT: CAPTURE SETTINGS ----- */
+    .teach-settings-row {
+      display: grid;
+      grid-template-columns: 110px auto 1fr;
+      align-items: center;
+      gap: 12px;
+      padding: 8px 0;
+    }
+    .teach-settings-row + .teach-settings-row {
+      border-top: 1px solid rgba(255,255,255,0.04);
+    }
+
+    /* ----- RIGHT: RECORDING SESSION ----- */
+    .teach-form {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 8px;
+      margin-bottom: 4px;
+    }
+    .teach-form .form-input { width: 100%; }
+    .teach-input-group {
+      display: flex;
+      gap: 8px;
+      align-items: stretch;
+    }
+    .teach-input-group .form-input { flex: 1 1 auto; min-width: 0; }
+    .teach-input-group .btn-toolbar { flex: 0 0 auto; }
+
+    .teach-label {
+      font-size: var(--ui-fs-helper);
+      font-weight: 600;
+      color: var(--text-dim);
+      text-transform: uppercase;
+      letter-spacing: 0.6px;
+      margin: 4px 0 0;
+    }
+
+    .teach-divider {
+      height: 1px;
+      background: linear-gradient(
+        90deg,
+        transparent 0%,
+        rgba(255,255,255,0.10) 50%,
+        transparent 100%
+      );
+      margin: 14px 0;
+    }
+
+    /* Big primary CTA. Switches to a recording state via .is-recording
+       (set by main.js when toggleRecord enters recording mode). */
+    .teach-record-btn {
+      width: 100%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      padding: 14px 18px;
+      background: linear-gradient(135deg, #BB86FC 0%, #7C4DFF 100%);
+      color: #0b0b13;
+      border: none;
+      border-radius: var(--ui-radius-md);
+      font-family: 'Inter', sans-serif;
+      font-size: 1rem;
+      font-weight: 700;
+      letter-spacing: 0.4px;
+      cursor: pointer;
+      box-shadow: var(--ui-glow-primary);
+      transition: transform 0.08s ease, box-shadow 0.18s ease, background 0.18s ease;
+    }
+    .teach-record-btn:hover { transform: translateY(-1px); box-shadow: 0 0 18px rgba(187,134,252,0.55); }
+    .teach-record-btn:active { transform: translateY(0); }
+    .teach-record-btn:disabled {
+      opacity: 0.55;
+      cursor: not-allowed;
+      transform: none;
+      box-shadow: none;
+    }
+    .teach-record-btn.is-recording {
+      background: linear-gradient(135deg, #CF6679 0%, #8E1F30 100%);
+      color: #fff;
+      box-shadow: 0 0 16px rgba(207,102,121,0.55);
+      animation: teach-rec-pulse 1.6s ease-in-out infinite;
+    }
+    @keyframes teach-rec-pulse {
+      0%, 100% { box-shadow: 0 0 16px rgba(207,102,121,0.55); }
+      50%      { box-shadow: 0 0 26px rgba(207,102,121,0.85); }
+    }
+    .teach-record-icon { font-size: 1.05rem; line-height: 1; }
+    .teach-record-label { line-height: 1; }
+
+    .teach-record-status {
+      margin-top: 12px;
+      padding: 10px 12px;
+      background: rgba(255,255,255,0.03);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      font-size: var(--ui-fs-helper);
+      color: var(--text-dim);
+      line-height: 1.45;
+    }
+
+    /* Toggle row -- inline checkbox + label, no native browser look. */
+    .teach-toggle {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      cursor: pointer;
+      font-size: var(--ui-fs-helper);
+      color: var(--text-dim);
+    }
+    .teach-toggle input[type="checkbox"] {
+      appearance: none;
+      width: 32px;
+      height: 18px;
+      background: rgba(255,255,255,0.10);
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      position: relative;
+      cursor: pointer;
+      transition: background 0.15s ease;
+      flex-shrink: 0;
+    }
+    .teach-toggle input[type="checkbox"]::after {
+      content: '';
+      position: absolute;
+      top: 1px; left: 1px;
+      width: 14px; height: 14px;
+      background: #d8d8e8;
+      border-radius: 50%;
+      transition: transform 0.15s ease, background 0.15s ease;
+    }
+    .teach-toggle input[type="checkbox"]:checked {
+      background: var(--primary);
+      border-color: var(--primary);
+    }
+    .teach-toggle input[type="checkbox"]:checked::after {
+      transform: translateX(14px);
+      background: #1a1a26;
+    }
+
+    /* ----- RIGHT: DATASETS LIST ----- */
+    .teach-dataset-list {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      max-height: 340px;
+      overflow-y: auto;
+    }
+    .teach-empty {
+      padding: 22px 12px;
+      text-align: center;
+      border: 1px dashed var(--border);
+      border-radius: var(--ui-radius-md);
+      background: rgba(255,255,255,0.015);
+    }
+    .teach-empty-title {
+      font-size: 0.95rem;
+      font-weight: 600;
+      color: var(--text-main);
+      margin: 0 0 4px;
+    }
+
+    /* Phase 27: Train tab dataset selector. Inline select + refresh
+       button so the user can resync without losing the form context. */
+    .train-dataset-row {
+      display: flex;
+      gap: 8px;
+      align-items: stretch;
+    }
+    .train-dataset-row .form-select { flex: 1 1 auto; min-width: 0; }
+    .train-dataset-row .btn-toolbar { flex: 0 0 auto; }
+    .train-dataset-hint {
+      display: block;
+      margin-top: 4px;
+      font-size: var(--ui-fs-helper);
+      color: var(--text-dim);
+      line-height: 1.3;
+    }
+    .train-dataset-hint.is-empty {
+      color: var(--accent);
+    }
+
+    /* ====================================================================
+       TRAIN TAB -- Phase 28 enterprise split workspace.
+       Logs (left) + Setup (right) at 1:1, header card on top with a
+       running-state badge. Mirrors the Teach tab pattern so the user
+       develops one mental model.
+       ==================================================================== */
+    .train-page-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 16px;
+      padding: 14px 18px;
+      margin-bottom: 16px;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--ui-radius-lg);
+      box-shadow: var(--shadow-soft);
+    }
+    .train-page-title {
+      font-size: 1.25rem;
+      font-weight: 700;
+      margin: 0;
+      letter-spacing: 0.2px;
+    }
+    .train-page-sub {
+      margin: 4px 0 0;
+      font-size: var(--ui-fs-helper);
+      color: var(--text-dim);
+    }
+
+    .train-status-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 12px;
+      border-radius: 999px;
+      background: rgba(255,255,255,0.04);
+      border: 1px solid var(--border);
+      font-size: var(--ui-fs-helper);
+      font-weight: 600;
+      color: var(--text-dim);
+      flex-shrink: 0;
+    }
+    .train-status-dot {
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      background: var(--text-dim);
+    }
+    .train-status-badge[data-state="ready"] .train-status-dot { background: var(--success); }
+    .train-status-badge[data-state="ready"] .train-status-label { color: var(--success); }
+    .train-status-badge[data-state="running"] .train-status-dot {
+      background: var(--primary);
+      animation: train-status-pulse 1.4s ease-in-out infinite;
+    }
+    .train-status-badge[data-state="running"] .train-status-label { color: var(--primary); }
+    .train-status-badge[data-state="error"] .train-status-dot { background: var(--accent); }
+    .train-status-badge[data-state="error"] .train-status-label { color: var(--accent); }
+    @keyframes train-status-pulse {
+      0%, 100% { box-shadow: 0 0 0 0 rgba(187,134,252,0.45); }
+      50%      { box-shadow: 0 0 0 5px rgba(187,134,252,0); }
+    }
+
+    .train-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+      gap: 18px;
+      align-items: start;
+    }
+    @media (max-width: 1180px) {
+      .train-grid { grid-template-columns: minmax(0, 1fr); }
+    }
+
+    .train-col-left,
+    .train-col-right {
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+      min-width: 0;
+    }
+
+    .train-card { padding: 18px 20px; }
+    .train-card-primary {
+      border-left: 3px solid var(--primary);
+      box-shadow: var(--shadow-soft), 0 0 0 1px rgba(187,134,252,0.10);
+    }
+    .train-card-header {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin-bottom: 14px;
+    }
+    .train-card-header h3 {
+      font-size: 1.05rem;
+      font-weight: 600;
+      margin: 0;
+    }
+    .train-muted {
+      font-size: var(--ui-fs-helper);
+      color: var(--text-dim);
+    }
+    .train-pct {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.875rem;
+      color: var(--primary);
+      font-weight: 700;
+    }
+
+    /* ----- LEFT: TERMINAL + ACTIONS ----- */
+    .train-logs-card { display: flex; flex-direction: column; }
+    .train-terminal {
+      flex: 1 1 auto;
+      min-height: 380px;
+      max-height: 60vh;
+      margin-bottom: 12px;
+    }
+    .train-log-actions {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .train-analysis {
+      margin-top: 12px;
+      padding: 12px 14px;
+      background: rgba(255, 215, 0, 0.08);
+      border: 1px solid rgba(255, 215, 0, 0.55);
+      border-radius: 10px;
+      color: var(--text-main);
+      font-size: 0.875rem;
+      line-height: 1.45;
+    }
+
+    /* ----- RIGHT: FORM ----- */
+    .train-label {
+      display: block;
+      font-size: var(--ui-fs-helper);
+      font-weight: 600;
+      color: var(--text-dim);
+      text-transform: uppercase;
+      letter-spacing: 0.6px;
+      margin: 0 0 6px;
+    }
+    .train-form-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 14px;
+      margin-top: 14px;
+    }
+    .train-form-grid > div { min-width: 0; }
+    .train-form-grid .form-input,
+    .train-form-grid .form-select { width: 100%; }
+    .train-form-grid-full { grid-column: 1 / -1; }
+
+    /* Selected-dataset preview card. Visible only when a real dataset
+       is the chosen value. */
+    .train-selected-card {
+      margin-top: 12px;
+      padding: 12px 14px;
+      background: rgba(187,134,252,0.06);
+      border: 1px solid rgba(187,134,252,0.30);
+      border-radius: 10px;
+    }
+    .train-selected-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 4px;
+    }
+    .train-selected-title {
+      font-size: var(--ui-fs-helper);
+      font-weight: 600;
+      color: var(--text-dim);
+      text-transform: uppercase;
+      letter-spacing: 0.6px;
+    }
+    .train-selected-tag {
+      font-size: 11px;
+      font-weight: 700;
+      padding: 2px 8px;
+      border-radius: 999px;
+      background: var(--primary);
+      color: #0b0b13;
+      letter-spacing: 0.3px;
+    }
+    .train-selected-tag.is-older {
+      background: rgba(255,255,255,0.10);
+      color: var(--text-dim);
+    }
+    .train-selected-name {
+      font-size: 0.95rem;
+      font-weight: 600;
+      color: var(--text-main);
+      margin-bottom: 2px;
+      word-break: break-word;
+    }
+    .train-selected-meta {
+      font-size: var(--ui-fs-helper);
+      color: var(--text-dim);
+    }
+    .train-selected-advanced {
+      margin-top: 8px;
+      font-size: var(--ui-fs-helper);
+    }
+    .train-selected-advanced summary {
+      cursor: pointer;
+      color: var(--text-dim);
+      user-select: none;
+    }
+    .train-selected-advanced summary:hover { color: var(--primary); }
+    .train-selected-id {
+      margin-top: 6px;
+      padding: 6px 8px;
+      background: rgba(0,0,0,0.30);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 11px;
+      color: var(--text-dim);
+      word-break: break-all;
+    }
+
+    .train-divider {
+      height: 1px;
+      background: linear-gradient(90deg, transparent 0%, rgba(255,255,255,0.10) 50%, transparent 100%);
+      margin: 18px 0;
+    }
+
+    /* Big primary CTA. Disabled until a real dataset is selected. */
+    .train-start-btn {
+      width: 100%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      padding: 14px 18px;
+      background: linear-gradient(135deg, #BB86FC 0%, #7C4DFF 100%);
+      color: #0b0b13;
+      border: none;
+      border-radius: var(--ui-radius-md);
+      font-family: 'Inter', sans-serif;
+      font-size: 1rem;
+      font-weight: 700;
+      letter-spacing: 0.4px;
+      cursor: pointer;
+      box-shadow: var(--ui-glow-primary);
+      transition: transform 0.08s ease, box-shadow 0.18s ease, background 0.18s ease, opacity 0.18s ease;
+    }
+    .train-start-btn:hover:not(:disabled) {
+      transform: translateY(-1px);
+      box-shadow: 0 0 18px rgba(187,134,252,0.55);
+    }
+    .train-start-btn:active:not(:disabled) { transform: translateY(0); }
+    .train-start-btn:disabled {
+      cursor: not-allowed;
+      opacity: 0.45;
+      box-shadow: none;
+    }
+    .train-start-btn.is-running {
+      background: linear-gradient(135deg, #03DAC6 0%, #018786 100%);
+      color: #001313;
+      box-shadow: 0 0 16px rgba(3,218,198,0.50);
+    }
+    .train-start-icon { font-size: 1.05rem; line-height: 1; }
+    .train-start-label { line-height: 1; }
+
+    .train-status-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-top: 12px;
+      padding: 10px 12px;
+      background: rgba(255,255,255,0.03);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      font-size: var(--ui-fs-helper);
+    }
+    .train-status-key {
+      color: var(--text-dim);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      font-weight: 600;
+    }
+    .train-status-value {
+      color: var(--text-main);
+      flex: 1 1 auto;
+    }
+    .train-status-value.is-blocked { color: var(--accent); }
+    .train-status-value.is-ready   { color: var(--success); }
+    .train-status-value.is-running { color: var(--primary); }
   </style>
 </head>
 
@@ -1331,180 +1918,319 @@
       </div>
     </div>
 
-    <!-- TEACH -- Phase 21 enterprise polish:
-         - Single guided workflow (Screen → Capture → Recording → Datasets)
-         - Sentence-case labels, no BETA tag, no "Neural networks expect..." noise
-         - Start Recording uses primary accent (was btn-danger pink, looked like an error)
-         - Tighter copy + clearer hierarchy
+    <!-- TEACH -- Phase 24 enterprise 2-column redesign.
+         Layout matches OBS / Unity / Unreal: visual on the left
+         (preview gets the real estate), controls on the right.
+         All element IDs are preserved from the Phase 21 layout so
+         every JS handler in main.js continues to wire correctly:
+           btnRecord, btnRefreshTeachPreview, teach-monitor-select,
+           teach-capture-resolution, teach-capture-mouse,
+           teach-game-id, teach-dataset-name, btnAutoGenDataset,
+           btnRefreshDatasets, teach-dataset-list, teach-preview-*,
+           teach-live-preview-toggle, record-status.
     -->
     <div id="tab-teach" class="tab-content">
-      <!-- 1. SCREEN PREVIEW -->
-      <div class="card" style="cursor: default; margin-bottom: 14px;">
-        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
-          <h3 style="margin:0;">Screen preview</h3>
-          <div style="display:flex; gap:10px; align-items:center;">
-            <label class="form-label" style="margin:0;">Monitor</label>
-            <select class="form-select" id="teach-monitor-select" style="width:150px;">
-              <option value="1">Monitor 1</option>
-            </select>
-            <button class="btn btn-small btn-secondary" id="btnRefreshTeachPreview">↻ Refresh</button>
-            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; font-size:12px; color:var(--text-dim);">
-              <input type="checkbox" id="teach-live-preview-toggle">
-              Live (2 fps)
-            </label>
+      <div class="teach-grid">
+
+        <!-- =================================================== -->
+        <!-- LEFT COLUMN: VISUAL                                  -->
+        <!-- =================================================== -->
+        <div class="teach-col-left">
+
+          <!-- 1. SCREEN PREVIEW (large; visual focus) -->
+          <div class="card teach-card" style="cursor: default;">
+            <div class="teach-card-header">
+              <h3>Screen preview</h3>
+              <span class="teach-muted">Live capture from your selected monitor</span>
+            </div>
+
+            <div id="teach-preview-container" class="teach-preview-stage">
+              <img id="teach-preview-img" />
+              <div id="teach-preview-placeholder" class="teach-preview-empty">
+                <div class="teach-preview-icon">🎮</div>
+                <p>No preview yet</p>
+                <p class="teach-muted">Click <strong>Capture preview</strong> below</p>
+              </div>
+            </div>
+
+            <div class="teach-preview-toolbar">
+              <label class="teach-label">Monitor</label>
+              <select class="form-select teach-select-narrow" id="teach-monitor-select">
+                <option value="1">Primary</option>
+              </select>
+              <button class="btn-toolbar btn-toolbar--primary" id="btnRefreshTeachPreview">
+                ↻ Capture preview
+              </button>
+              <label class="teach-toggle">
+                <input type="checkbox" id="teach-live-preview-toggle">
+                <span>Live (2 fps)</span>
+              </label>
+            </div>
+          </div>
+
+          <!-- 2. CAPTURE SETTINGS (compact, beneath preview) -->
+          <div class="card teach-card" style="cursor: default;">
+            <div class="teach-card-header">
+              <h3>Capture settings</h3>
+              <span class="teach-muted">Frame size and input recording options</span>
+            </div>
+
+            <div class="teach-settings-row">
+              <label class="teach-label">Resolution</label>
+              <select class="form-select" id="teach-capture-resolution" style="width:220px;">
+                <option value="480x270" data-recommended="true">480 × 270 (recommended)</option>
+                <option value="640x360">640 × 360</option>
+                <option value="960x540" data-experimental="true">960 × 540</option>
+                <option value="1280x720" data-experimental="true">1280 × 720</option>
+                <option value="native" data-experimental="true">Native (experimental)</option>
+              </select>
+              <span id="teach-resolution-hint" class="teach-muted">Best balance of speed and accuracy</span>
+            </div>
+
+            <div class="teach-settings-row">
+              <label class="teach-label">Mouse input</label>
+              <label class="teach-toggle">
+                <input type="checkbox" id="teach-capture-mouse">
+                <span>Record mouse position and clicks</span>
+              </label>
+              <span class="teach-muted">Optional — useful for click-driven games</span>
+            </div>
           </div>
         </div>
-        <div id="teach-preview-container" style="background:#111; border:1px solid var(--border); border-radius:10px; display:flex; align-items:center; justify-content:center; min-height:170px; overflow:hidden;">
-          <img id="teach-preview-img" style="max-width:100%; max-height:170px; display:none;" />
-          <div id="teach-preview-placeholder" style="color:var(--text-dim); text-align:center;">
-            <div style="font-size:36px; margin-bottom:8px; opacity:0.7;">🎮</div>
-            <p style="margin:0;">Click <strong>Refresh</strong> to capture a preview frame</p>
+
+        <!-- =================================================== -->
+        <!-- RIGHT COLUMN: CONTROLS                               -->
+        <!-- =================================================== -->
+        <div class="teach-col-right">
+
+          <!-- 3. RECORDING SESSION (the primary action surface) -->
+          <div class="card teach-card teach-card-primary" style="cursor: default;">
+            <div class="teach-card-header">
+              <h3>Recording session</h3>
+              <span class="teach-muted">Names and starts a new dataset</span>
+            </div>
+
+            <div class="teach-form">
+              <label class="teach-label">Game</label>
+              <input class="form-input" id="teach-game-id" value="genshin_impact" />
+
+              <label class="teach-label">Dataset name</label>
+              <div class="teach-input-group">
+                <input class="form-input" id="teach-dataset-name"
+                       placeholder="auto-generated on Start" />
+                <button class="btn-toolbar" id="btnAutoGenDataset"
+                        title="Generate a name from game + timestamp">
+                  ✨ Generate
+                </button>
+              </div>
+            </div>
+
+            <div class="teach-divider"></div>
+
+            <button class="teach-record-btn" id="btnRecord">
+              <span class="teach-record-icon">▶</span>
+              <span class="teach-record-label">Start recording</span>
+            </button>
+
+            <div class="teach-record-status" id="record-status">
+              Captures gameplay frames and inputs into a dataset for training.
+            </div>
+          </div>
+
+          <!-- 4. DATASETS (history below recording controls) -->
+          <div class="card teach-card" style="cursor: default;">
+            <div class="teach-card-header" style="justify-content:space-between;">
+              <h3>Datasets</h3>
+              <button class="btn-toolbar btn-toolbar--ghost" id="btnRefreshDatasets">↻ Refresh</button>
+            </div>
+            <div id="teach-dataset-list" class="teach-dataset-list">
+              <div class="teach-empty">
+                <p class="teach-empty-title">No datasets yet</p>
+                <p class="teach-muted">Start a recording on the left to create your first dataset.</p>
+              </div>
+            </div>
           </div>
         </div>
-      </div>
 
-      <!-- 2. CAPTURE SETTINGS -->
-      <div class="card" style="cursor: default; margin-bottom: 14px;">
-        <h3 style="margin-bottom: 12px;">Capture settings</h3>
-
-        <div style="display:flex; gap:14px; align-items:center; margin-bottom:10px; flex-wrap:wrap;">
-          <label class="form-label" style="margin:0; white-space:nowrap; min-width:120px;">Resolution</label>
-          <select class="form-select" id="teach-capture-resolution" style="width:240px;">
-            <option value="480x270" data-recommended="true">480 × 270 (recommended)</option>
-            <option value="640x360">640 × 360</option>
-            <option value="960x540" data-experimental="true">960 × 540</option>
-            <option value="1280x720" data-experimental="true">1280 × 720</option>
-            <option value="native" data-experimental="true">Native (experimental)</option>
-          </select>
-          <span id="teach-resolution-hint" style="font-size:11px; color:var(--text-dim);">Best balance of speed and accuracy</span>
-        </div>
-
-        <div style="display:flex; gap:14px; align-items:center; flex-wrap:wrap;">
-          <label class="form-label" style="margin:0; white-space:nowrap; min-width:120px;">Mouse input</label>
-          <label style="display:flex; align-items:center; gap:8px; cursor:pointer;">
-            <input type="checkbox" id="teach-capture-mouse">
-            <span style="font-size:13px;">Record mouse position and clicks</span>
-          </label>
-          <span style="font-size:11px; color:var(--text-dim);">Optional. Useful for click-driven games.</span>
-        </div>
-      </div>
-
-      <!-- 3. RECORDING SESSION -->
-      <div class="card" style="cursor: default; margin-bottom: 14px;">
-        <h3 style="margin-bottom: 12px;">Recording session</h3>
-
-        <div style="display:grid; grid-template-columns: 120px 1fr; gap:10px 14px; align-items:center;">
-          <label class="form-label" style="margin:0;">Game</label>
-          <input class="form-input" id="teach-game-id" value="genshin_impact" />
-
-          <label class="form-label" style="margin:0;">Dataset name</label>
-          <div style="display:flex; gap:8px;">
-            <input class="form-input" id="teach-dataset-name" placeholder="auto-generated on Start" style="flex:1;" />
-            <button class="btn btn-small btn-secondary" id="btnAutoGenDataset" title="Generate a name from game + timestamp">✨ Auto</button>
-          </div>
-        </div>
-
-        <div style="height:14px;"></div>
-
-        <button class="btn btn--primary btn-wide" id="btnRecord" style="background: var(--accent); border-color: var(--accent);">
-          <span>▶</span> Start recording
-        </button>
-
-        <div style="margin-top:10px; font-size:12px; color:var(--text-dim);" id="record-status">
-          Captures gameplay frames and inputs into a dataset for training.
-        </div>
-      </div>
-
-      <!-- 4. DATASETS -->
-      <div class="card" style="cursor: default;">
-        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
-          <h3 style="margin:0;">Your datasets</h3>
-          <button class="btn btn-small btn-secondary" id="btnRefreshDatasets">↻ Refresh</button>
-        </div>
-        <div id="teach-dataset-list" style="max-height:180px; overflow-y:auto;">
-          <div style="color:var(--text-dim); font-size:12px;">Loading datasets…</div>
-        </div>
       </div>
     </div>
 
-    <!-- TRAIN -->
+    <!-- TRAIN -- Phase 28 enterprise split workspace. Logs (left) get
+         half the canvas; the form (right) is the control center.
+         Layout mirrors the OBS / Unity / Unreal split used in Teach.
+         All element IDs are preserved so every main.js handler keeps
+         working: btnStartTraining, btnAnalyzeLogs, terminal, btn-copy-
+         terminal, train-pct, train-game-id, train-model-name,
+         train-dataset-id (the SELECT introduced in Phase 27),
+         btnRefreshTrainDatasets, train-dataset-hint, train-arch,
+         train-action-space, train-resolution. New IDs:
+         train-status-badge, train-status-text, train-selected-card.
+    -->
     <div id="tab-train" class="tab-content">
-      <div class="terminal-window" id="terminal">
-        <button type="button" class="terminal-copy-btn" id="btn-copy-terminal"
-                title="Copy all log lines to clipboard">📋 Copy</button>
-        <div class="log-entry"><span class="log-time">[System]</span> Neural Training Console Initialized.</div>
-      </div>
 
-      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 10px;">
-        <div style="display:flex; gap:10px; flex-wrap:wrap;">
-          <button class="btn" id="btnStartTraining" type="button">
-            <span>🧠</span> Start Training
-          </button>
-          <button class="btn btn-secondary" id="btnAnalyzeLogs" type="button">
-            <span>✨</span> Analyze Logs
-          </button>
-          <button class="btn btn-secondary" type="button" onclick="window.showTab && window.showTab('models')">
-            <span>📚</span> Open ModelHub
-          </button>
-        </div>
-        <span id="train-pct">0%</span>
-      </div>
-
-      <div style="display:grid; grid-template-columns: 1fr 1fr; gap:12px; margin-bottom:12px;">
+      <!-- HEADER -->
+      <div class="train-page-header">
         <div>
-          <label class="form-label">Game ID</label>
-          <input class="form-input" id="train-game-id" value="genshin_impact"/>
+          <h2 class="train-page-title">Neural network training</h2>
+          <p class="train-page-sub">Train a model from your recorded gameplay datasets.</p>
         </div>
-        <div>
-          <label class="form-label">Model name</label>
-          <input class="form-input" id="train-model-name" placeholder="e.g. genshin_farm_v1"/>
-        </div>
-        <div>
-          <label class="form-label">Dataset id</label>
-          <input class="form-input" id="train-dataset-id" placeholder="Pick from ModelHub or paste id"/>
-        </div>
-        <div>
-          <label class="form-label">Neural Network</label>
-          <select class="form-select" id="train-arch">
-            <optgroup label="🌟 Modern (Recommended)">
-              <option value="efficientnet_lstm" selected>EfficientNet-LSTM (Best Accuracy)</option>
-              <option value="efficientnet_simple">EfficientNet (Balanced)</option>
-              <option value="mobilenetv3">MobileNetV3 (Fastest)</option>
-              <option value="resnet18_lstm">ResNet18-LSTM</option>
-            </optgroup>
-            <optgroup label="🚀 Advanced (Experimental)">
-              <option value="efficientnet_transformer">EfficientNet-Transformer (Long Sequences)</option>
-              <option value="multihead_action">Multi-Head Action (Simultaneous Actions)</option>
-              <option value="game_attention">Game Attention Network (UI Focus)</option>
-            </optgroup>
-            <optgroup label="📜 Legacy">
-              <option value="inception_v3">Inception V3</option>
-              <option value="alexnet">AlexNet</option>
-            </optgroup>
-          </select>
-        </div>
-        <div>
-          <label class="form-label">Action Space</label>
-          <select class="form-select" id="train-action-space">
-            <option value="basic">Basic (9 actions) - WASD only</option>
-            <option value="standard">Standard (29 actions) - Keyboard + Gamepad</option>
-            <option value="combat" selected>Combat (48 actions) - Skills + Combat</option>
-            <option value="extended">Extended (73 actions) - Full MMORPG</option>
-          </select>
-        </div>
-        <div>
-          <label class="form-label">Training Resolution</label>
-          <select class="form-select" id="train-resolution">
-            <option value="480x270" selected>480x270 (Fastest)</option>
-            <option value="640x360">640x360 (Good Balance)</option>
-            <option value="960x540">960x540 (Slower)</option>
-            <option value="1280x720">1280x720 (HD - Experimental)</option>
-          </select>
+        <div class="train-status-badge" id="train-status-badge" data-state="idle">
+          <span class="train-status-dot"></span>
+          <span class="train-status-label">Idle</span>
         </div>
       </div>
 
-      <div id="log-analysis-result" style="display:none; margin-top:12px; background: rgba(255, 215, 0, 0.08); border: 1px solid rgba(255,215,0,0.65); padding: 15px; border-radius: 12px; color: var(--text-main);">
-        <strong>AI Analysis:</strong> <span id="analysis-text"></span>
+      <!-- 2-COLUMN WORKSPACE -->
+      <div class="train-grid">
+
+        <!-- ============================================== -->
+        <!-- LEFT: LIVE LOGS                                -->
+        <!-- ============================================== -->
+        <div class="train-col-left">
+          <div class="card train-card train-logs-card" style="cursor: default;">
+            <div class="train-card-header">
+              <h3>Live training logs</h3>
+              <span class="train-pct" id="train-pct">0%</span>
+            </div>
+
+            <div class="terminal-window train-terminal" id="terminal">
+              <button type="button" class="terminal-copy-btn" id="btn-copy-terminal"
+                      title="Copy all log lines to clipboard">📋 Copy logs</button>
+              <div class="log-entry">
+                <span class="log-time">[System]</span> Neural training console initialized.
+              </div>
+            </div>
+
+            <div class="train-log-actions">
+              <button class="btn-toolbar btn-toolbar--ghost" id="btnAnalyzeLogs" type="button">
+                <span>✨</span> Explain logs
+              </button>
+              <button class="btn-toolbar btn-toolbar--ghost" type="button"
+                      onclick="window.showTab && window.showTab('models')">
+                <span>📚</span> Open models
+              </button>
+            </div>
+
+            <div id="log-analysis-result" class="train-analysis" hidden>
+              <strong>AI analysis:</strong> <span id="analysis-text"></span>
+            </div>
+          </div>
+        </div>
+
+        <!-- ============================================== -->
+        <!-- RIGHT: TRAINING SETUP                          -->
+        <!-- ============================================== -->
+        <div class="train-col-right">
+          <div class="card train-card train-card-primary" style="cursor: default;">
+            <div class="train-card-header">
+              <h3>Training setup</h3>
+              <span class="train-muted">Pick a dataset and tune the model.</span>
+            </div>
+
+            <!-- Dataset picker is the most important control. -->
+            <label class="train-label" for="train-dataset-id">Training dataset</label>
+            <div class="train-dataset-row">
+              <!-- Phase 27/28: grouped <select>. JS populates Latest /
+                   Recent / Actions optgroups; Actions are intercepted
+                   on change and never become the chosen value. -->
+              <select class="form-select" id="train-dataset-id">
+                <option value="" disabled selected>Loading datasets...</option>
+              </select>
+              <button class="btn-toolbar btn-toolbar--ghost"
+                      id="btnRefreshTrainDatasets"
+                      type="button"
+                      title="Refresh dataset list from sidecar">
+                ↻
+              </button>
+            </div>
+            <span id="train-dataset-hint" class="train-dataset-hint">
+              Latest recording is auto-selected.
+            </span>
+
+            <!-- Selected dataset preview card. Populated by JS. Shows
+                 the human-friendly summary so the user doesn't have
+                 to parse the raw timestamped id. The raw id collapses
+                 to advanced text underneath. -->
+            <div id="train-selected-card" class="train-selected-card" hidden>
+              <div class="train-selected-header">
+                <span class="train-selected-title">Selected dataset</span>
+                <span class="train-selected-tag" id="train-selected-tag">Latest</span>
+              </div>
+              <div class="train-selected-name" id="train-selected-name">—</div>
+              <div class="train-selected-meta" id="train-selected-meta">—</div>
+              <details class="train-selected-advanced">
+                <summary>Advanced</summary>
+                <div class="train-selected-id" id="train-selected-id">—</div>
+              </details>
+            </div>
+
+            <div class="train-form-grid">
+              <div>
+                <label class="train-label" for="train-game-id">Game id</label>
+                <input class="form-input" id="train-game-id" value="genshin_impact"/>
+              </div>
+              <div>
+                <label class="train-label" for="train-model-name">Model name</label>
+                <input class="form-input" id="train-model-name" placeholder="e.g. genshin_farm_v1"/>
+              </div>
+
+              <div>
+                <label class="train-label" for="train-arch">Neural network</label>
+                <select class="form-select" id="train-arch">
+                  <optgroup label="🌟 Modern (recommended)">
+                    <option value="efficientnet_lstm" selected>EfficientNet-LSTM (best accuracy)</option>
+                    <option value="efficientnet_simple">EfficientNet (balanced)</option>
+                    <option value="mobilenet_v3">MobileNetV3 (fastest)</option>
+                    <option value="resnet18_lstm">ResNet18-LSTM</option>
+                  </optgroup>
+                  <optgroup label="🚀 Advanced (experimental)">
+                    <option value="efficientnet_transformer">EfficientNet-Transformer (long sequences)</option>
+                    <option value="multihead_action">Multi-head action (simultaneous actions)</option>
+                    <option value="game_attention">Game attention network (UI focus)</option>
+                  </optgroup>
+                  <optgroup label="📜 Legacy">
+                    <option value="inception_v3">Inception V3</option>
+                    <option value="alexnet">AlexNet</option>
+                    <option value="sentnet">SentNet</option>
+                    <option value="sentnet_2d">SentNet 2D</option>
+                  </optgroup>
+                </select>
+              </div>
+              <div>
+                <label class="train-label" for="train-action-space">Action space</label>
+                <select class="form-select" id="train-action-space">
+                  <option value="basic">Basic — 9 actions (WASD only)</option>
+                  <option value="standard">Standard — 29 actions (keyboard + gamepad)</option>
+                  <option value="combat" selected>Combat — 48 actions (skills + combat)</option>
+                  <option value="extended">Extended — 73 actions (full MMORPG)</option>
+                </select>
+              </div>
+
+              <div class="train-form-grid-full">
+                <label class="train-label" for="train-resolution">Training resolution</label>
+                <select class="form-select" id="train-resolution">
+                  <option value="480x270" selected>480 × 270 (fastest)</option>
+                  <option value="640x360">640 × 360 (good balance)</option>
+                  <option value="960x540">960 × 540 (slower)</option>
+                  <option value="1280x720">1280 × 720 (HD — experimental)</option>
+                </select>
+              </div>
+            </div>
+
+            <div class="train-divider"></div>
+
+            <button class="train-start-btn" id="btnStartTraining" type="button" disabled>
+              <span class="train-start-icon">🧠</span>
+              <span class="train-start-label">Start training</span>
+            </button>
+
+            <div class="train-status-row">
+              <span class="train-status-key">Status</span>
+              <span id="train-status-text" class="train-status-value">Pick a dataset to start</span>
+            </div>
+          </div>
+        </div>
+
       </div>
     </div>
 
@@ -2456,33 +3182,22 @@
     });
   </script>
 
-  <!-- Phase 23-D: defeat WebView2's resource cache by appending a
-       unique-per-load query string. Tauri 1.x dev mode has been
-       observed serving stale main.js for hours after a `git pull`
-       because Edge Chromium caches `tauri://` resources by default.
-       The cache-control meta tags only help once a fresh HTML loads;
-       this bootstrap loader guarantees the JS is re-fetched every
-       time, regardless of cache state. Production installs benefit
-       too: re-installing the .exe over an old one no longer
-       inherits the previous build's JS from cache. -->
-  <script>
-    (function() {
-      var ver = (window.__BUILD_TAG__ && window.__BUILD_TAG__ !== '%BUILD_TAG%')
-                  ? window.__BUILD_TAG__
-                  : Date.now();
-      var w = document.createElement('script');
-      w.src = './js/wizard.js?_=' + ver;
-      document.body.appendChild(w);
-      var m = document.createElement('script');
-      m.src = './main.js?_=' + ver;
-      document.body.appendChild(m);
-    })();
-  </script>
-  <!-- Original static includes kept as fallback comments so a
-       future maintainer can find them via grep:
-         <script src="./js/wizard.js"></script>
-         <script src="./main.js"></script>
-  -->
+  <!-- Phase 24: REVERTED Phase 23-D's dynamic loader. Tauri 1.x's
+       `tauri://` / `asset://` resource resolver maps URLs directly
+       to files on disk and treats query strings as part of the
+       path -- so `./main.js?_=12345` 404s, the JS never executes,
+       and the whole UI falls back to the static seed in this file
+       (the symptom: "click Record does nothing"). Cache-busting
+       now relies on:
+         (a) the no-cache meta tags in <head> (Phase 22),
+         (b) BUILD_TAG stamping which changes the JS file's bytes
+             (Phase 23-B; WebView2's cache validator detects the
+             content change on the unchanged URL).
+       Static script tags below are the AAA-grade pattern Tauri's
+       own examples use. -->
+  <script src="./js/wizard.js"></script>
+  <!-- IMPORTANT: load main.js LAST. -->
+  <script src="./main.js"></script>
 
   <!-- Wizard initialization -->
   <script>

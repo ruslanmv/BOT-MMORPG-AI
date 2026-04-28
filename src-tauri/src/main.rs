@@ -3132,6 +3132,54 @@ async fn open_local_data_folder(
     Ok(format!("Opened {}", path))
 }
 
+/// Phase 28: open the per-game datasets folder in the OS file
+/// browser. Wired to the Train tab dataset dropdown's "Open
+/// datasets folder" action so the user can inspect/manage the
+/// archived recordings without leaving the app. We resolve the
+/// path the same way the sidecar does (`<local_data_root>/datasets/
+/// <game_id>/`) and create it if missing so the user never lands
+/// in "folder doesn't exist" purgatory just because they haven't
+/// recorded yet.
+#[tauri::command]
+async fn open_datasets_folder(
+    app: AppHandle,
+    window: Window,
+    game_id: Option<String>,
+) -> Result<String, String> {
+    let gid = normalize_game_id(game_id);
+    let root = local_data_root(&app).join("datasets").join(&gid);
+    let _ = std::fs::create_dir_all(&root);
+    let path = root.display().to_string();
+
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("explorer.exe")
+            .arg(&path)
+            .spawn()
+            .map_err(|e| format!("Failed to launch Explorer: {}", e))?;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg(&path)
+            .spawn()
+            .map_err(|e| format!("Failed to launch Finder: {}", e))?;
+    }
+    #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
+    {
+        std::process::Command::new("xdg-open")
+            .arg(&path)
+            .spawn()
+            .map_err(|e| format!("Failed to launch file manager: {}", e))?;
+    }
+
+    let _ = window.emit::<String>(
+        "terminal_update",
+        format!("[System] Opened datasets folder: {}", path),
+    );
+    Ok(format!("Opened {}", path))
+}
+
 /// Tauri command: spawn an elevated PowerShell that adds the runtime
 /// folder to Microsoft Defender exclusions. Wired to the "Add AV
 /// Exclusion" button on the sidecar-failed banner.
@@ -3622,13 +3670,24 @@ async fn start_training(
     let mname = model_name.unwrap_or_else(|| "New Model".to_string());
     let did = dataset_id.unwrap_or_default();
     let a = arch.unwrap_or_else(|| "custom".to_string());
+    let local_root = local_data_root(&app);
+    let data_dir = local_root.join("datasets").join(&gid).join(did.trim());
+    let out_dir = local_root.join("trained_models").join(&gid).join(mname.trim());
+    let data_dir_s = data_dir.display().to_string();
+    let out_dir_s = out_dir.display().to_string();
     let inner = state.inner.clone();
 
     // Same fail-soft pattern as start_recording.
     if let Err(_e) = api_post_with(
         &inner,
         "/session/begin_training",
-        json!({"game_id": gid, "model_name": mname, "dataset_id": did, "arch": a}),
+        json!({
+            "game_id": gid,
+            "model_name": mname,
+            "dataset_id": did,
+            "arch": a,
+            "out_dir": out_dir_s.clone()
+        }),
     )
     .await
     {
@@ -3651,7 +3710,14 @@ async fn start_training(
         &window,
         "train",
         "2-train_model.py",
-        &[],
+        &[
+            "--data",
+            &data_dir_s,
+            "--out",
+            &out_dir_s,
+            "--model",
+            &a,
+        ],
     )
     .await?;
     Ok(format!("Started train_model job {}", job_id))
@@ -3924,8 +3990,23 @@ async fn stop_process(state: tauri::State<'_, AppState>, window: Window) -> Resu
     // running" state. The DELETE is best-effort -- if the sidecar is
     // already gone the local kill above has already disposed of the
     // child, so the result here doesn't change UX.
+    //
+    // Phase 26: the sidecar's cancel() now runs a cooperative-stop
+    // ladder (write stop-flag, wait up to 8s for the child to flush
+    // its dataset and exit, escalate to SIGTERM, then SIGKILL). The
+    // DELETE call therefore CAN take several seconds to return when
+    // a recording was active. Emit a "saving" line up front so the
+    // user can see the stop click was received and the system is
+    // intentionally giving the recorder time to flush, not hung.
     let sidecar_job = inner.current_sidecar_job.lock().unwrap().take();
     if let Some(job_id) = sidecar_job {
+        let _ = window.emit(
+            "terminal_update",
+            format!(
+                "[Sidecar] Stop requested for job {} -- waiting for clean shutdown (saving any buffered samples)...",
+                job_id
+            ),
+        );
         let path = format!("/jobs/{}", job_id);
         if let Err(e) = api_delete_with(&inner, &path).await {
             let _ = window.emit(
@@ -3940,8 +4021,30 @@ async fn stop_process(state: tauri::State<'_, AppState>, window: Window) -> Resu
         }
     }
 
-    if let Err(e) = api_post_with(&inner, "/session/finalize", json!({})).await {
-        let _ = window.emit("terminal_update", format!("[Warning] finalize failed: {}", e));
+    // Phase 25: capture the finalize response so we can forward the
+    // archived dataset entry (id, name, path, file_count, game_id) to
+    // the UI as a `recording_finalized` event. The Teach tab listens
+    // and prefills `train-dataset-id`, eliminating the
+    // "No dataset selected" preflight that hits first-time users
+    // immediately after their first successful recording.
+    match api_post_with(&inner, "/session/finalize", json!({})).await {
+        Ok(resp) => {
+            if resp
+                .get("finalized")
+                .and_then(|v| v.as_str())
+                .map(|s| s == "recording")
+                .unwrap_or(false)
+            {
+                if let Some(dataset) = resp.get("dataset") {
+                    if !dataset.is_null() {
+                        let _ = window.emit("recording_finalized", dataset.clone());
+                    }
+                }
+            }
+        }
+        Err(e) => {
+            let _ = window.emit("terminal_update", format!("[Warning] finalize failed: {}", e));
+        }
     }
 
     Ok(msg)
@@ -4608,14 +4711,34 @@ async fn preflight_action(
                     ));
                 }
             }
-            // Architecture allow-list. Mirrors the `arch` switch in
-            // versions/0.01/2-train_model.py. Adding a new model
-            // class? Add it both there and here.
+            // Architecture allow-list. Mirrors MODEL_REGISTRY in
+            // src/bot_mmorpg/scripts/models_pytorch.py (the single
+            // source of truth -- 2-train_model.py forwards to it via
+            // get_model()).  Adding a new model class? Add it to the
+            // backend registry first, then add the same key here.
+            //
+            // Phase 25: was out of sync (had `resnet50` which doesn't
+            // exist in the registry, and was missing every modern /
+            // advanced / legacy arch the UI offers), so the train
+            // preflight rejected valid archs like `efficientnet_simple`
+            // with "Unknown architecture". Plus `custom` -- a synthetic
+            // value the UI never emits but kept as a no-op for safety.
             const KNOWN_ARCHS: &[&str] = &[
                 "custom",
+                // Modern (recommended)
                 "efficientnet_lstm",
-                "resnet50",
+                "efficientnet_simple",
                 "mobilenet_v3",
+                "resnet18_lstm",
+                // Advanced (experimental)
+                "efficientnet_transformer",
+                "multihead_action",
+                "game_attention",
+                // Legacy (backward compatibility)
+                "inception_v3",
+                "alexnet",
+                "sentnet",
+                "sentnet_2d",
             ];
             let a = arch.unwrap_or_else(|| "custom".to_string());
             if !KNOWN_ARCHS.contains(&a.as_str()) {
@@ -6265,6 +6388,7 @@ fn main() {
             restart_sidecar,
             drain_early_log,
             open_local_data_folder,
+            open_datasets_folder,
             add_av_exclusion,
             repair_runtime,
             repair_pytorch_via_pip,

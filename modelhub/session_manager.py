@@ -145,8 +145,13 @@ class SessionManager:
         self._snapshot = take_snapshot(self.candidates["data"], extensions={".npy"})
 
     def finalize_recording(self):
+        # Phase 25: returns the archived dataset entry (or None) so the
+        # FastAPI route -> Rust stop_recording -> JS chain can auto-fill
+        # the Train tab's `train-dataset-id` with the just-recorded id,
+        # eliminating the "No dataset selected" preflight that hits
+        # first-time users right after their first successful recording.
         if not self.active_session or self.active_session.get("type") != "recording":
-            return
+            return None
 
         _safe_print("[Session] Finalizing recording...")
 
@@ -166,11 +171,12 @@ class SessionManager:
                     "path": str(expected_dir.relative_to(self.root)),
                     "file_count": total,
                     "created_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                    "game_id": game_id,
                 }
                 register_dataset(game_id, entry)
                 _safe_print(f"[Session] Registered dataset (direct): {total} file(s) -> {entry['path']}")
                 self.active_session = None
-                return
+                return entry
 
         # FALLBACK: detect new .npy created in candidates["data"] (works with your collector saving to versions/0.01/datasets/)
         current_state = take_snapshot(self.candidates["data"], extensions={".npy"})
@@ -189,7 +195,7 @@ class SessionManager:
         if not changed_files:
             _safe_print("[Session] Warning: No new dataset files detected (direct dir missing and no .npy changes).")
             self.active_session = None
-            return
+            return None
 
         safe_display_name = _sanitize_for_windows_filename(raw_name)
         safe_slug = slugify(safe_display_name)
@@ -207,18 +213,21 @@ class SessionManager:
             except Exception as e:
                 _safe_print("[Session] Error copying dataset file", str(f), ":", e)
 
+        archived_entry = None
         if count > 0:
-            entry = {
+            archived_entry = {
                 "id": dataset_id,
                 "name": raw_name,
                 "path": str(dest_dir.relative_to(self.root)),
                 "file_count": count,
                 "created_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                "game_id": game_id,
             }
-            register_dataset(game_id, entry)
-            _safe_print(f"[Session] Archived dataset: {count} file(s) -> {entry['path']}")
+            register_dataset(game_id, archived_entry)
+            _safe_print(f"[Session] Archived dataset: {count} file(s) -> {archived_entry['path']}")
 
         self.active_session = None
+        return archived_entry
 
     # -------------------------
     # TRAINING SESSION (MODEL)

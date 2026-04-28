@@ -219,7 +219,7 @@ class SetupWizard {
       };
     } else if (hw?.tier === 'low') {
       recommendation = {
-        architecture: 'mobilenetv3',
+        architecture: 'mobilenet_v3',
         name: 'MobileNetV3',
         badge: 'FAST & LIGHT'
       };
