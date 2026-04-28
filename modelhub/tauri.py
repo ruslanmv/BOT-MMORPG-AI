@@ -395,7 +395,8 @@ def create_app(token: str):
         model_name = (payload.get("model_name") or "New Model").strip()
         dataset_id = (payload.get("dataset_id") or "").strip()
         arch = (payload.get("arch") or "custom").strip()
-        session_manager.begin_training(gid, model_name, dataset_id, arch)
+        out_dir = (payload.get("out_dir") or "").strip()
+        session_manager.begin_training(gid, model_name, dataset_id, arch, out_dir=out_dir)
         return {"ok": True}
 
     @app.post("/session/finalize")
@@ -406,8 +407,13 @@ def create_app(token: str):
 
         stype = session_manager.active_session.get("type")
         if stype == "recording":
-            session_manager.finalize_recording()
-            return {"ok": True, "finalized": "recording"}
+            # Phase 25: forward the archived dataset entry (id, name,
+            # path, file_count, game_id) to the Rust shell so it can
+            # surface the new dataset id in the stop_recording response,
+            # which lets the UI prefill `train-dataset-id` and skip the
+            # "No dataset selected" preflight on first use.
+            archived = session_manager.finalize_recording()
+            return {"ok": True, "finalized": "recording", "dataset": archived}
         if stype == "training":
             session_manager.finalize_training()
             return {"ok": True, "finalized": "training"}

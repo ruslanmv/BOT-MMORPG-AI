@@ -42,10 +42,12 @@ import asyncio
 import os
 import signal
 import sys
+import tempfile
 import time
 import uuid
 from collections import deque
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, AsyncIterator, Deque, Dict, List, Optional, Sequence
 
 # Default log buffer size per job. ~2000 lines covers a multi-epoch
@@ -56,6 +58,14 @@ DEFAULT_LOG_MAXLEN = 2000
 
 # Grace period (seconds) before terminate() escalates to kill().
 DEFAULT_TERMINATE_GRACE = 5.0
+
+# Phase 26: Graceful-stop window. Cancel() writes a per-job stop flag
+# file (path passed to the child via env BOTMMO_STOP_FLAG) and waits
+# this long for the child to notice and exit on its own. Long enough
+# for the recording collector to flush its dataset to disk; short
+# enough that "Stop" still feels responsive if the child ignores it.
+# Falls through to the existing SIGTERM/SIGKILL path on timeout.
+DEFAULT_GRACEFUL_STOP_WINDOW = 8.0
 
 
 JobStatus = str  # "queued" | "running" | "completed" | "failed" | "cancelled"
@@ -92,6 +102,10 @@ class Job:
     _log_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     _log_subscribers: List[asyncio.Queue] = field(default_factory=list)
     _reader_tasks: List[asyncio.Task] = field(default_factory=list)
+    # Phase 26: cooperative-cancel hook. We hand the child a flag-file
+    # path via env BOTMMO_STOP_FLAG; cancel() writes the file as a
+    # "please exit cleanly" signal before falling back to SIGTERM/kill.
+    _stop_flag_path: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         """Public-facing JSON view -- no live process handle, no buffer."""
@@ -117,11 +131,13 @@ class JobRunner:
         self,
         log_maxlen: int = DEFAULT_LOG_MAXLEN,
         terminate_grace: float = DEFAULT_TERMINATE_GRACE,
+        graceful_stop_window: float = DEFAULT_GRACEFUL_STOP_WINDOW,
     ) -> None:
         self._jobs: Dict[str, Job] = {}
         self._jobs_lock = asyncio.Lock()
         self._log_maxlen = log_maxlen
         self._terminate_grace = terminate_grace
+        self._graceful_stop_window = graceful_stop_window
 
     # ----------------------------------------------------------- spawn
 
@@ -143,6 +159,24 @@ class JobRunner:
         if env:
             merged_env.update(env)
 
+        # Phase 26: per-job stop-flag path. Hand it to the child via
+        # env so collectors / trainers can poll for "user clicked Stop"
+        # and exit cleanly (saving their last batch) instead of being
+        # hard-killed mid-write. Pre-cleared so a stale flag from a
+        # previous job that crashed doesn't make this child exit at
+        # startup. /tmp (or %TEMP%) is the right home: world-writable,
+        # cleaned by the OS, and not on a volume we might rmtree.
+        stop_flag_path = str(
+            Path(tempfile.gettempdir()) / f"botmmo_stop_{job_id}.flag"
+        )
+        try:
+            os.unlink(stop_flag_path)
+        except FileNotFoundError:
+            pass
+        except OSError:
+            pass
+        merged_env["BOTMMO_STOP_FLAG"] = stop_flag_path
+
         job = Job(
             job_id=job_id,
             kind=kind,
@@ -150,6 +184,7 @@ class JobRunner:
             env=dict(env or {}),
             cwd=cwd,
         )
+        job._stop_flag_path = stop_flag_path
         # Replace the default 2000-line deque with the runner's
         # configured maxlen.
         job._log_buffer = deque(maxlen=self._log_maxlen)
@@ -239,6 +274,17 @@ class JobRunner:
         # it's the exit code from TerminateProcess (typically 1).
         if job.status != "cancelled":
             job.status = "completed" if rc == 0 else "failed"
+        # Phase 26: clean up the stop-flag file. We pre-clear at spawn
+        # time too, but cleaning up post-exit keeps /tmp tidy and
+        # avoids the (benign) "[Info] Cooperative stop enabled" log
+        # line referring to a path that no longer matters.
+        if job._stop_flag_path:
+            try:
+                os.unlink(job._stop_flag_path)
+            except FileNotFoundError:
+                pass
+            except OSError:
+                pass
         # Wake up any subscribers so they can close their SSE
         # connections cleanly.
         async with job._log_lock:
@@ -306,7 +352,29 @@ class JobRunner:
     # ----------------------------------------------------------- cancel
 
     async def cancel(self, job_id: str) -> Optional[Job]:
-        """Politely terminate the job; escalate to kill after grace."""
+        """Cooperative-then-forceful cancel.
+
+        Phase 26 promotes cancel from "polite SIGTERM, escalate to kill"
+        to a three-phase ladder:
+
+          1. Cooperative stop: write the per-job stop-flag file and
+             give the child up to DEFAULT_GRACEFUL_STOP_WINDOW seconds
+             to notice (it polls the path from $BOTMMO_STOP_FLAG).
+             This lets the recording collector flush its last batch to
+             disk via its existing graceful-exit path -- the same
+             codepath that ran when the user pressed `Q` manually --
+             so we don't lose frames when "Stop" is clicked while a
+             batch is buffered.
+
+          2. SIGTERM (POSIX) / terminate() (Windows): the legacy
+             "polite kill" if the cooperative stop didn't take.
+
+          3. SIGKILL: last-resort hard kill after _terminate_grace.
+
+        This is cross-platform safe (no console-group / SIGBREAK
+        plumbing required on Windows) and decoupled from the script's
+        signal handlers.
+        """
         job = await self.get(job_id)
         if job is None:
             return None
@@ -315,6 +383,35 @@ class JobRunner:
 
         job.status = "cancelled"
         proc = job._process
+
+        # Phase 1: cooperative stop via flag file.
+        if job._stop_flag_path:
+            try:
+                # Touch the file. Atomic enough: child polls existence,
+                # not contents. Using "x" mode so we don't quietly
+                # overwrite an unrelated path if some external tool
+                # somehow staged a file there.
+                with open(job._stop_flag_path, "w", encoding="utf-8") as f:
+                    f.write(f"cancel:{time.time()}\n")
+            except FileExistsError:
+                # Already requested -- benign.
+                pass
+            except OSError:
+                # Couldn't write (disk full, AV lock). Skip straight
+                # to terminate; nothing else we can do here.
+                pass
+            else:
+                try:
+                    await asyncio.wait_for(
+                        proc.wait(),
+                        timeout=self._graceful_stop_window,
+                    )
+                    # Child exited on its own. We're done.
+                    return job
+                except asyncio.TimeoutError:
+                    pass
+
+        # Phase 2: SIGTERM / terminate().
         try:
             if sys.platform == "win32":
                 proc.terminate()
@@ -325,7 +422,7 @@ class JobRunner:
         except BaseException:  # noqa: BLE001
             pass
 
-        # Wait for grace period; if still alive, kill.
+        # Phase 3: hard kill if still alive after grace.
         try:
             await asyncio.wait_for(proc.wait(), timeout=self._terminate_grace)
         except asyncio.TimeoutError:

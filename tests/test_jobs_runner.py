@@ -39,9 +39,7 @@ def _run(coro):
 def test_submit_returns_job():
     async def body():
         runner = JobRunner()
-        job = await runner.submit(
-            "test", [sys.executable, "-c", "print('hello')"]
-        )
+        job = await runner.submit("test", [sys.executable, "-c", "print('hello')"])
         assert isinstance(job, Job)
         assert job.job_id
         assert job.status in ("running", "completed")
@@ -126,7 +124,12 @@ def test_stdout_and_stderr_are_both_captured():
 )
 def test_cancel_terminates_long_running_job():
     async def body():
-        runner = JobRunner(terminate_grace=2.0)
+        # Phase 26: cancel() now first writes a cooperative stop-flag
+        # and waits up to graceful_stop_window for the child to exit
+        # on its own. This sleep child doesn't poll the flag, so we
+        # tune the window down to 0.5s to keep the test snappy and
+        # exercise the SIGTERM/kill fallback path.
+        runner = JobRunner(terminate_grace=2.0, graceful_stop_window=0.5)
         job = await runner.submit(
             "sleep",
             [sys.executable, "-c", "import time; time.sleep(60)"],
@@ -148,6 +151,50 @@ def test_cancel_terminates_long_running_job():
     assert job.finished_at is not None
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="Process signalling differs on Windows; cooperative-stop is "
+    "exercised by the integration suite there.",
+)
+def test_cooperative_stop_via_flag_file_skips_signals():
+    """Phase 26: cancel() should write the per-job stop-flag and let
+    a cooperative child exit on its own, without escalating to
+    SIGTERM/kill. This is the path the recording collector uses to
+    flush its dataset before the process goes away."""
+
+    async def body():
+        # Aggressive grace: if we DO escalate to SIGTERM the test
+        # would still pass, but the assertion on exit_code == 0
+        # below catches that regression -- a SIGTERMed Python
+        # returns a negative rc on POSIX.
+        runner = JobRunner(terminate_grace=2.0, graceful_stop_window=3.0)
+        job = await runner.submit(
+            "sleep",
+            [
+                sys.executable,
+                "-c",
+                # Poll BOTMMO_STOP_FLAG; exit 0 once it appears.
+                "import os, time; p=os.environ['BOTMMO_STOP_FLAG']\n"
+                "while not os.path.exists(p): time.sleep(0.05)\n"
+                "print('graceful exit')",
+            ],
+        )
+        await asyncio.sleep(0.3)
+        await runner.cancel(job.job_id)
+        for _ in range(100):
+            j = await runner.get(job.job_id)
+            if j is not None and j.finished_at is not None:
+                return j
+            await asyncio.sleep(0.05)
+        return await runner.get(job.job_id)
+
+    job = _run(body())
+    assert job is not None
+    assert job.status == "cancelled"
+    # Cooperative path -- child exited 0, not via signal.
+    assert job.exit_code == 0, f"expected clean exit, got rc={job.exit_code}"
+
+
 # --- non-fatal failure path on spawn error --------------------------------
 
 
@@ -157,6 +204,7 @@ def test_spawn_failure_returns_failed_job_without_raising():
     The route handler relies on always getting a Job back so it can
     return a structured error to the caller instead of HTTP 500.
     """
+
     async def body():
         runner = JobRunner()
         job = await runner.submit(
@@ -225,9 +273,7 @@ def test_list_jobs_returns_all_submitted():
 def test_to_dict_is_json_serialisable():
     async def body():
         runner = JobRunner()
-        job = await runner.submit(
-            "json", [sys.executable, "-c", "print('hi')"]
-        )
+        job = await runner.submit("json", [sys.executable, "-c", "print('hi')"])
         # Even before exit, to_dict must be serialisable.
         return job.to_dict()
 

@@ -137,7 +137,17 @@ function applyHealthGate(verdict) {
 async function preflightOrAlert(kind, params) {
   if (!invoke) return { ok: true, reasons: [] };
   try {
-    const res = await invoke("preflight_action", { kind, ...params });
+    // Bridge hardening: some shipped runtimes bind command args via
+    // camelCase names while our UI state uses snake_case keys. Emit
+    // both forms for preflight payloads so either binding convention
+    // receives the same values.
+    const payload = { kind, ...params };
+    Object.entries(params || {}).forEach(([k, v]) => {
+      if (!k.includes("_")) return;
+      const camel = k.replace(/_([a-z])/g, (_, c) => c.toUpperCase());
+      if (!(camel in payload)) payload[camel] = v;
+    });
+    const res = await invoke("preflight_action", payload);
     if (res && res.ok) return res;
     const reasons = (res && Array.isArray(res.reasons) && res.reasons.length)
       ? res.reasons
@@ -176,6 +186,16 @@ let selectedDatasetId = "";
 let selectedBuiltinModelPath = "";
 let selectedModelRegistryId = "";
 let selectedLocalModelPath = "";
+// Phase 29: tracks the last real (non-action) selection in the
+// train-dataset-id <select>. MUST live at module scope so
+// populateTrainDatasetDropdown can seed it after every refresh --
+// the wireEvents()-local version was unreachable from there, which
+// meant the "Refresh datasets" action would revert sel.value to ""
+// for any user who hadn't manually picked a dataset yet (a fresh
+// app load with auto-selected latest had _lastRealTrainDatasetValue
+// frozen at ""). That was one of the paths producing the empty
+// dataset_id at preflight time.
+let _lastRealTrainDatasetValue = "";
 
 // Cache catalog payload
 let currentCatalog = {
@@ -622,7 +642,7 @@ const GAME_PRESETS = {
     color: "#D4AF37",
     resolution: "480x270",
     action_space: "standard",
-    architecture: "mobilenetv3",
+    architecture: "mobilenet_v3",
     description: "Classic MMO with low-res friendly design.",
     recommended_tasks: ["skilling", "bossing", "questing", "minigames"],
     notes: "Low-res friendly. 480p is ideal for classic gameplay."
@@ -1000,7 +1020,13 @@ async function setActiveModelFromUI() {
   }
 
   try {
-    const res = await invoke("mh_set_active", { game_id: gid, model_id, path });
+    const res = await invoke("mh_set_active", {
+      game_id: gid,
+      gameId: gid,
+      model_id,
+      modelId: model_id,
+      path,
+    });
     logToTerminal(`Active model set: ${path}`, "success");
     await loadCatalog(gid);
     return res;
@@ -1087,7 +1113,8 @@ window.toggleRecord = async function (btn) {
   if (!invoke) return alert("Tauri backend not found.");
   isRecording = !isRecording;
   const status = document.getElementById("record-status");
-  const monitorId = parseInt(getEl("teach-monitor-select")?.value) || 1;
+  const _rawTeachMon = parseInt(getEl("teach-monitor-select")?.value, 10);
+  const monitorId = Number.isFinite(_rawTeachMon) ? _rawTeachMon : 0;
   const resolution = getEl("teach-capture-resolution")?.value || "480x270";
 
   if (isRecording) {
@@ -1133,7 +1160,17 @@ window.toggleRecord = async function (btn) {
       }
 
       const captureMouse = getEl("teach-capture-mouse")?.checked ?? false;
-      const res = await invoke("start_recording", { game_id, dataset_name, monitor_id: monitorId, resolution, capture_mouse: captureMouse });
+      const res = await invoke("start_recording", {
+        game_id,
+        gameId: game_id,
+        dataset_name,
+        datasetName: dataset_name,
+        monitor_id: monitorId,
+        monitorId,
+        resolution,
+        capture_mouse: captureMouse,
+        captureMouse,
+      });
       logToTerminal(res, "success");
       // Phase 21: explicit stop state. Red border + dark fill so the
       // user immediately recognizes "click here to stop", not "click
@@ -1196,25 +1233,91 @@ window.startTraining = async function () {
 
   try {
     logToTerminal("-------------------------------------------", "info");
-    logToTerminal("Initializing Neural Network Training...", "info");
+    logToTerminal("Initializing neural network training...", "info");
     if (btn) btn.disabled = true;
     if (progressBar) progressBar.style.width = "0%";
     if (pctDisplay) pctDisplay.textContent = "0%";
 
+    const dsSel = getEl("train-dataset-id");
+    const dsValue = dsSel ? (dsSel.value || "") : "";
     const game_id = (getEl("train-game-id")?.value || selectedGameId || DEFAULT_GAME_ID).trim();
     const model_name = (getEl("train-model-name")?.value || "New Model").trim();
-    const dataset_id = (getEl("train-dataset-id")?.value || selectedDatasetId || "").trim();
+    // Phase 29: priority-ordered resolver instead of trusting one
+    // state field. Walks select.value -> data-dataset-id -> label
+    // prefix -> selectedDatasetId. This addresses the report where
+    // the dropdown visibly shows a dataset but preflight receives
+    // an empty dataset_id -- multiple browser-quirky failure modes
+    // funnel into "select.value is empty" without a corresponding
+    // visual change, so we pick from whichever channel still has
+    // the id.
+    let dataset_id = resolveSelectedTrainDatasetId();
     const arch = (getEl("train-arch")?.value || "custom").trim();
+
+    // Phase 29: defense-in-depth. If every UI source is empty (a
+    // race we can't trace, a stale bundle in WebView2's cache, or
+    // a path-vs-id payload mismatch we haven't seen yet), fetch
+    // fresh datasets from the backend and pick the newest. This
+    // is the same auto-pick logic populate uses, just driven from
+    // the click-time path so a transient UI state can never starve
+    // a real-on-disk dataset of being trained on.
+    if (!dataset_id) {
+      try {
+        const { datasets } = await fetchDatasetsForGameTauri(game_id);
+        const first = (Array.isArray(datasets) && datasets.length > 0)
+          ? normalizeDatasetId(datasets[0])
+          : "";
+        if (first) {
+          dataset_id = first;
+          selectedDatasetId = first;
+          _lastRealTrainDatasetValue = first;
+          if (dsSel && Array.from(dsSel.options).some(o => o.value === first)) {
+            dsSel.value = first;
+          }
+          logToTerminal(`Auto-selected latest dataset for training: ${first}`, "info");
+        }
+      } catch (e) {
+        console.warn("startTraining: fallback fetch failed", e);
+      }
+    }
+
+    // Phase 29: telemetry the bug report explicitly asked for.
+    // Every Start Training click now records the four candidate
+    // sources + the final resolved id + the exact payload going
+    // to preflight. Hand-traceable from a single bundle paste.
+    const _selOpt = dsSel?.selectedOptions?.[0];
+    logToTerminal(
+      `[Debug] train state: selectedDatasetId='${selectedDatasetId || ""}' | sel.value='${dsValue}' | option.dataset.datasetId='${(_selOpt?.dataset?.datasetId) || ""}' | resolved='${dataset_id}'`,
+      "info"
+    );
+    logToTerminal(
+      `[Debug] train payload: ${JSON.stringify({ game_id, model_name, dataset_id, arch })}`,
+      "info"
+    );
 
     // Phase 4: preflight gate. Catches missing dataset, unknown arch,
     // and "another job already running" before the spawn fires.
     const cleared = await preflightOrAlert("train", { game_id, dataset_id, arch });
     if (!cleared) {
-      if (btn) btn.disabled = false;
+      // Re-enable through the gate path so we don't accidentally
+      // unblock when the user is on a no-dataset state.
+      _refreshTrainGate();
       return;
     }
 
-    const res = await invoke("start_training", { game_id, model_name, dataset_id, arch });
+    // Phase 28: lock the badge into "Running" and the button into
+    // its training-pulse state so both surfaces tell the same story
+    // for the duration of the run. process_finished restores idle.
+    _setTrainBadgeRunning();
+
+    const res = await invoke("start_training", {
+      game_id,
+      gameId: game_id,
+      model_name,
+      modelName: model_name,
+      dataset_id,
+      datasetId: dataset_id,
+      arch,
+    });
     logToTerminal(res, "success");
     window.notifyInfo?.("Training started", `${model_name} • ${arch} on dataset ${dataset_id || "(default)"}`);
   } catch (err) {
@@ -1225,7 +1328,7 @@ window.startTraining = async function () {
         document.getElementById('btn-run-diagnosis')?.click();
       }},
     ]);
-    if (btn) btn.disabled = false;
+    _setTrainBadgeIdle();
   }
 };
 
@@ -1257,7 +1360,8 @@ window.analyzeLogs = async function () {
 window.toggleBot = async function (btn) {
   if (!invoke) return alert("Tauri backend not found.");
   isBotRunning = !isBotRunning;
-  const monitorId = parseInt(getEl("run-monitor-select")?.value) || 1;
+  const _rawRunMon = parseInt(getEl("run-monitor-select")?.value, 10);
+  const monitorId = Number.isFinite(_rawRunMon) ? _rawRunMon : 0;
   const botState = getEl("bot-state");
   const resolution = getEl("run-capture-resolution")?.value || "480x270";
 
@@ -1281,7 +1385,13 @@ window.toggleBot = async function (btn) {
         return;
       }
 
-      const res = await invoke("start_bot", { game_id, monitor_id: monitorId, resolution });
+      const res = await invoke("start_bot", {
+        game_id,
+        gameId: game_id,
+        monitor_id: monitorId,
+        monitorId,
+        resolution,
+      });
       logToTerminal(res, "success");
       btn.innerText = "■ STOP BOT";
       btn.style.background = "var(--accent)";
@@ -1436,10 +1546,35 @@ async function wireBackendEvents() {
   await listen("process_finished", (event) => {
     const msg = typeof event.payload === "string" ? event.payload : JSON.stringify(event.payload);
     logToTerminal(`[System] Process finished: ${msg}`, "info");
-    const btn = getEl("btnStartTraining");
-    if (btn) btn.disabled = false;
     isRecording = false;
     isBotRunning = false;
+    // Phase 28: training-state restore. Drops the running badge and
+    // re-runs the gate so the button settles to ready/blocked based
+    // on whether a dataset is still selected.
+    _setTrainBadgeIdle();
+  });
+
+  // Phase 25 + 27: Rust emits this after stop_process -> /session/finalize
+  // when a recording archive has been registered. We now refetch the
+  // dataset list so the Train tab dropdown reflects what actually
+  // exists on disk (not just what we *think* exists), then auto-
+  // select the just-archived id. Storing it directly on .value (the
+  // old approach) was unreliable -- a backgrounded loadCatalog or
+  // tab refresh could overwrite the input. Going through the
+  // populate-and-select path makes the selection authoritative.
+  await listen("recording_finalized", (event) => {
+    const ds = event.payload || {};
+    const did = (ds.id || "").trim();
+    if (!did) return;
+    selectedDatasetId = did;
+    refreshDatasetListTauri(did).catch(e =>
+      console.warn("recording_finalized: failed to refresh dataset list", e)
+    );
+    logToTerminal(`Dataset ready for training: ${did}`, "success");
+    window.notifyInfo?.(
+      "Dataset archived",
+      `${ds.file_count || "?"} file(s) • selected for training as "${did}".`
+    );
   });
 }
 
@@ -2073,9 +2208,27 @@ function wireEvents() {
   const dsSel = getEl("dataset-select");
   if (dsSel) {
     dsSel.addEventListener("change", () => {
-      selectedDatasetId = dsSel.value || "";
+      // Phase 29: normalize before mirroring. dataset-select's
+      // valueForDataset() returns d.path (which can be a path-
+      // shaped string like "genshin_impact/2026..."), but the
+      // train-dataset-id <select> stores the leaf id only. Without
+      // this normalize, mirroring set sel.value to a path that
+      // didn't match any option -- the browser dropped the
+      // assignment and the dropdown ended up empty.
+      const normalized = normalizeDatasetId(dsSel.value || "");
+      selectedDatasetId = normalized;
       const t = getEl("train-dataset-id");
-      if (t && !t.value) t.value = selectedDatasetId;
+      if (!t) return;
+      if (t.tagName === "SELECT") {
+        const has = Array.from(t.options).some(o => o.value === normalized);
+        if (normalized && has) {
+          t.value = normalized;
+          _lastRealTrainDatasetValue = normalized;
+          _refreshTrainGate?.();
+        }
+      } else if (!t.value) {
+        t.value = normalized;
+      }
     });
   }
 
@@ -2146,9 +2299,96 @@ function wireEvents() {
   const btnAutoGenDataset = getEl("btnAutoGenDataset");
   if (btnAutoGenDataset) btnAutoGenDataset.addEventListener("click", () => autoGenerateDatasetNameTauri());
 
-  // Refresh datasets list button
+  // Refresh datasets list button (Teach tab)
   const btnRefreshDatasets = getEl("btnRefreshDatasets");
   if (btnRefreshDatasets) btnRefreshDatasets.addEventListener("click", () => refreshDatasetListTauri());
+
+  // Phase 27: refresh button next to the Train tab dataset dropdown.
+  // Same backend call -- and refreshDatasetListTauri already updates
+  // the dropdown -- so this is just a UX shortcut for "I recorded
+  // from somewhere else; pull the latest list".
+  const btnRefreshTrainDatasets = getEl("btnRefreshTrainDatasets");
+  if (btnRefreshTrainDatasets) {
+    btnRefreshTrainDatasets.addEventListener("click", () => refreshDatasetListTauri());
+  }
+
+  // Phase 27: re-fetch when the user retypes the Train tab's game id.
+  // Datasets are scoped per-game in the backend, so the dropdown must
+  // re-populate or it'll silently offer datasets from a stale game.
+  const trainGameIdEl = getEl("train-game-id");
+  if (trainGameIdEl) {
+    let _retrainGameTimer = null;
+    trainGameIdEl.addEventListener("input", () => {
+      // Debounce: the user is mid-typing. Wait for a pause.
+      clearTimeout(_retrainGameTimer);
+      _retrainGameTimer = setTimeout(() => refreshDatasetListTauri(), 400);
+    });
+  }
+
+  // Phase 27/28: dropdown change listener.
+  //   - Refresh / Open-folder action items are intercepted and never
+  //     become the chosen value (we revert to the previous selection
+  //     after firing the action).
+  //   - Real dataset picks update selectedDatasetId, the selected-
+  //     dataset preview card, and the Start-Training gate so the
+  //     button enables/disables atomically with the value.
+  // (Phase 29: _lastRealTrainDatasetValue moved to module scope so
+  // populateTrainDatasetDropdown can seed it from outside this
+  // closure -- otherwise the Refresh action wipes the selection on
+  // a fresh load.)
+  const trainDatasetSel = getEl("train-dataset-id");
+  if (trainDatasetSel && trainDatasetSel.tagName === "SELECT") {
+    trainDatasetSel.addEventListener("change", () => {
+      const v = trainDatasetSel.value || "";
+      const opt = trainDatasetSel.selectedOptions[0];
+      const action = opt && opt.dataset ? opt.dataset.action : null;
+
+      if (action === "refresh") {
+        trainDatasetSel.value = _lastRealTrainDatasetValue || "";
+        refreshDatasetListTauri();
+        return;
+      }
+      if (action === "open-folder") {
+        trainDatasetSel.value = _lastRealTrainDatasetValue || "";
+        const gid = (
+          getEl("train-game-id")?.value
+          || selectedGameId
+          || DEFAULT_GAME_ID
+        ).trim();
+        if (invoke) {
+          invoke("open_datasets_folder", { game_id: gid })
+            .then(msg => logToTerminal(`Datasets folder: ${msg}`, "info"))
+            .catch(e => {
+              logToTerminal(`Could not open datasets folder: ${e}`, "error");
+              window.notifyError?.("Could not open folder", String(e));
+            });
+        }
+        return;
+      }
+
+      // Real dataset selection.
+      _lastRealTrainDatasetValue = v;
+      selectedDatasetId = v;
+      // Re-render the selected-card + gate from current dropdown
+      // state. We don't have the full dataset entry on hand here so
+      // we synthesize a minimal one from the option label; the next
+      // refreshDatasetListTauri call will replace it with the rich
+      // version.
+      const synth = { id: v, name: v, created_at: "", file_count: null };
+      // Index 0 of an optgroup-driven select is the "Latest" entry.
+      const isLatest = trainDatasetSel.selectedIndex === 0;
+      _renderTrainSelectedCard(synth, isLatest);
+      _refreshTrainGate();
+
+      const hint = getEl("train-dataset-hint");
+      if (hint) {
+        hint.classList.remove("is-empty");
+        hint.textContent = isLatest
+          ? "Latest recording auto-selected."
+          : "Older dataset selected.";
+      }
+    });
+  }
 
   // Load monitors on startup
   loadMonitorsTauri();
@@ -2160,8 +2400,8 @@ function wireEvents() {
 // ============================================================
 
 let previewIntervalTauri = null;
-let selectedMonitorTeach = 1;
-let selectedMonitorRun = 1;
+let selectedMonitorTeach = 0;
+let selectedMonitorRun = 0;
 let livePreviewEnabledTeach = false;
 let livePreviewEnabledRun = false;
 
@@ -2200,13 +2440,15 @@ async function loadMonitorsTauri() {
 }
 
 async function refreshTeachPreview() {
-  const monitorId = parseInt(getEl("teach-monitor-select")?.value) || 1;
+  const _rawTeachMon = parseInt(getEl("teach-monitor-select")?.value, 10);
+  const monitorId = Number.isFinite(_rawTeachMon) ? _rawTeachMon : 0;
   selectedMonitorTeach = monitorId;
   await updatePreviewImageTauri("teach", monitorId);
 }
 
 async function refreshRunPreview() {
-  const monitorId = parseInt(getEl("run-monitor-select")?.value) || 1;
+  const _rawRunMon = parseInt(getEl("run-monitor-select")?.value, 10);
+  const monitorId = Number.isFinite(_rawRunMon) ? _rawRunMon : 0;
   selectedMonitorRun = monitorId;
   await updatePreviewImageTauri("run", monitorId);
 }
@@ -2302,71 +2544,468 @@ async function autoGenerateDatasetNameTauri() {
   }
 }
 
-async function refreshDatasetListTauri() {
-  const listEl = getEl("teach-dataset-list");
-  if (!listEl) return;
-
-  listEl.innerHTML = '<div style="color:var(--text-dim); font-size:12px;">Loading...</div>';
-
-  if (!invoke) {
-    listEl.innerHTML = '<div style="color:var(--text-dim); font-size:12px;">Backend not available</div>';
-    return;
-  }
-
+// Phase 27: shared fetch + sort. Both the Teach tab list and the
+// Train tab dropdown render from the same backend response so they
+// can never disagree about what exists. Newest-first ordering is
+// driven primarily by `created_at` (ISO 8601, lexicographically
+// sortable) with a fallback to the dataset id which itself encodes
+// a YYYYMMDD_HHMMSS prefix.
+async function fetchDatasetsForGameTauri(gameId) {
+  if (!invoke) return { datasets: [], error: "Backend not available" };
   try {
-    const gameId = getEl("teach-game-id")?.value || selectedGameId || DEFAULT_GAME_ID;
-    // Phase 22: list_datasets / /modelhub/datasets returns
-    //   { ok: true|false, datasets: [...], game_id, [error, hint] }
-    // not a bare array. Older code treated `resp` AS the array which
-    // silently produced "No datasets found" forever even when datasets
-    // existed. Extract the inner array; tolerate the legacy bare-array
-    // form for forward compat.
     const resp = await invoke("list_datasets", { game_id: gameId });
-    const datasets = Array.isArray(resp) ? resp : (resp && resp.datasets) || [];
-
-    if (!datasets || datasets.length === 0) {
-      const emptyMsg = resp && resp.error
-        ? `No datasets found (${resp.error})`
-        : "No datasets yet — recordings on the Teach tab show up here.";
-      listEl.innerHTML = `<div style="color:var(--text-dim); font-size:12px;">${emptyMsg}</div>`;
-      return;
-    }
-
-    listEl.innerHTML = "";
-    datasets.forEach(ds => {
-      const item = document.createElement("div");
-      item.style.cssText = "display:flex; justify-content:space-between; align-items:center; padding:10px; margin-bottom:8px; background:rgba(255,255,255,0.03); border:1px solid var(--border); border-radius:8px;";
-      item.innerHTML = `
-        <div>
-          <div style="font-weight:600; color:#fff;">${escapeHtml(ds.name || ds.id)}</div>
-          <div style="font-size:11px; color:var(--text-dim);">${escapeHtml(ds.created_at || '')} • ${ds.sample_count || '?'} samples</div>
-        </div>
-        <div style="display:flex; gap:6px;">
-          <button class="btn btn-small btn-secondary" data-action="use" data-id="${escapeHtml(ds.id)}">Use</button>
-          <button class="btn btn-small btn-danger" data-action="delete" data-id="${escapeHtml(ds.id)}" data-path="${escapeHtml(ds.path || '')}">Del</button>
-        </div>
-      `;
-      listEl.appendChild(item);
+    const arr = Array.isArray(resp) ? resp : (resp && resp.datasets) || [];
+    arr.sort((a, b) => {
+      const ka = (a.created_at || a.id || "");
+      const kb = (b.created_at || b.id || "");
+      // Descending: newest first.
+      return kb.localeCompare(ka);
     });
-
-    // Wire up buttons
-    listEl.querySelectorAll('button[data-action="use"]').forEach(btn => {
-      btn.addEventListener("click", () => selectDatasetForTrainingTauri(btn.dataset.id));
-    });
-    listEl.querySelectorAll('button[data-action="delete"]').forEach(btn => {
-      btn.addEventListener("click", () => deleteDatasetTauri(btn.dataset.id, btn.dataset.path));
-    });
-
+    return { datasets: arr, error: resp && resp.error };
   } catch (e) {
-    console.warn("Failed to load datasets:", e);
-    listEl.innerHTML = '<div style="color:var(--accent); font-size:12px;">Datasets: ' + (currentCatalog.datasets.length || 0) + ' (refresh via ModelHub)</div>';
+    console.warn("Failed to fetch datasets:", e);
+    return { datasets: [], error: String(e) };
   }
 }
 
+// Phase 29: canonicalize a dataset entry into the leaf id Rust's
+// preflight expects (`<datasets_dir>/<game>/<id>` exists check).
+// Tolerates several legacy shapes:
+//   { id: "20260428_..." }            -> "20260428_..."
+//   { dataset_id: "20260428_..." }    -> "20260428_..."
+//   { path: "genshin_impact/2026..." } -> "2026..."
+//   { path: "C:\\...\\genshin_impact\\2026..." } -> "2026..."
+// Also strips any " · ? frames" UI suffix that might have leaked in
+// (defensive -- our options shouldn't carry it but the bug report
+// suggested it could happen).
+function normalizeDatasetId(d) {
+  if (!d) return "";
+  let raw = "";
+  if (typeof d === "string") raw = d;
+  else raw = (d.id || d.dataset_id || d.path || "").toString();
+  raw = raw.trim();
+  if (!raw) return "";
+  // If raw contains a path separator, take the last segment.
+  if (raw.includes("/") || raw.includes("\\")) {
+    const parts = raw.split(/[\\/]+/).filter(Boolean);
+    raw = (parts[parts.length - 1] || "").trim();
+  }
+  // Strip " · " UI suffix (defensive against any code path that
+  // accidentally wrote a label into a value field).
+  const dotIdx = raw.indexOf("·");
+  if (dotIdx >= 0) raw = raw.slice(0, dotIdx).trim();
+  return raw;
+}
+
+// Phase 29: priority-ordered resolver. Returns the canonical dataset
+// id for the train preflight, trying every UI source so we never
+// ship an empty payload while a dataset visibly exists in the
+// dropdown:
+//   1. select.value  -- normal happy path, set by populate
+//   2. selectedOption.dataset.datasetId -- mirror attribute we now
+//      stamp on every option as a parallel id channel that survives
+//      browser quirks where .value gets dropped (path-vs-id, stale
+//      placeholder, etc.)
+//   3. selectedOption.textContent before " · " -- last-ditch
+//      reconstruction from the visible label
+//   4. selectedDatasetId global -- caches recent picks
+// Action items (__action_*) are returned as "" so they never become
+// a dataset id.
+function resolveSelectedTrainDatasetId() {
+  const sel = getEl("train-dataset-id");
+  if (!sel) return (selectedDatasetId || "").trim();
+
+  const value = (sel.value || "").trim();
+  if (value && !value.startsWith("__action_")) {
+    return normalizeDatasetId(value);
+  }
+
+  const opt = sel.selectedOptions && sel.selectedOptions[0];
+  if (opt) {
+    const fromData = (opt.dataset && opt.dataset.datasetId) || "";
+    if (fromData) return normalizeDatasetId(fromData);
+    const fromLabel = (opt.textContent || "").split("·")[0].trim();
+    if (fromLabel && !fromLabel.toLowerCase().startsWith("loading")) {
+      return normalizeDatasetId(fromLabel);
+    }
+  }
+
+  return (selectedDatasetId || "").trim();
+}
+
+// Phase 28: human-friendly "when" string from an ISO 8601 created_at.
+// Shows "Today HH:MM", "Yesterday HH:MM", "MMM D" for older entries.
+// Falls back to the raw string if parsing fails so we never display
+// "NaN" or "Invalid Date".
+function _trainDatasetWhen(createdAt) {
+  if (!createdAt) return "";
+  const d = new Date(createdAt);
+  if (isNaN(d.getTime())) return createdAt;
+  const now = new Date();
+  const hh = String(d.getHours()).padStart(2, "0");
+  const mm = String(d.getMinutes()).padStart(2, "0");
+  const sameDay = d.toDateString() === now.toDateString();
+  const yest = new Date(now); yest.setDate(now.getDate() - 1);
+  const wasYesterday = d.toDateString() === yest.toDateString();
+  if (sameDay) return `Today ${hh}:${mm}`;
+  if (wasYesterday) return `Yesterday ${hh}:${mm}`;
+  return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
+
+function _trainDatasetSamples(ds) {
+  const n = ds.sample_count ?? ds.file_count;
+  if (n == null) return "? frames";
+  // Comma-separate large counts: 4280 -> "4,280"
+  return `${Number(n).toLocaleString()} frames`;
+}
+
+function _trainDatasetResolution(ds) {
+  // Future-proof: dataset entry MAY include a resolution field; if
+  // not, infer from the recording session is impossible here -- we
+  // omit rather than guess.
+  return ds.resolution || "";
+}
+
+// Phase 27/28: keeps the Train tab's dataset <select> in lockstep
+// with the backend. Renders three optgroups:
+//   Latest         -- the single newest dataset (the auto-pick)
+//   Recent datasets -- everything else, newest first
+//   Actions        -- "Refresh datasets" / "Open datasets folder"
+//                     intercepted on change so they never become the
+//                     chosen value.
+// Also drives the selected-dataset preview card and the Start-
+// Training enable-gate so UI state can never contradict itself
+// (the Phase 28 "Dataset id filled but preflight says 'No dataset
+// selected'" bug fix).
+function populateTrainDatasetDropdown(datasets, preferId) {
+  const sel = getEl("train-dataset-id");
+  if (!sel || sel.tagName !== "SELECT") return;
+
+  const hint = getEl("train-dataset-hint");
+  const list = Array.isArray(datasets) ? datasets : [];
+
+  // Wipe and rebuild. Cheap and avoids stale-option leaks.
+  sel.innerHTML = "";
+
+  if (list.length === 0) {
+    const opt = document.createElement("option");
+    opt.value = "";
+    opt.disabled = true;
+    opt.selected = true;
+    opt.textContent = "No datasets yet — record one in the Teach tab";
+    sel.appendChild(opt);
+
+    // Even the empty state offers Refresh -- user might have
+    // recorded from another machine / pulled a dataset folder in.
+    const actions = document.createElement("optgroup");
+    actions.label = "Actions";
+    const refresh = document.createElement("option");
+    refresh.value = "__action_refresh__";
+    refresh.dataset.action = "refresh";
+    refresh.textContent = "↻  Refresh datasets";
+    actions.appendChild(refresh);
+    sel.appendChild(actions);
+
+    selectedDatasetId = "";
+    _lastRealTrainDatasetValue = "";
+    if (hint) {
+      hint.classList.add("is-empty");
+      hint.textContent = "No datasets for this game yet. Switch to the Teach tab and record one.";
+    }
+    _renderTrainSelectedCard(null);
+    _refreshTrainGate();
+    return;
+  }
+
+  // Phase 29: normalize ids up front so the value/preferId/find
+  // comparisons all operate on the same form. Path-shaped ids
+  // (`genshin_impact/2026...`) used to silently mismatch when the
+  // option's value was the leaf id but preferId was the path -- the
+  // browser would then drop sel.value=preferId and the dropdown
+  // ended up with the FIRST option's value (or "" if it was the
+  // disabled placeholder), which is one of the paths producing the
+  // empty dataset_id at preflight time.
+  const latest = list[0];
+  const latestId = normalizeDatasetId(latest);
+  const wantId = preferId ? normalizeDatasetId(preferId) : "";
+
+  // ----- Latest group -----
+  const grpLatest = document.createElement("optgroup");
+  grpLatest.label = "Latest";
+  grpLatest.appendChild(_makeTrainDatasetOption(latest, true));
+  sel.appendChild(grpLatest);
+
+  // ----- Recent group (everything else, newest-first) -----
+  if (list.length > 1) {
+    const grpRecent = document.createElement("optgroup");
+    grpRecent.label = "Recent datasets";
+    list.slice(1).forEach(ds => {
+      grpRecent.appendChild(_makeTrainDatasetOption(ds, false));
+    });
+    sel.appendChild(grpRecent);
+  }
+
+  // ----- Actions group (intercepted on change) -----
+  const grpActions = document.createElement("optgroup");
+  grpActions.label = "Actions";
+  const refresh = document.createElement("option");
+  refresh.value = "__action_refresh__";
+  refresh.dataset.action = "refresh";
+  refresh.textContent = "↻  Refresh datasets";
+  grpActions.appendChild(refresh);
+  const openFolder = document.createElement("option");
+  openFolder.value = "__action_open_folder__";
+  openFolder.dataset.action = "open-folder";
+  openFolder.textContent = "📂  Open datasets folder";
+  grpActions.appendChild(openFolder);
+  sel.appendChild(grpActions);
+
+  // Pick: explicit prefer wins; otherwise newest (= latest group).
+  let chosen = "";
+  if (wantId) {
+    const found = list.find(d => normalizeDatasetId(d) === wantId);
+    if (found) {
+      sel.value = wantId;
+      chosen = wantId;
+    }
+  }
+  if (!chosen) {
+    sel.value = latestId;
+    chosen = latestId;
+  }
+  selectedDatasetId = chosen;
+  // Phase 29: seed the action-revert anchor from outside the
+  // wireEvents() closure. Without this seed, a fresh-app user who
+  // clicked the Refresh action item would have sel.value reverted
+  // to "" because _lastRealTrainDatasetValue was still "".
+  _lastRealTrainDatasetValue = chosen;
+
+  if (hint) {
+    hint.classList.remove("is-empty");
+    const isLatest = chosen === latestId;
+    hint.textContent = isLatest
+      ? `Latest recording auto-selected (${list.length} available).`
+      : `Older dataset selected. Newest: ${latestId}`;
+  }
+
+  const chosenEntry = list.find(d => normalizeDatasetId(d) === chosen) || latest;
+  _renderTrainSelectedCard(chosenEntry, normalizeDatasetId(chosenEntry) === latestId);
+  _refreshTrainGate();
+}
+
+function _makeTrainDatasetOption(ds, isLatest) {
+  const opt = document.createElement("option");
+  // Phase 29: canonical id via normalize, plus a redundant
+  // data-dataset-id attribute. The redundancy is intentional:
+  // resolveSelectedTrainDatasetId() falls back to data-dataset-id
+  // if .value somehow got blanked (path vs id mismatch, browser
+  // dropping a value when the option set was being rebuilt, etc.).
+  const id = normalizeDatasetId(ds);
+  opt.value = id;
+  opt.dataset.datasetId = id;
+  const samples = _trainDatasetSamples(ds);
+  const when = _trainDatasetWhen(ds.created_at);
+  const res = _trainDatasetResolution(ds);
+  const human = ds.name && ds.name !== id ? ds.name : id;
+  const parts = [human];
+  if (when) parts.push(when);
+  parts.push(samples);
+  if (res) parts.push(res);
+  opt.textContent = parts.join("  ·  ");
+  if (isLatest) opt.dataset.latest = "true";
+  return opt;
+}
+
+function _renderTrainSelectedCard(ds, isLatest) {
+  const card = getEl("train-selected-card");
+  if (!card) return;
+  if (!ds) {
+    card.hidden = true;
+    return;
+  }
+  card.hidden = false;
+  const tag  = getEl("train-selected-tag");
+  const name = getEl("train-selected-name");
+  const meta = getEl("train-selected-meta");
+  const idEl = getEl("train-selected-id");
+  if (tag) {
+    tag.textContent = isLatest ? "Latest" : "Older";
+    tag.classList.toggle("is-older", !isLatest);
+  }
+  if (name) name.textContent = ds.name && ds.name !== ds.id ? ds.name : ds.id;
+  if (meta) {
+    const parts = [];
+    const when = _trainDatasetWhen(ds.created_at);
+    if (when) parts.push(when);
+    parts.push(_trainDatasetSamples(ds));
+    const res = _trainDatasetResolution(ds);
+    if (res) parts.push(res);
+    meta.textContent = parts.join("  ·  ");
+  }
+  if (idEl) idEl.textContent = ds.id || "—";
+}
+
+// Phase 28: gate Start Training on having a real dataset selected.
+// Driven by the dropdown's current value. Status row text reflects
+// the same state so UI can never contradict itself ("dataset id
+// filled but preflight says no dataset selected").
+function _refreshTrainGate() {
+  const sel    = getEl("train-dataset-id");
+  const btn    = getEl("btnStartTraining");
+  const statEl = getEl("train-status-text");
+  const badge  = getEl("train-status-badge");
+  if (!btn) return;
+
+  const value = sel ? (sel.value || "") : "";
+  const isAction = value.startsWith("__action_");
+  const hasDataset = !!value && !isAction;
+
+  // Don't unblock the button if a training run is already underway.
+  if (btn.classList.contains("is-running")) return;
+
+  btn.disabled = !hasDataset;
+
+  if (statEl) {
+    statEl.classList.remove("is-blocked", "is-ready", "is-running");
+    if (!hasDataset) {
+      statEl.textContent = "Pick a dataset to start";
+      statEl.classList.add("is-blocked");
+    } else {
+      statEl.textContent = "Ready to train";
+      statEl.classList.add("is-ready");
+    }
+  }
+  if (badge && !badge.dataset.locked) {
+    badge.dataset.state = hasDataset ? "ready" : "idle";
+    const label = badge.querySelector(".train-status-label");
+    if (label) label.textContent = hasDataset ? "Ready" : "Idle";
+  }
+}
+
+function _setTrainBadgeRunning() {
+  const badge = getEl("train-status-badge");
+  const btn   = getEl("btnStartTraining");
+  const statEl = getEl("train-status-text");
+  if (badge) {
+    badge.dataset.state = "running";
+    badge.dataset.locked = "1";
+    const label = badge.querySelector(".train-status-label");
+    if (label) label.textContent = "Running";
+  }
+  if (btn) {
+    btn.classList.add("is-running");
+    btn.disabled = true;
+    const labelSpan = btn.querySelector(".train-start-label");
+    if (labelSpan) labelSpan.textContent = "Training...";
+  }
+  if (statEl) {
+    statEl.classList.remove("is-blocked", "is-ready");
+    statEl.classList.add("is-running");
+    statEl.textContent = "Training in progress...";
+  }
+}
+
+function _setTrainBadgeIdle() {
+  const badge = getEl("train-status-badge");
+  const btn   = getEl("btnStartTraining");
+  if (badge) {
+    delete badge.dataset.locked;
+  }
+  if (btn) {
+    btn.classList.remove("is-running");
+    const labelSpan = btn.querySelector(".train-start-label");
+    if (labelSpan) labelSpan.textContent = "Start training";
+  }
+  _refreshTrainGate();
+}
+
+async function refreshDatasetListTauri(preferId) {
+  const listEl = getEl("teach-dataset-list");
+
+  if (listEl) {
+    listEl.innerHTML = '<div style="color:var(--text-dim); font-size:12px;">Loading...</div>';
+  }
+
+  if (!invoke) {
+    if (listEl) listEl.innerHTML = '<div style="color:var(--text-dim); font-size:12px;">Backend not available</div>';
+    populateTrainDatasetDropdown([], null);
+    return;
+  }
+
+  // Phase 27: prefer the Train-tab game id if the user is currently
+  // operating on the Train tab; otherwise stay backwards-compatible
+  // with the Teach-tab driven flow.
+  const gameId = (
+    getEl("train-game-id")?.value
+    || getEl("teach-game-id")?.value
+    || selectedGameId
+    || DEFAULT_GAME_ID
+  );
+
+  const { datasets, error } = await fetchDatasetsForGameTauri(gameId);
+
+  // Update the Train dropdown FIRST so an event-driven prefer (e.g.
+  // recording_finalized) doesn't race against the slower DOM build
+  // of the Teach list below.
+  populateTrainDatasetDropdown(datasets, preferId);
+
+  if (!listEl) return;
+
+  if (!datasets || datasets.length === 0) {
+    const emptyMsg = error
+      ? `No datasets found (${error})`
+      : "No datasets yet — recordings on the Teach tab show up here.";
+    listEl.innerHTML = `<div style="color:var(--text-dim); font-size:12px;">${emptyMsg}</div>`;
+    return;
+  }
+
+  listEl.innerHTML = "";
+  datasets.forEach(ds => {
+    const item = document.createElement("div");
+    item.style.cssText = "display:flex; justify-content:space-between; align-items:center; padding:10px; margin-bottom:8px; background:rgba(255,255,255,0.03); border:1px solid var(--border); border-radius:8px;";
+    item.innerHTML = `
+      <div>
+        <div style="font-weight:600; color:#fff;">${escapeHtml(ds.name || ds.id)}</div>
+        <div style="font-size:11px; color:var(--text-dim);">${escapeHtml(ds.created_at || '')} • ${ds.sample_count || ds.file_count || '?'} samples</div>
+      </div>
+      <div style="display:flex; gap:6px;">
+        <button class="btn btn-small btn-secondary" data-action="use" data-id="${escapeHtml(ds.id)}">Use</button>
+        <button class="btn btn-small btn-danger" data-action="delete" data-id="${escapeHtml(ds.id)}" data-path="${escapeHtml(ds.path || '')}">Del</button>
+      </div>
+    `;
+    listEl.appendChild(item);
+  });
+
+  // Wire up buttons
+  listEl.querySelectorAll('button[data-action="use"]').forEach(btn => {
+    btn.addEventListener("click", () => selectDatasetForTrainingTauri(btn.dataset.id));
+  });
+  listEl.querySelectorAll('button[data-action="delete"]').forEach(btn => {
+    btn.addEventListener("click", () => deleteDatasetTauri(btn.dataset.id, btn.dataset.path));
+  });
+}
+
 function selectDatasetForTrainingTauri(datasetId) {
+  // Phase 27: now drives a <select>, not a freeform input. If the
+  // option already exists (it should, since the Teach list and the
+  // Train dropdown share the same fetch), just set .value. If it
+  // doesn't (e.g. dataset registered after the last refresh), kick
+  // off a refresh that prefers this id, which will both populate
+  // and select it.
   const trainDataset = getEl("train-dataset-id");
-  if (trainDataset) trainDataset.value = datasetId;
-  selectedDatasetId = datasetId;
+  if (trainDataset && trainDataset.tagName === "SELECT") {
+    const has = Array.from(trainDataset.options).some(o => o.value === datasetId);
+    if (has) {
+      trainDataset.value = datasetId;
+      selectedDatasetId = datasetId;
+    } else {
+      refreshDatasetListTauri(datasetId);
+    }
+  } else if (trainDataset) {
+    // Defensive fallback for the legacy <input> form.
+    trainDataset.value = datasetId;
+    selectedDatasetId = datasetId;
+  }
   logToTerminal(`Selected dataset: ${datasetId}`, "success");
   window.showTab("train");
 }

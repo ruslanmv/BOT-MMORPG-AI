@@ -239,7 +239,14 @@ def main():
     last_toggle_time = 0.0
     toggle_debounce_s = 0.35
 
-    # Graceful stop support (launcher sends SIGINT)
+    # Graceful stop support: SIGINT is the POSIX path; the
+    # BOTMMO_STOP_FLAG env var (Phase 26) is the cross-platform path
+    # used by the launcher's job runner. The launcher writes the flag
+    # file when the user clicks Stop, then waits ~8s for us to
+    # notice and exit cleanly before falling back to SIGTERM/kill.
+    # Both paths converge on `running = False`, which lets the bottom
+    # of the loop save the buffered samples and print "[Info] Exited
+    # cleanly." -- the same codepath that ran when Q was pressed.
     running = True
 
     def _handle_sigint(signum, frame):
@@ -247,6 +254,10 @@ def main():
         running = False
 
     signal.signal(signal.SIGINT, _handle_sigint)
+
+    stop_flag_path = os.environ.get("BOTMMO_STOP_FLAG", "").strip() or None
+    if stop_flag_path:
+        print(f"[Info] Cooperative stop enabled; flag={stop_flag_path}")
 
     print("STARTING!!!")
 
@@ -257,6 +268,15 @@ def main():
     try:
         while running:
             now = time.time()
+
+            # Phase 26: cooperative stop check. Poll once per loop
+            # iteration -- cheap (one stat() syscall on a tmp path)
+            # and tight enough that the user's "Stop" click responds
+            # within one frame interval (~50ms at 20fps).
+            if stop_flag_path and os.path.exists(stop_flag_path):
+                print("[Info] Stop flag detected; exiting cleanly...")
+                running = False
+                break
 
             # Pause toggle (debounced)
             keys_now = key_check()
