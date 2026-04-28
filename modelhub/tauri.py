@@ -232,19 +232,97 @@ def _scan_datasets_fs(data_root: Path, gid: str) -> List[Dict[str, Any]]:
     return out
 
 
+def _resolve_checkpoint_in_dir(model_dir: str) -> Optional[str]:
+    """Pick the right `.pth` checkpoint inside a trained-model folder.
+
+    Mirrors the Rust resolver in src-tauri/src/main.rs::resolve_checkpoint_path
+    so behavior is identical whether the resolution happens at activate
+    time (here) or at start_bot time (Rust). Priority:
+
+      1. `*_best.pth`    -- best validation snapshot
+      2. `*_final.pth`   -- last-epoch weights
+      3. newest `*.pth`  -- fallback for non-conventional names
+
+    Returns the absolute path as a string, or None if no `.pth` exists.
+    Caller treats None as "let the Rust side resolve later or surface
+    the train-first hint" -- this helper never raises for missing
+    artifacts.
+    """
+    if not model_dir:
+        return None
+    p = Path(model_dir)
+    if p.is_file() and p.suffix == ".pth":
+        return str(p.as_posix())
+    if not p.is_dir():
+        return None
+    try:
+        pths = list(p.glob("*.pth"))
+    except Exception:
+        return None
+    if not pths:
+        return None
+    best = next((q for q in pths if q.name.endswith("_best.pth")), None)
+    if best is not None:
+        return str(best.as_posix())
+    final_ = next((q for q in pths if q.name.endswith("_final.pth")), None)
+    if final_ is not None:
+        return str(final_.as_posix())
+    pths.sort(key=lambda q: q.stat().st_mtime, reverse=True)
+    return str(pths[0].as_posix())
+
+
 def _scan_trained_models_fs(data_root: Path, gid: str) -> List[Dict[str, Any]]:
+    """Filesystem fallback for the local-models list.
+
+    The trained-models grid in the UI sorts newest-first and pre-selects
+    the just-trained model after `training_finalized`. To make that
+    sort reliable without forcing the UI to stat() each folder, we
+    surface a few derived fields here:
+
+      - mtime_ms      : most-recent .pth artifact mtime (or folder mtime)
+      - created_at    : ISO-8601 string of mtime_ms
+      - has_artifacts : true when at least one *.pth exists
+      - checkpoint    : resolved best/final/newest *.pth file path
+                        (Phase 31 -- consumed by Set Active so the
+                        Rust inference launcher gets a file, not a
+                        folder, fixing the "Permission denied: '...New
+                        Model'" error on Windows)
+
+    These are best-effort metadata; the UI treats them as optional.
+    """
+    import time
+    from datetime import datetime, timezone
+
     models_dir = data_root / "trained_models" / gid
     if not models_dir.exists():
         return []
     out: List[Dict[str, Any]] = []
     for p in sorted(models_dir.iterdir()):
-        if p.is_dir():
-            out.append({
-                "id": p.name,
-                "name": p.name,
-                "path": str(p.as_posix()),
-                "source": "trained_models",
-            })
+        if not p.is_dir():
+            continue
+        try:
+            pths = sorted(p.glob("*.pth"), key=lambda q: q.stat().st_mtime, reverse=True)
+        except Exception:
+            pths = []
+        try:
+            base_mtime = p.stat().st_mtime
+        except Exception:
+            base_mtime = time.time()
+        latest_mtime = pths[0].stat().st_mtime if pths else base_mtime
+        checkpoint = _resolve_checkpoint_in_dir(str(p))
+        out.append({
+            "id": p.name,
+            "name": p.name,
+            "path": str(p.as_posix()),
+            "model_dir": str(p.as_posix()),
+            "source": "trained_models",
+            "mtime_ms": int(latest_mtime * 1000),
+            "created_at": datetime.fromtimestamp(latest_mtime, tz=timezone.utc).isoformat(),
+            "has_artifacts": bool(pths),
+            "checkpoint": checkpoint,
+        })
+    # newest first so the UI doesn't have to re-sort if it trusts the order
+    out.sort(key=lambda m: m.get("mtime_ms", 0), reverse=True)
     return out
 
 
@@ -510,10 +588,28 @@ def create_app(token: str):
         gid = _normalize_game_id(payload.get("game_id"))
         model_id = (payload.get("model_id") or "").strip()
         path = (payload.get("path") or "").strip()
+        # Phase 31: optional resolved checkpoint file. The Rust
+        # inference launcher prefers `model_file` over walking the
+        # directory. Absent value is fine -- the launcher resolves it
+        # via best -> final -> newest as a fallback.
+        model_file = (payload.get("model_file") or "").strip()
         if not model_id or not path:
             return {"ok": False, "error": "model_id and path are required"}
-        mh_set_active_model(gid, model_id, path)
-        return {"ok": True}
+
+        # If the UI sent only a directory, resolve a checkpoint here so
+        # `active_model.json` carries the file path going forward and
+        # other consumers (CLI, smoke tests) don't have to repeat the
+        # walk. Best-effort: leave unset on failure rather than
+        # blocking the activation -- the Rust resolver will still
+        # cover us at start_bot time.
+        if not model_file:
+            try:
+                model_file = _resolve_checkpoint_in_dir(path) or ""
+            except Exception:
+                model_file = ""
+
+        mh_set_active_model(gid, model_id, path, model_file)
+        return {"ok": True, "model_file": model_file or None}
 
     # Phase 22: dedicated /modelhub/datasets endpoint. Previously the
     # Rust shell's `list_datasets` Tauri command called this URL, but

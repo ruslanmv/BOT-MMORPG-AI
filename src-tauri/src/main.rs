@@ -2798,6 +2798,16 @@ async fn api_delete_with(inner: &Arc<AppStateInner>, path: &str) -> Result<Value
 // local-spawn path (run_python_script) was removed once the
 // traceback-parsing state machine had been ported to the log-bridge
 // worker so AI Fix Bundle capture would not regress.
+/// Metadata forwarded to the log-bridge worker so it can emit a
+/// `training_finalized` event when a training job finishes successfully.
+/// Only `start_training` populates this; every other caller passes None.
+#[derive(Clone, Debug)]
+struct TrainingFinalizeMeta {
+    game_id: String,
+    model_name: String,
+    out_dir: String,
+}
+
 async fn submit_sidecar_job(
     inner: &Arc<AppStateInner>,
     window: &Window,
@@ -2805,6 +2815,7 @@ async fn submit_sidecar_job(
     argv: Vec<String>,
     env: serde_json::Map<String, Value>,
     cwd: Option<String>,
+    training_meta: Option<TrainingFinalizeMeta>,
 ) -> Result<String, String> {
     // Cancel any previously-running sidecar job before we register
     // ours. This matches the legacy run_python_script behaviour
@@ -2851,7 +2862,7 @@ async fn submit_sidecar_job(
         format!("[Sidecar] Submitted job {} (kind={})", job_id, kind),
     );
 
-    spawn_log_bridge_worker(window.clone(), inner.clone(), job_id.clone());
+    spawn_log_bridge_worker(window.clone(), inner.clone(), job_id.clone(), training_meta);
     Ok(job_id)
 }
 
@@ -2862,7 +2873,12 @@ async fn submit_sidecar_job(
 /// ("completed" / "failed" / "cancelled"). On exit it clears the
 /// inner.current_sidecar_job slot so a follow-up Start can register
 /// a new job cleanly.
-fn spawn_log_bridge_worker(window: Window, inner: Arc<AppStateInner>, job_id: String) {
+fn spawn_log_bridge_worker(
+    window: Window,
+    inner: Arc<AppStateInner>,
+    job_id: String,
+    training_meta: Option<TrainingFinalizeMeta>,
+) {
     use std::time::Duration as StdDuration;
     tauri::async_runtime::spawn(async move {
         let mut last_seen = 0usize;
@@ -2953,6 +2969,28 @@ fn spawn_log_bridge_worker(window: Window, inner: Arc<AppStateInner>, job_id: St
                         let entry = parse_python_traceback(&tb_buf, &script_for_tb);
                         record_error(&inner, entry);
                     }
+
+                    // Phase 30: training-job finalization. When a training
+                    // job completes successfully, tell the UI which model
+                    // is now on disk so the ModelHub view can auto-refresh
+                    // and pre-select the just-trained candidate. Mirrors
+                    // the `recording_finalized` pattern (see stop_process)
+                    // so the post-train UX is symmetric with post-record.
+                    // Auto-select = YES, auto-activate = NO -- the JS
+                    // listener only refreshes + highlights; the user must
+                    // still click "Set Active".
+                    if status == "completed" {
+                        if let Some(meta) = training_meta.as_ref() {
+                            let payload = json!({
+                                "game_id": meta.game_id,
+                                "model_name": meta.model_name,
+                                "model_dir": meta.out_dir,
+                                "job_id": job_id,
+                            });
+                            let _ = window.emit("training_finalized", payload);
+                        }
+                    }
+
                     // Clear the slot only if the job we owned is still
                     // the one stored. A user could theoretically have
                     // started a fresh job while we were polling.
@@ -3651,6 +3689,7 @@ async fn start_recording(
         cmd.argv,
         cmd.env,
         Some(cmd.cwd),
+        None,
     )
     .await?;
     Ok(format!("Started collect_data job {}", job_id))
@@ -3718,6 +3757,15 @@ async fn start_training(
             "--model",
             &a,
         ],
+        // Phase 30: forward enough metadata so the log-bridge worker can
+        // emit a `training_finalized` event when the job completes.
+        // The UI listens and auto-refreshes ModelHub, pre-selecting
+        // this freshly trained model as the LATEST candidate.
+        Some(TrainingFinalizeMeta {
+            game_id: gid.clone(),
+            model_name: mname.clone(),
+            out_dir: out_dir_s.clone(),
+        }),
     )
     .await?;
     Ok(format!("Started train_model job {}", job_id))
@@ -3756,12 +3804,9 @@ async fn start_bot(
         )
     })?;
 
-    let model_path = catalog
+    let active = catalog
         .get("active")
         .and_then(|v| if v.is_null() { None } else { Some(v) })
-        .and_then(|v| v.get("model_dir"))
-        .and_then(|m| m.as_str())
-        .map(|s| s.to_string())
         .ok_or_else(|| {
             format!(
                 "No active model set for '{}'. Open ModelHub, pick a trained model, \
@@ -3769,6 +3814,52 @@ async fn start_bot(
                 gid
             )
         })?;
+
+    // Phase 31: resolve model_dir -> concrete checkpoint file.
+    //
+    // 3-test_model.py declares --model as a `.pth` file path
+    // (versions/0.01/3-test_model.py:502) and torch.load() opens it
+    // with the file API. Passing a directory yields
+    //   [Errno 13] Permission denied: '...\\New Model'
+    // on Windows. mh_set_active_model historically stored the
+    // training-output directory under the `model_dir` key, so every
+    // existing active_model.json is broken without this resolver.
+    //
+    // Resolution priority (matches the script's docstring example
+    // at 3-test_model.py:8-9 which prefers `_best.pth`):
+    //   1. active.model_file        -- explicit override from UI/registry
+    //   2. <dir>/*_best.pth         -- best validation snapshot
+    //   3. <dir>/*_final.pth        -- last-epoch weights
+    //   4. <dir>/*.pth (newest mtime)
+    //
+    // If `model_dir` already points at a `.pth`, use it verbatim.
+    let active_dir = active
+        .get("model_dir")
+        .and_then(|m| m.as_str())
+        .map(|s| s.to_string());
+    let active_file = active
+        .get("model_file")
+        .and_then(|m| m.as_str())
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string());
+
+    let model_path = match resolve_checkpoint_path(active_file.as_deref(), active_dir.as_deref()) {
+        Ok(p) => p,
+        Err(e) => {
+            return Err(format!(
+                "Cannot start bot: {} \
+                 Train a model in Train Brain (it writes <name>_best.pth and \
+                 <name>_final.pth into the model folder), then re-activate it \
+                 in ModelHub.",
+                e
+            ));
+        }
+    };
+
+    let _ = window.emit::<String>(
+        "terminal_update",
+        format!("[Inference] Using checkpoint: {}", model_path),
+    );
 
     // MVP-3d: route inference (3-test_model.py) through the sidecar's
     // /jobs endpoint too. start_bot was the most-likely-to-crash of the
@@ -3784,9 +3875,118 @@ async fn start_bot(
         "inference",
         "3-test_model.py",
         &["--model", &model_path],
+        None,
     )
     .await?;
     Ok(format!("Started test_model job {}", job_id))
+}
+
+/// Resolve the active model's path to a concrete `.pth` checkpoint
+/// file that `3-test_model.py --model` can torch.load().
+///
+/// This is the production fix for the "Permission denied: '...\\New Model'"
+/// inference error: ModelHub stores the training-output **directory**
+/// as the active path, but the inference script needs a **file**.
+///
+/// Tries in order:
+///   1. `explicit_file` if non-None and points at an existing file
+///   2. If `dir` is itself a `.pth` file, use it verbatim
+///   3. Inside `dir`, prefer `*_best.pth` (lowest val_loss snapshot;
+///      matches the script's documented example), then `*_final.pth`
+///      (last-epoch weights), then the newest `*.pth` by mtime.
+///
+/// Returns a user-friendly error string when no checkpoint can be
+/// resolved -- the caller wraps it with the "train one in Train Brain"
+/// hint so the message is actionable, not stack-trace-ish.
+fn resolve_checkpoint_path(
+    explicit_file: Option<&str>,
+    dir: Option<&str>,
+) -> Result<String, String> {
+    use std::path::Path;
+
+    if let Some(f) = explicit_file {
+        let p = Path::new(f);
+        if p.is_file() {
+            return Ok(f.to_string());
+        }
+        // Fall through: explicit file was set but doesn't exist on
+        // disk anymore (model deleted, drive remounted, ...). Try the
+        // directory fallback rather than failing on the registry's
+        // stale pointer.
+    }
+
+    let dir_str = dir.ok_or_else(|| "active model has no path on disk.".to_string())?;
+    let dir_path = Path::new(dir_str);
+
+    if dir_path.is_file() {
+        // Some old configs may have stored a file path directly under
+        // model_dir. Honour that.
+        if dir_path.extension().and_then(|s| s.to_str()) == Some("pth") {
+            return Ok(dir_str.to_string());
+        }
+        return Err(format!(
+            "active model path '{}' is a file but not a .pth checkpoint.",
+            dir_str
+        ));
+    }
+
+    if !dir_path.is_dir() {
+        return Err(format!(
+            "active model path '{}' does not exist on disk.",
+            dir_str
+        ));
+    }
+
+    let entries = std::fs::read_dir(dir_path)
+        .map_err(|e| format!("cannot read active model folder '{}': {}", dir_str, e))?;
+
+    let mut best: Option<std::path::PathBuf> = None;
+    let mut final_: Option<std::path::PathBuf> = None;
+    let mut newest: Option<(std::path::PathBuf, std::time::SystemTime)> = None;
+
+    for entry in entries.flatten() {
+        let p = entry.path();
+        if !p.is_file() {
+            continue;
+        }
+        if p.extension().and_then(|s| s.to_str()) != Some("pth") {
+            continue;
+        }
+        let name = match p.file_name().and_then(|s| s.to_str()) {
+            Some(n) => n.to_string(),
+            None => continue,
+        };
+        // First match wins per category, but we still scan everything
+        // so the "newest" branch sees every file.
+        if best.is_none() && name.ends_with("_best.pth") {
+            best = Some(p.clone());
+        } else if final_.is_none() && name.ends_with("_final.pth") {
+            final_ = Some(p.clone());
+        }
+        if let Ok(meta) = entry.metadata() {
+            if let Ok(mtime) = meta.modified() {
+                match &newest {
+                    Some((_, t)) if *t >= mtime => {}
+                    _ => newest = Some((p.clone(), mtime)),
+                }
+            }
+        }
+    }
+
+    if let Some(p) = best {
+        return Ok(p.to_string_lossy().into_owned());
+    }
+    if let Some(p) = final_ {
+        return Ok(p.to_string_lossy().into_owned());
+    }
+    if let Some((p, _)) = newest {
+        return Ok(p.to_string_lossy().into_owned());
+    }
+
+    Err(format!(
+        "active model folder '{}' has no .pth checkpoint -- training never produced one.",
+        dir_str
+    ))
 }
 
 /// Tauri command wrapper around submit_sidecar_job (MVP-3c).
@@ -3815,6 +4015,7 @@ async fn submit_sidecar_job_cmd(
         argv,
         env.unwrap_or_default(),
         cwd,
+        None,
     )
     .await
 }
@@ -3967,6 +4168,7 @@ async fn start_python_script_via_sidecar(
     kind: &str,
     script_name: &str,
     extra_args: &[&str],
+    training_meta: Option<TrainingFinalizeMeta>,
 ) -> Result<String, String> {
     let cmd = build_python_script_command(app, script_name, extra_args, window)?;
     submit_sidecar_job(
@@ -3976,6 +4178,7 @@ async fn start_python_script_via_sidecar(
         cmd.argv,
         cmd.env,
         Some(cmd.cwd),
+        training_meta,
     )
     .await
 }
@@ -4079,12 +4282,22 @@ async fn mh_set_active(
     game_id: Option<String>,
     model_id: String,
     path: String,
+    // Phase 31: optional resolved checkpoint file. The UI sends this
+    // alongside the directory when it knows it (from catalog metadata
+    // or training_finalized); the Python endpoint persists it under
+    // `model_file` and start_bot prefers it over walking the dir.
+    model_file: Option<String>,
 ) -> Result<Value, String> {
     let gid = normalize_game_id(game_id);
     api_post_with(
         &state.inner,
         "/modelhub/active",
-        json!({"game_id": gid, "model_id": model_id, "path": path}),
+        json!({
+            "game_id": gid,
+            "model_id": model_id,
+            "path": path,
+            "model_file": model_file.unwrap_or_default(),
+        }),
     )
     .await
 }

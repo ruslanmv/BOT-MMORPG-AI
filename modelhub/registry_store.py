@@ -46,8 +46,26 @@ def get_datasets(game_id: str):
 def get_models(game_id: str):
     return _load().get(game_id, {}).get("models", [])
 
-def set_active_model(game_id: str, model_id: str, model_path: str):
-    data = {"game": game_id, "model_id": model_id, "model_dir": model_path}
+def set_active_model(game_id: str, model_id: str, model_path: str, model_file: str = ""):
+    """Persist the user's active-model selection.
+
+    `model_path` is the training-output directory under
+    `trained_models/<game>/<name>/`. `model_file` is the resolved
+    `.pth` checkpoint inside it (e.g. `<arch>_best.pth`) — optional
+    because older bundles never sent it. When present, the Rust
+    inference launcher prefers it over walking the directory; when
+    absent, the launcher resolves it itself with the
+    best -> final -> newest priority. Either way the active model
+    survives older active_model.json files written before this field
+    existed.
+    """
+    data = {
+        "game": game_id,
+        "model_id": model_id,
+        "model_dir": model_path,
+    }
+    if model_file:
+        data["model_file"] = model_file
     ACTIVE_MODEL_PATH.write_text(json.dumps(data, indent=2), encoding="utf-8")
 
 def get_active_model():
