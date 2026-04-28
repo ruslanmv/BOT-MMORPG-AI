@@ -1,7 +1,29 @@
 # 02 — Build Pipeline (build time)
 
 {% raw %}
+> **For the runtime-side companion see [09-architecture-end-to-end.md](./09-architecture-end-to-end.md) §3-§4.**
+> This file covers everything that happens BEFORE the user double-clicks
+> the installer; 09 covers everything that happens after.
+
 What happens between `make build-installer` and a finished `.exe`.
+
+Post-migration additions:
+
+- **STEP 6** also stages `scripts/runtime_doctor.py` into
+  `src-tauri/resources/scripts/` so the Tauri shell can invoke it at
+  every launch (MVP-2). The doctor is the per-launch self-test that
+  drives the install-health banner — see 09 §5 for the per-check
+  reference.
+- **STEP 6.6** stages `modelhub/jobs/` alongside the rest of
+  `modelhub/`. The recursive copy walks subdirectories so
+  `jobs/{__init__,runner,routes}.py` get bundled automatically.
+  Verified by `verify_installer.ps1` post-build.
+- **STEP 6.4** runtime integrity check (added in MVP-4 at line
+  622-634): runs the bundled python.exe against an explicit list of
+  imports — `torch.testing`, `numpy.testing`, `fastapi`, `uvicorn`,
+  `cv2`, `importlib.metadata.version()`. Fails the build if any
+  import or version lookup fails. Converts a runtime crash on the
+  user's machine into a build-time failure on CI.
 
 ## End-to-end diagram
 

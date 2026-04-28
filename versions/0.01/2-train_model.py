@@ -25,15 +25,39 @@ import numpy as np
 import cv2  # noqa: F401  (kept for compatibility; not used directly here)
 
 # PyTorch imports
+#
+# We catch BaseException (not just ImportError) because Windows torch
+# failures often surface as OSError ("[WinError 126] The specified module
+# could not be found", "DLL load failed"), RuntimeError (CPU lacks AVX
+# instructions), or even raw access violations during DLL load. Catching
+# only ImportError silently masks those and the user sees the misleading
+# "PyTorch not installed" message even though pip install succeeded.
+PYTORCH_AVAILABLE = False
+PYTORCH_IMPORT_ERROR: Optional[BaseException] = None
 try:
     import torch
     import torch.nn as nn
     import torch.optim as optim
     from torch.utils.data import Dataset, DataLoader
     PYTORCH_AVAILABLE = True
-except ImportError:
-    PYTORCH_AVAILABLE = False
-    print("[Warning] PyTorch not installed. Install with: pip install torch torchvision")
+except BaseException as _torch_import_exc:  # noqa: BLE001 -- intentional broad catch
+    PYTORCH_IMPORT_ERROR = _torch_import_exc
+    print(
+        f"[Warning] PyTorch failed to import: "
+        f"{type(_torch_import_exc).__name__}: {_torch_import_exc}"
+    )
+    print("[Hint] Most common causes on Windows:")
+    print("       - Visual C++ Redistributable missing (install vc_redist.x64.exe)")
+    print("       - Antivirus quarantined torch DLLs (check exclusions / restore)")
+    print("       - CPU lacks AVX/AVX2 instructions (very old hardware)")
+    print("       - torch package incomplete (re-run: pip install torch torchvision)")
+
+# When torch is unavailable, `Dataset` is undefined at module top-level.
+# `class GameplayDataset(Dataset):` further down would then raise NameError
+# at IMPORT time -- before main() ever gets to check PYTORCH_AVAILABLE and
+# print a clean error. Use a fallback base class so the module always
+# parses; the actual training loop still bails on PYTORCH_AVAILABLE below.
+BaseDataset = Dataset if PYTORCH_AVAILABLE else object
 
 # Local imports
 try:
@@ -107,7 +131,7 @@ MODEL_NAME = 'model/mmorpg_bot'
 # Dataset
 # =============================================================================
 
-class GameplayDataset(Dataset):
+class GameplayDataset(BaseDataset):
     """
     PyTorch Dataset for gameplay recordings.
 
@@ -432,8 +456,24 @@ def main(argv=None) -> int:
 
     # Check dependencies
     if not PYTORCH_AVAILABLE:
-        LOG.error("[Error] PyTorch not available. Install with: pip install torch torchvision")
-        return 1
+        LOG.error("[Error] PyTorch not available — training cannot start.")
+        if PYTORCH_IMPORT_ERROR is not None:
+            LOG.error(
+                "[Error] Import failed: %s: %s",
+                type(PYTORCH_IMPORT_ERROR).__name__,
+                PYTORCH_IMPORT_ERROR,
+            )
+        LOG.error("[Hint] See [Warning] / [Hint] lines above for diagnostic guidance.")
+        # Why os._exit(1) instead of `return 1`/`sys.exit(1)`:
+        # When torch's native DLLs partially load and then fail, the Python
+        # interpreter's normal shutdown path (atexit handlers, gc finalizers,
+        # cleanup of half-initialized C extensions) can dereference torn-down
+        # state and crash with STATUS_ACCESS_VIOLATION (0xC0000005, exit code
+        # -1073741819). That crash masks our clean error message in the UI
+        # log and looks like the trainer itself crashed. os._exit bypasses
+        # that cleanup entirely — the process dies immediately with our
+        # intended exit code, and the user sees the [Error] / [Hint] lines.
+        os._exit(1)
 
     if not MODELS_AVAILABLE:
         LOG.error("[Error] models_pytorch.py not found")

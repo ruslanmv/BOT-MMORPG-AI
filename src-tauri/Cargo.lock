@@ -139,6 +139,7 @@ name = "bot-mmorpg-ai"
 version = "1.0.0"
 dependencies = [
  "reqwest",
+ "semver",
  "serde",
  "serde_json",
  "tauri",

@@ -212,4 +212,200 @@ Re-asserts `hidden`'s semantic above every per-component `display` rule.
 override the UA `[hidden]` rule. Either use `!important` once globally
 (this fix), or write `.my-class[hidden] { display: none }` for every
 class — the global rule is much less maintenance.
+
+## Bug #9 — Prune rule deleted `torch/testing/` from bundled site-packages
+
+**Symptom (in-app log on a fresh `0.0.0-dev` install):**
+
+```
+[Warning] PyTorch failed to import:
+  ModuleNotFoundError: No module named 'torch.testing'
+[Error] PyTorch not available -- training cannot start.
+[System] Process finished: exit_code=-1073741819     # 0xC0000005
+```
+
+The trainer fails BEFORE it does any work. The exit code is a
+Windows access violation, not a clean Python `sys.exit(1)`.
+
+**Cause:** `scripts/build_pipeline.ps1` had a regex that pruned
+unit-test directories from the bundled site-packages to keep the
+NSIS file count under the ~30k cliff:
+
+```powershell
+Where-Object { $_.Name -match "^(tests?|testing)$" }
+```
+
+That pattern matches three names: `test`, `tests`, AND `testing`.
+The third match deleted **public, runtime-required submodules** of
+mainstream scientific-Python wheels:
+
+- `torch/testing/` — `assert_close`, `make_tensor`; transitively
+  imported by `torch._dynamo`, `torch.fx`, several modelhub model
+  registries.
+- `numpy/testing/` — imported transitively by torch on some
+  platforms during init.
+- `pandas/testing/`, `scipy/testing/`, `sympy/testing/` — collateral.
+
+The 0xC0000005 follows the `ModuleNotFoundError`: native extensions
+in `torch._C` finished registering C++ globals, then Python caught
+the import error and started cleanup. During shutdown the half-
+initialized extensions raced against a `sys.modules` that no
+longer references `torch.testing` and crashed with a teardown-phase
+access violation.
+
+The build's pre-prune torch smoke test passed (the package was still
+intact at that point). No post-prune smoke test existed, so a green
+CI build shipped a corrupted installer to users.
+
+**Fix:** two changes in `scripts/build_pipeline.ps1`:
+
+1. Tighten the prune filter to plural-only:
+
+   ```powershell
+   Where-Object { $_.Name -ieq "tests" }
+   ```
+
+   `tests/` (plural) is the strong convention for unit-test
+   directories specifically; the singular `test/` and `testing/`
+   are runtime API surface for several scientific packages.
+
+2. Add a post-prune integrity check that runs the bundled
+   `python.exe` against an explicit list of imports the runtime
+   actually performs:
+
+   ```powershell
+   $postPruneTests = @(
+     "import torch, torch.testing, torch.nn, torch.fx",
+     "import torchvision",
+     "import numpy, numpy.testing",
+     "import fastapi, uvicorn",
+     "import cv2",
+   )
+   ```
+
+   This converts a runtime crash on the user's machine into a
+   build-time failure on CI. If you change the prune rules, add
+   the corresponding `import x.y` line.
+
+3. Regression test at `tests/health/test_bundled_site_packages_intact.py`
+   asserts the same submodules exist on a built/installed copy, so
+   `make verify` / `verify_installer.ps1` catches the same class
+   of regression locally.
+
+**Lesson:** "size optimization" passes that delete files by name
+pattern are dangerous. The `tests/` (plural) convention is real and
+worth honoring; `test/` and `testing/` (singular) are NOT
+test-suite conventions — they are public API directories in the
+science-Python ecosystem. When you must prune, prune by **explicit
+manifest of files known to be safe to drop**, not by directory-name
+regex. Always smoke-test what the user will actually import, AFTER
+every destructive build step.
+
+## Bug #10 — Prune block was no longer load-bearing
+
+**Symptom:** none observed in the wild — caught proactively while
+auditing the build pipeline for MVP-4.
+
+**Cause:** the original prune block (Bug #9 above) existed because
+NSIS has a hard cliff around 30k bundled files. STEP 6.7 of the
+build pipeline already packs the whole `python/` tree into a single
+`python-runtime.zip`, so NSIS sees ONE file regardless of how many
+files are inside the zip. The prune block was therefore deleting
+files for size savings only — and any future rule change carried
+the same risk profile as Bug #9 (accidentally remove a runtime
+submodule, ship a corrupted installer, learn about it from a user
+crash report).
+
+The high-risk strips that remained:
+
+- `tests/` (plural) — already proven safe by Bug #9, but no
+  longer load-bearing once the zip carries the file-count.
+- `*.dist-info/` — required at runtime by `importlib.metadata`
+  and by entry-point lookup (uvicorn's CLI). Removing them on
+  some wheel layouts produces "uvicorn entry point not found"
+  failures that are extremely hard to attribute back to the
+  build pipeline.
+
+**Fix:** drop both strips in `scripts/build_pipeline.ps1`. Keep
+only the auto-generated artifact strips (`__pycache__`, stray
+`.pyc`, `.pyi` type stubs) — those have zero failure surface
+because CPython auto-regenerates them on import.
+
+The runtime integrity check (introduced in Bug #9) is renamed
+from "post-prune" to "runtime integrity" and gains an extra
+`importlib.metadata.version()` assertion to lock in the
+dist-info preservation.
+
+**Size impact:** modest installer growth (the zip already
+compresses redundancy heavily). If size becomes a concern again,
+the AAA-grade fix is to upgrade the zip compressor from DEFLATE
+to LZMA2 (~30% smaller bundle), not to delete files pip
+installed.
+
+**Lesson:** prune rules are technical debt with negative ROI
+once they're not load-bearing. Audit the assumptions every time
+the build pipeline changes shape.
+
+## Bug #11 — `torch/testing` deleted by AV after a clean extract
+
+**Commits:** `52dae2e` (doctor enrichment), `3ea14a1` (`repair_pytorch_via_pip`).
+
+**Symptom (in-the-wild user report after MVP-4 was already shipped):**
+
+```
+Runtime doctor: error
+torch_intact: ERR  ModuleNotFoundError: No module named 'torch.testing' |
+                   torch_root=C:\Users\<u>\AppData\Local\com.bot.mmorpg.ai\runtime\py\python\site-packages\torch |
+                   torch_testing_dir_exists=False
+numpy_intact: ERR  ModuleNotFoundError: No module named 'numpy.testing' |
+                   numpy_root=C:\Users\<u>\AppData\Local\com.bot.mmorpg.ai\runtime\py\python\site-packages\numpy |
+                   numpy_testing_dir_exists=False
+torchvision_intact: ERR cannot import name 'nn' from partially initialized
+                   module 'torch' (most likely due to a circular import)
+```
+
+The build pipeline's runtime-integrity check (added in Bug #10) had
+PASSED at build time — `torch.testing` was inside `python-runtime.zip`
+when the build finished. So the directory got deleted **between
+extraction to `%LOCALAPPDATA%` and the doctor's first probe**.
+
+**Cause:** Defender real-time scan running on a freshly-extracted
+unsigned package directory. AV products typically delete specific
+binaries / directories that match a heuristic. Two `testing/` dirs
+vanishing in lockstep across two unrelated packages is the classic
+signature: not random, not zip corruption, an external actor.
+
+**Distinguishing this from Bug #9:** the diagnostic enrichment in
+`52dae2e` makes this trivial. Bug #9 (build-time): `torch_root` is
+sentinel-string "<not found on sys.path>" because torch was never
+installed. Bug #11 (runtime AV): `torch_root` resolves to a real
+directory but `torch_testing_dir_exists=False`. The boolean is the
+smoking gun.
+
+**Fix:** none in code — this is a runtime state issue. The recovery
+flow is in-product:
+
+1. `[🛡 Add AV Exclusion]` → UAC → Defender excludes
+   `%LOCALAPPDATA%\com.bot.mmorpg.ai\runtime\py\`.
+2. `[🔧 Repair Runtime]` → re-extracts `python-runtime.zip` into the
+   now-excluded directory; AV gives it a pass.
+3. `[↻ Restart Sidecar]` and `[▶ Run Diagnosis]` to verify.
+
+If steps 1+2 don't restore the directory (the bundled zip itself
+is from a pre-MVP-4 build that never had `torch/testing/` to begin
+with):
+
+4. `[🩺 Repair PyTorch (pip)]` → downloads fresh `torch +
+   torchvision + numpy` from PyPI's CPU index, force-reinstalling
+   without dependencies. 2-5 min, ~250 MB. Bypasses both the bundled
+   zip AND any persistent AV interference (pip writes to a temp
+   dir then atomic-renames, which most AV products give a pass).
+
+**Lesson:** AV-quarantine of fresh extracts is a real failure class
+that no amount of build-side hardening can prevent. The complete fix
+is a **pre-emptive AV exclusion at install time** — an NSIS post-
+install hook that runs `Add-MpPreference -ExclusionPath` (with a
+consent checkbox in the wizard) so the user never has to click any
+recovery button. Tracked in `09-architecture-end-to-end.md` §7
+item 2 as the primary deferred work item for the next session.
 {% endraw %}

@@ -39,6 +39,16 @@ function Write-Info($msg) {
     Write-Host "[INFO] $msg" -ForegroundColor Cyan
 }
 
+# PHASE 13: non-fatal degraded-success channel. Used when a check
+# couldn't complete for environmental reasons (UAC denied, sandbox
+# without admin, etc.) but the build itself is fine. Goes to the
+# $warnings array, which is reported separately from $errors at the
+# verification summary so a CI runner can decide whether to treat
+# warnings as failures.
+function Write-Warn($msg) {
+    Write-Host "[WARN] $msg" -ForegroundColor Yellow
+}
+
 # Normalize a Windows path to its canonical long form so string-compares
 # don't fail on 8.3 short names. CI runners often have $env:TEMP =
 # "C:\Users\RUNNER~1\AppData\..." (where RUNNER~1 is the auto-generated
@@ -61,6 +71,11 @@ function Resolve-LongPath([string]$Path) {
 
 $root = Resolve-Path "$(Split-Path -Parent $MyInvocation.MyCommand.Path)\.." | % Path
 $errors = @()
+# PHASE 13: warnings are non-fatal -- a check that couldn't complete
+# for environmental reasons (UAC canceled, missing optional driver
+# installer, etc.) goes here instead of $errors. Reported in the
+# summary so the operator sees them but `make artifact` doesn't fail.
+$warnings = @()
 
 Write-Info "Starting installer verification..."
 Write-Info "Root directory: $root"
@@ -113,6 +128,19 @@ if (Test-Path $modelsScriptPath) {
 } else {
     Write-Failure "Download models script not found: $modelsScriptPath"
     $errors += "Missing download_models.ps1 script"
+}
+
+# Runtime self-test (MVP-2). Tauri's `runtime_doctor` command shells
+# out to <bundled-python> resources\scripts\runtime_doctor.py to drive
+# the install-health banner. Missing this file = banner can never
+# resolve to "ready" because the doctor command synthesises a
+# "doctor_script_not_found" error on every launch.
+$doctorScriptPath = Join-Path $root "src-tauri\resources\scripts\runtime_doctor.py"
+if (Test-Path $doctorScriptPath) {
+    Write-Success "Runtime doctor script exists: resources/scripts/runtime_doctor.py"
+} else {
+    Write-Failure "Runtime doctor script not found: $doctorScriptPath"
+    $errors += "Missing runtime_doctor.py (UI install-health banner cannot drive)"
 }
 
 # Check 4: Tauri application binary
@@ -246,6 +274,19 @@ if (Test-Path $bundledModelhub) {
     $errors += "resources/modelhub/tauri.py missing (HTTP API cannot serve)"
 }
 
+# MVP-3a/3b: sidecar-owned job runner. The Tauri shell now POSTs every
+# Python spawn to /jobs (collect_data, train_model, test_model) instead
+# of spawning locally. Missing this package = "Sidecar returned no
+# job_id" on every Start click.
+$bundledJobsRoutes = Join-Path $root "src-tauri\resources\modelhub\jobs\routes.py"
+$bundledJobsRunner = Join-Path $root "src-tauri\resources\modelhub\jobs\runner.py"
+if ((Test-Path $bundledJobsRoutes) -and (Test-Path $bundledJobsRunner)) {
+    Write-Success "Bundled modelhub.jobs package exists (runner.py + routes.py)"
+} else {
+    Write-Failure "Bundled modelhub.jobs package incomplete (need runner.py + routes.py)"
+    $errors += "resources/modelhub/jobs/ missing (Tauri /jobs POSTs will all fail)"
+}
+
 $bundledVersions = Join-Path $root "src-tauri\resources\versions\0.01\1-collect_data.py"
 if (Test-Path $bundledVersions) {
     Write-Success "Bundled collect_data script exists: resources/versions/0.01/1-collect_data.py"
@@ -303,11 +344,92 @@ if ($env:SKIP_INSTALL_DRYRUN -eq "1") {
         #    that as long as we pass it as a single bare token.
         #  - /S enables silent install (no GUI).
         # Start-Process + -Wait gives us a deterministic exit code.
-        $proc = Start-Process -FilePath $installerExe.FullName `
-            -ArgumentList "/S", "/D=$testDir" `
-            -Wait -PassThru -ErrorAction SilentlyContinue
+        #
+        # PHASE 13 hardening: NSIS installers default to
+        # `RequestExecutionLevel admin`, so Windows pops a UAC prompt
+        # for THIS launch even when the target is in user-writable
+        # %TEMP%. If the operator is away from the keyboard the UAC
+        # prompt either auto-cancels or sits forever (depending on
+        # GP); PowerShell raises a TERMINATING InvalidOperationException
+        # ("The operation was canceled by the user.") which
+        # -ErrorAction SilentlyContinue does NOT swallow -- it crashes
+        # the whole verify step and `make artifact` exits non-zero.
+        # We catch it explicitly: the build itself already succeeded;
+        # the dry-run is a confirmation, not a correctness gate. So
+        # we downgrade to a warning + clear remediation so the
+        # operator can either retry interactively, set
+        # SKIP_INSTALL_DRYRUN=1, or just skip and run the .exe by
+        # hand later.
+        #
+        # Heads-up before Start-Process so the operator knows a UAC
+        # prompt is about to appear and isn't surprised. We can't
+        # extend Windows' built-in UAC dialog timeout from here, so
+        # the realistic mitigation is "tell them it's coming" + "if
+        # they miss it, it's a warning not an error".
+        Write-Info ""
+        Write-Info ">>> About to launch the installer to verify a clean install."
+        Write-Info ">>> Windows will show a UAC prompt in ~3s. Click YES to proceed."
+        Write-Info ">>> If you miss the prompt, the dry-run will be skipped with a"
+        Write-Info ">>> warning -- the build itself is already complete."
+        Write-Info ""
+        Start-Sleep -Seconds 3
 
-        if ($null -eq $proc -or $proc.ExitCode -ne 0) {
+        $proc = $null
+        $launchCanceled = $false
+        $launchHardErrored = $false  # set when an unexpected
+                                     # exception was already reported,
+                                     # so the elseif below doesn't
+                                     # double-count it.
+        try {
+            $proc = Start-Process -FilePath $installerExe.FullName `
+                -ArgumentList "/S", "/D=$testDir" `
+                -Wait -PassThru -ErrorAction Stop
+        } catch [System.InvalidOperationException] {
+            # The exception text is localized but the symptom is
+            # always a missed/denied UAC prompt or AV block. Match
+            # both common variants ("canceled" / "cancelled").
+            if ($_.Exception.Message -match "canceled|cancelled") {
+                $launchCanceled = $true
+            } else {
+                Write-Failure "Silent installer launch failed: $($_.Exception.Message)"
+                $errors += "silent install launch failed: $($_.Exception.Message)"
+                $launchHardErrored = $true
+            }
+        } catch {
+            # Any other unexpected exception -- preserve old behavior
+            # so a real bug is still surfaced. Set the hard-error
+            # flag so the launch-state cascade below doesn't add a
+            # second "no-process" entry.
+            Write-Failure "Silent installer launch failed: $($_.Exception.Message)"
+            $errors += "silent install launch failed: $($_.Exception.Message)"
+            $launchHardErrored = $true
+        }
+
+        if ($launchCanceled) {
+            Write-Warn ""
+            Write-Warn "==============================================================="
+            Write-Warn "SILENT INSTALL DRY-RUN: NOT TESTED"
+            Write-Warn ""
+            Write-Warn "Nobody confirmed the UAC prompt within Windows' built-in"
+            Write-Warn "timeout (~2 minutes). The build itself succeeded -- only"
+            Write-Warn "the post-build 'does it install cleanly on a fresh dir?'"
+            Write-Warn "check did not run."
+            Write-Warn ""
+            Write-Warn "Bypass next time (skip the dry-run entirely):"
+            Write-Warn "  PowerShell:    `$env:SKIP_INSTALL_DRYRUN = '1'; make artifact"
+            Write-Warn "  Bash:          SKIP_INSTALL_DRYRUN=1 make artifact"
+            Write-Warn ""
+            Write-Warn "Or actually run the dry-run yourself when you're at the keyboard:"
+            Write-Warn "  $($installerExe.FullName) /S /D=<some-temp-dir>"
+            Write-Warn "==============================================================="
+            Write-Warn ""
+            $warnings += "silent install dry-run not tested (nobody confirmed UAC prompt)"
+        } elseif ($launchHardErrored) {
+            # Catch-all branch already wrote Failure + appended to
+            # $errors; nothing more to do here. We just need to
+            # NOT fall through to the next elseif (which would add
+            # a duplicate "<no-process>" entry).
+        } elseif ($null -eq $proc -or $proc.ExitCode -ne 0) {
             $code = if ($proc) { $proc.ExitCode } else { "<no-process>" }
             Write-Failure "Silent installer exited with code $code"
             $errors += "silent install failed (exit $code)"
@@ -479,9 +601,24 @@ Write-Host " VERIFICATION SUMMARY"
 Write-Host "======================================"
 
 if ($errors.Count -eq 0) {
-    Write-Success "All checks passed! Installer is ready."
+    if ($warnings.Count -eq 0) {
+        Write-Success "All checks passed! Installer is ready."
+    } else {
+        # Phase 13: degraded-success path. The installer is still
+        # ready (build succeeded, all hard checks passed) but one
+        # or more soft checks were skipped because they needed
+        # human interaction (UAC) or an optional asset (vJoy).
+        Write-Success "All required checks passed. Installer is ready (with $($warnings.Count) warning(s) below)."
+    }
     Write-Host ""
     Write-Info "Installer location: $installerDir"
+    if ($warnings.Count -gt 0) {
+        Write-Host ""
+        Write-Warn "Warnings (non-fatal -- build is still good):"
+        foreach ($w in $warnings) {
+            Write-Host "  - $w" -ForegroundColor Yellow
+        }
+    }
     exit 0
 } else {
     Write-Failure "Verification failed with $($errors.Count) error(s):"
@@ -492,6 +629,13 @@ if ($errors.Count -eq 0) {
     # or constant" before the failures could even be printed.
     foreach ($err in $errors) {
         Write-Host "  - $err" -ForegroundColor Yellow
+    }
+    if ($warnings.Count -gt 0) {
+        Write-Host ""
+        Write-Warn "Also reported $($warnings.Count) warning(s):"
+        foreach ($w in $warnings) {
+            Write-Host "  - $w" -ForegroundColor Yellow
+        }
     }
     Write-Host ""
     Write-Info "Please run the build pipeline again: .\scripts\build_pipeline.ps1"

@@ -6,6 +6,22 @@
 // - Adds AI Chat wiring
 // ------------------------------------------------------------
 
+// Phase 23-B: build-time fingerprint. `scripts/stamp_ui_build_tag.py`
+// substitutes `%BUILD_TAG%` with the live `git describe`/version
+// string before `make dev` and `make artifact` bundle this file. At
+// runtime we log it inside DOMContentLoaded so any debug bundle the
+// user pastes shows EXACTLY which UI bundle was loaded -- if it
+// drifts from the Rust shell version (also logged via app_info),
+// we instantly know we have a stale-JS situation and can act on it
+// instead of guessing whether a fix shipped.
+//
+// The `%BUILD_TAG%` literal is a sentinel: if the substitution
+// hasn't happened yet (raw checkout, no make target run), the JS
+// reports "ui-bundle:dev (unstamped)" instead of pretending to be
+// versioned.
+const BUILD_TAG = "%BUILD_TAG%";
+window.__BUILD_TAG__ = BUILD_TAG;
+
 // State & Tauri Globals
 const invoke = window.__TAURI__ ? window.__TAURI__.invoke : null;
 const listen = window.__TAURI__ ? window.__TAURI__.event.listen : null;
@@ -13,6 +29,144 @@ const listen = window.__TAURI__ ? window.__TAURI__.event.listen : null;
 // Global State
 let isRecording = false;
 let isBotRunning = false;
+
+// Phase 4 (gap #5): per-action precondition gate. Calls Rust's
+// preflight_action (cheap, ~50ms typical) before each start_recording /
+// start_training / start_bot. Returns true if the action may proceed,
+// false (with a toast + terminal log) if any precondition is missing.
+//
+// Failure modes covered:
+//   - sidecar /health unresponsive
+//   - non-writable datasets/ or trained_models/
+//   - dataset name empty / contains path separators / collides
+//   - dataset_id missing or unknown for training
+//   - architecture not in the allow-list for training
+//   - another sidecar job already running
+//   - active model missing for inference
+//   - monitor selection invalid
+//
+// Soft fail: if the preflight command itself is missing (old Rust
+// binary on first upgrade) or throws, we let the action through --
+// the user gets the legacy fail-fast behavior, not a hard block.
+// Phase 5: keep the dashboard hero, the header chip, and the
+// install-health banner in sync. Without this, a user with a
+// failed sidecar saw the contradictory triple-message
+//   - "Backend installation is incomplete" (banner, red)
+//   - "🟢 System Ready" (hero, green)
+//   - "Running • Rust Backend Active" (header chip, green)
+// which destroyed trust in the rest of the UI. Now the three
+// surfaces all reflect the same single source of truth: install
+// health verdict.
+function applyDashboardStatus(verdict) {
+  // Dashboard hero (#tab-dashboard .hero-status .hero-text)
+  const heroH2 = document.querySelector('#tab-dashboard .hero-status .hero-text h2');
+  const activePill = document.getElementById('active-game-pill');
+  const headerBadge = document.getElementById('backend-status-badge');
+  const headerStatus = document.getElementById('backend-status');
+  const footerText = document.getElementById('backend-status-text');
+  const dot = document.querySelector('.status-dot');
+
+  if (verdict === 'error') {
+    if (heroH2) {
+      heroH2.style.color = 'var(--accent)'; // red/orange accent
+      heroH2.textContent = '⚠️ System Issue';
+    }
+    if (activePill?.parentElement) {
+      activePill.parentElement.innerHTML =
+        '<span style="opacity:.8;">Backend not running &mdash; see banner above.</span>';
+    }
+    if (headerBadge) headerBadge.textContent = 'Degraded';
+    if (headerStatus) headerStatus.textContent = 'Backend not running';
+    if (footerText) footerText.textContent = 'System Issue';
+    if (dot) dot.style.backgroundColor = 'var(--accent)';
+  } else if (verdict === 'warning') {
+    if (heroH2) {
+      heroH2.style.color = 'var(--warning, #facc15)';
+      heroH2.textContent = '🟡 System Ready (with warnings)';
+    }
+    if (headerBadge) headerBadge.textContent = 'Running';
+    if (headerStatus) headerStatus.textContent = 'Rust Backend Active';
+    if (footerText) footerText.textContent = 'System Online';
+    if (dot) dot.style.backgroundColor = 'var(--warning, #facc15)';
+  } else {
+    // ready
+    if (heroH2) {
+      heroH2.style.color = 'var(--secondary)';
+      heroH2.textContent = '🟢 System Ready';
+    }
+    if (headerBadge) headerBadge.textContent = 'Running';
+    if (headerStatus) headerStatus.textContent = 'Rust Backend Active';
+    if (footerText) footerText.textContent = 'System Online';
+    if (dot) dot.style.backgroundColor = 'var(--success)';
+  }
+}
+
+// Phase 4 (gap #5): visually gate the three action buttons on
+// install_health.verdict. "error" -> disabled with a tooltip;
+// "ready"/"warning" -> normal. Called from checkInstallHealth after
+// it has merged the runtime_doctor checks.
+//
+// We re-enable on every health refresh (Run Diagnosis click, restart
+// sidecar, etc.) so a user who fixes the underlying issue without
+// relaunching the app gets their buttons back without confusion.
+function applyHealthGate(verdict) {
+  const blocked = verdict === "error";
+  const tooltip = blocked
+    ? "Install health is in error state. Run Diagnosis (Settings -> System Tools) and fix the red rows first."
+    : "";
+  for (const id of ["btnRecord", "btnStartTraining", "btnStartBot"]) {
+    const el = document.getElementById(id);
+    if (!el) continue;
+    el.disabled = blocked;
+    el.title = tooltip;
+    // Also surface visually in case the button's CSS doesn't restyle
+    // disabled state. Soft change so we don't fight the tab's design.
+    el.style.opacity = blocked ? "0.55" : "";
+    el.style.cursor = blocked ? "not-allowed" : "";
+  }
+}
+
+// Phase 23-A: returns the full preflight response object so callers
+// can read server-resolved fields like resolved_dataset_name. The
+// presence of `.ok` (boolean) replaces the old "true on pass" bool
+// contract -- callers should check `.ok`. For backward compat with
+// any caller that still does `if (await preflightOrAlert(...))`,
+// the returned object is truthy on success and on transient failure
+// (preflight unavailable). It returns a falsy value (null) ONLY on
+// an explicit blocking rejection.
+async function preflightOrAlert(kind, params) {
+  if (!invoke) return { ok: true, reasons: [] };
+  try {
+    const res = await invoke("preflight_action", { kind, ...params });
+    if (res && res.ok) return res;
+    const reasons = (res && Array.isArray(res.reasons) && res.reasons.length)
+      ? res.reasons
+      : ["Unknown precondition failure."];
+    const summary = reasons.map((r) => "• " + r).join("\n");
+    logToTerminal(`Preflight (${kind}) blocked the action:\n${summary}`, "error");
+    if (window.notifyError) {
+      window.notifyError(
+        `Cannot start ${kind}`,
+        summary,
+        [
+          { label: "Run Diagnosis", onClick: () => {
+            window.openSettings?.(); window.switchSettingsTab?.('system-tools');
+            document.getElementById('btn-run-diagnosis')?.click();
+          }},
+          { label: "Dismiss", onClick: () => {}, primary: false },
+        ]
+      );
+    } else {
+      alert(`Cannot start ${kind}:\n\n${summary}`);
+    }
+    return null;
+  } catch (e) {
+    // preflight_action missing on the Rust side -- old binary, first
+    // upgrade. Don't block; warn quietly so support can spot it.
+    console.warn("preflight_action unavailable:", e);
+    return { ok: true, reasons: [], _missing: true };
+  }
+}
 
 // ModelHub UI State
 const DEFAULT_GAME_ID = "genshin_impact";
@@ -36,7 +190,7 @@ let currentCatalog = {
 window.showTab = function (tabId) {
   const titles = {
     dashboard: "Dashboard",
-    teach: "Teach Mode (Data Collection)",
+    teach: "Teach mode — record gameplay data",
     train: "Neural Network Training",
     run: "Run Bot",
     strategist: "AI Strategist",
@@ -63,6 +217,19 @@ window.showTab = function (tabId) {
   const selectedBtn =
     document.getElementById("btn-" + tabId) || document.querySelector(`button[data-tab="${tabId}"]`);
   if (selectedBtn) selectedBtn.classList.add("active");
+
+  // Phase 22: when the user navigates to the Teach tab, populate the
+  // dataset-name input if empty. Belt-and-suspenders for the Phase 21
+  // fix in toggleRecord -- the user sees the auto-name BEFORE clicking
+  // Start, so there's no possibility of a "Dataset name is empty"
+  // surprise. Defensive: only writes if the field has no user input.
+  if (tabId === "teach") {
+    try {
+      if (typeof updateDatasetName === "function") updateDatasetName();
+    } catch (e) {
+      console.warn("updateDatasetName on tab show failed:", e);
+    }
+  }
 };
 
 // --- LOGGING ---
@@ -102,7 +269,125 @@ window.update_terminal = function (line) {
       if (pctDisplay) pctDisplay.textContent = percent + "%";
     }
   }
+
+  // Sidecar status chip (UI-Phase A). Drives off the [Sidecar]
+  // heartbeat lines emitted by start_sidecar_server / restart_sidecar
+  // so the chip reflects live state without separate IPC.
+  updateSidecarChipFromLogLine(line);
+  maybeRaiseCrashNotification(line);
 };
+
+// Reusable AI bundle copy: builds the full bundle (including in-app
+// log tail) and writes to clipboard. Returns true on success. Used
+// by the Settings -> System Tools button, the crash-reporter
+// notification, and any future UI surface that needs one-click
+// "send to AI assistant".
+// Phase 4: renamed from copyAIBundle -> copyDebugBundle. The bundle
+// now leads with the SidecarLaunchReport (command, env, stdout,
+// stderr, /health), so the framing is "everything needed to debug
+// startup or backend failures", not just "AI fix request". The old
+// copyAIBundle name is kept as an alias below for any external code
+// that still calls it.
+window.copyDebugBundle = async function copyDebugBundle() {
+  if (!window.__TAURI__?.invoke) {
+    window.notifyError?.("Copy Debug Bundle failed", "Tauri unavailable.");
+    return false;
+  }
+  try {
+    let bundle = await window.__TAURI__.invoke("recent_errors_for_ai");
+    const term = document.getElementById("terminal");
+    if (term) {
+      const lines = Array.from(term.querySelectorAll(".log-entry"))
+        .map(el => el.textContent.replace(/\s+/g, " ").trim());
+      if (lines.length) {
+        bundle += "\n## Recent in-app log tail\n\n```\n"
+               +  lines.slice(-200).join("\n")
+               +  "\n```\n";
+      }
+    }
+    await navigator.clipboard.writeText(bundle);
+    window.notifySuccess?.(
+      "Debug bundle copied",
+      "Paste into your AI assistant or a GitHub issue. Includes sidecar launch (command, env, stdout, stderr, /health), likely-cause analysis, install layout, errors, runtime doctor, and recent log."
+    );
+    return true;
+  } catch (e) {
+    window.notifyError?.("Copy debug bundle failed", String(e));
+    return false;
+  }
+};
+// Backward-compatibility alias -- any external/legacy call site
+// (notifications spawned before this script ran, etc.) still works.
+window.copyAIBundle = window.copyDebugBundle;
+
+// Job-failed crash reporter. The log-bridge worker emits
+// "[Sidecar] Job XYZ -> failed (exit_code=N)" when a sidecar-owned
+// child exits non-zero. We surface a persistent notification with
+// one-click "Copy Debug Bundle" so the user grabs context immediately
+// instead of having to navigate to Settings -> System Tools after
+// the failure scrolls off the log.
+function maybeRaiseCrashNotification(line) {
+  const m = line.match(/\[Sidecar\] Job ([a-f0-9]+) -> (failed|cancelled) \(exit_code=([^\)]+)\)/);
+  if (!m) return;
+  const [, jobId, status, exitCode] = m;
+  if (status !== "failed") return;  // cancelled is user-initiated; don't surprise them.
+  // Only surface once per job_id even if the line is duplicated.
+  window.__crashedJobs = window.__crashedJobs || new Set();
+  if (window.__crashedJobs.has(jobId)) return;
+  window.__crashedJobs.add(jobId);
+  window.notifyError?.(
+    `Job ${jobId} failed (exit_code=${exitCode})`,
+    "The sidecar's child process exited with an error. Click below to copy the full debug bundle.",
+    [
+      { label: "Copy debug bundle", onClick: () => window.copyDebugBundle?.() },
+      { label: "Run diagnostics",  onClick: () => document.getElementById("install-health-open-diagnosis")?.click(), primary: false },
+      { label: "Dismiss",          onClick: () => {}, primary: false },
+    ]
+  );
+}
+
+// Sidecar chip state machine. Pure DOM, no async dependencies, so
+// missing elements (chip not present in some test layouts) are no-ops.
+function updateSidecarChipFromLogLine(line) {
+  const chip       = document.getElementById("sidecar-status-chip");
+  const stateEl    = document.getElementById("sidecar-chip-state");
+  const elapsedEl  = document.getElementById("sidecar-chip-elapsed");
+  const actionsEl  = document.getElementById("sidecar-chip-actions");
+  if (!chip || !stateEl) return;
+
+  const setState = (state, label, elapsedText = "", showActions = false) => {
+    chip.dataset.state = state;
+    chip.hidden = false;
+    stateEl.textContent = label;
+    if (elapsedEl) elapsedEl.textContent = elapsedText;
+    if (actionsEl) actionsEl.hidden = !showActions;
+  };
+
+  // Heartbeat: "[Sidecar] still warming up... 12s/60s elapsed (cold-disk import)"
+  const heartbeat = line.match(/\[Sidecar\] still warming up\.\.\. (\d+)s\/(\d+)s/);
+  if (heartbeat) {
+    setState("starting", "Starting...", `${heartbeat[1]}s/${heartbeat[2]}s`);
+    return;
+  }
+  if (line.includes("[System] Sidecar READY")) {
+    setState("ready", "Ready", "");
+    // Auto-fade after 3s -- the chip stays in DOM but hides.
+    setTimeout(() => { if (chip.dataset.state === "ready") chip.hidden = true; }, 3000);
+    return;
+  }
+  if (line.includes("[Fatal] Sidecar failed")) {
+    setState("failed", "Failed", "", true);
+    return;
+  }
+  if (line.includes("[System] Restart sidecar requested")) {
+    setState("starting", "Restarting...", "0s/60s");
+    return;
+  }
+  if (line.includes("[Fatal] Sidecar restart failed")) {
+    setState("failed", "Restart failed", "", true);
+    return;
+  }
+}
 
 // --- BACKEND STATUS ---
 function updateBackendStatus(status, message) {
@@ -810,15 +1095,54 @@ window.toggleRecord = async function (btn) {
       logToTerminal("Requesting recording start...", "info");
       btn.disabled = true;
       const game_id = (getEl("teach-game-id")?.value || selectedGameId || DEFAULT_GAME_ID).trim();
-      const dataset_name = (getEl("teach-dataset-name")?.value || "Untitled").trim();
+
+      // Phase 21+23-A: client-side auto-generate is the FIRST line of
+      // defense. The server-side preflight (Rust) is the AUTHORITY:
+      // even if this JS is stale (WebView2 cached an older bundle),
+      // Rust will synthesize a valid name when sent an empty string
+      // and return it as `resolved_dataset_name`. We use that
+      // resolved name for the actual start_recording call so the
+      // recording lands in the directory the preflight validated.
+      const datasetInputEl = getEl("teach-dataset-name");
+      let dataset_name = (datasetInputEl?.value || "").trim();
+      if (!dataset_name) {
+        dataset_name = generateDatasetName(game_id);
+        if (datasetInputEl) datasetInputEl.value = dataset_name;
+        logToTerminal(`Auto-generated dataset name: ${dataset_name}`, "info");
+      }
+
+      // Phase 4: preflight gate. Phase 23-A: returns the full
+      // response object so we can read resolved_dataset_name.
+      const preflight = await preflightOrAlert("record", { game_id, dataset_name, monitor_id: monitorId });
+      if (!preflight) {
+        isRecording = false;
+        btn.disabled = false;
+        return;
+      }
+      // Phase 23-A: trust the server's resolved name. If JS sent an
+      // empty value (stale bundle), Rust generated one; reflect it
+      // in the input field for visual feedback AND use it for the
+      // spawn so the recording matches the preflight-validated path.
+      if (preflight.resolved_dataset_name && preflight.resolved_dataset_name !== dataset_name) {
+        if (datasetInputEl) datasetInputEl.value = preflight.resolved_dataset_name;
+        logToTerminal(
+          `Server-resolved dataset name: ${preflight.resolved_dataset_name}`,
+          "info"
+        );
+        dataset_name = preflight.resolved_dataset_name;
+      }
 
       const captureMouse = getEl("teach-capture-mouse")?.checked ?? false;
       const res = await invoke("start_recording", { game_id, dataset_name, monitor_id: monitorId, resolution, capture_mouse: captureMouse });
       logToTerminal(res, "success");
-      btn.innerHTML = "<span>■</span> Stop Recording";
-      btn.style.background = "#333";
+      // Phase 21: explicit stop state. Red border + dark fill so the
+      // user immediately recognizes "click here to stop", not "click
+      // to start" -- the previous always-pink button confused both.
+      btn.innerHTML = "<span>■</span> Stop recording";
+      btn.style.background = "#7a1f1f";
+      btn.style.borderColor = "#FF5252";
       if (status) {
-        status.innerText = "🔴 Recording... Switch to game window!";
+        status.innerText = "🔴 Recording — switch to the game window.";
         status.style.color = "#FF5252";
       }
       window.notifyInfo?.("Recording started", `Capturing dataset "${dataset_name}" for ${game_id}.`);
@@ -842,8 +1166,10 @@ window.toggleRecord = async function (btn) {
       btn.disabled = true;
       const res = await invoke("stop_process");
       logToTerminal(res, "success");
-      btn.innerHTML = "<span>●</span> Start Recording";
+      // Phase 21: restore start state -- accent fill + sentence case.
+      btn.innerHTML = "<span>▶</span> Start recording";
       btn.style.background = "var(--accent)";
+      btn.style.borderColor = "var(--accent)";
       if (status) {
         status.innerText = "✓ Recording saved.";
         status.style.color = "var(--success)";
@@ -879,6 +1205,14 @@ window.startTraining = async function () {
     const model_name = (getEl("train-model-name")?.value || "New Model").trim();
     const dataset_id = (getEl("train-dataset-id")?.value || selectedDatasetId || "").trim();
     const arch = (getEl("train-arch")?.value || "custom").trim();
+
+    // Phase 4: preflight gate. Catches missing dataset, unknown arch,
+    // and "another job already running" before the spawn fires.
+    const cleared = await preflightOrAlert("train", { game_id, dataset_id, arch });
+    if (!cleared) {
+      if (btn) btn.disabled = false;
+      return;
+    }
 
     const res = await invoke("start_training", { game_id, model_name, dataset_id, arch });
     logToTerminal(res, "success");
@@ -937,6 +1271,16 @@ window.toggleBot = async function (btn) {
       // and we surface it as a toast instead of opening a doomed
       // subprocess that would die on argparse.
       const game_id = selectedGameId || DEFAULT_GAME_ID;
+
+      // Phase 4: preflight gate. Catches missing active model and
+      // model-dir-deleted-on-disk before the spawn fires.
+      const cleared = await preflightOrAlert("bot", { game_id, monitor_id: monitorId });
+      if (!cleared) {
+        isBotRunning = false;
+        btn.disabled = false;
+        return;
+      }
+
       const res = await invoke("start_bot", { game_id, monitor_id: monitorId, resolution });
       logToTerminal(res, "success");
       btn.innerText = "■ STOP BOT";
@@ -1066,6 +1410,29 @@ async function wireBackendEvents() {
     window.update_terminal(line);
   });
 
+  // Replay any terminal_update lines that Rust emitted DURING setup()
+  // before this listener existed. Tauri 1.x has no event buffering for
+  // late listeners, so the most diagnostic startup lines ([Sidecar
+  // stderr] tracebacks, [Sidecar] still warming up... heartbeats,
+  // [Fatal]/[Hint] blocks) used to vanish without reaching the user.
+  // The Rust side now retains them in a 500-line ring buffer; we
+  // drain it here exactly once so the terminal panel reflects what
+  // really happened during launch.
+  if (invoke) {
+    try {
+      const replay = await invoke("drain_early_log");
+      if (Array.isArray(replay) && replay.length > 0) {
+        for (const line of replay) {
+          window.update_terminal(line);
+        }
+      }
+    } catch (e) {
+      // Old Rust binary without the command -- harmless on first
+      // upgrade. Don't spam the user; just record for support.
+      console.warn("drain_early_log unavailable:", e);
+    }
+  }
+
   await listen("process_finished", (event) => {
     const msg = typeof event.payload === "string" ? event.payload : JSON.stringify(event.payload);
     logToTerminal(`[System] Process finished: ${msg}`, "info");
@@ -1083,11 +1450,37 @@ async function wireBackendEvents() {
 document.addEventListener("DOMContentLoaded", async () => {
   logToTerminal("═══════════════════════════════════════", "info");
   logToTerminal("BOT MMORPG AI (Tauri Edition)", "info");
+  // Phase 23-B: log the UI bundle fingerprint as the FIRST thing
+  // after the banner. Every captured bundle now carries this line,
+  // so a stale-JS situation is visible at a glance.
+  const _bundleTag = (BUILD_TAG === "%BUILD_TAG%") ? "dev (unstamped)" : BUILD_TAG;
+  logToTerminal(`UI bundle: ${_bundleTag}`, "info");
   logToTerminal("Initializing Rust Core...", "info");
+
+  // Show the sidecar chip immediately in "starting" state so the user
+  // sees progress feedback during the cold-disk warm-up window. The
+  // updateSidecarChipFromLogLine handler will flip it to ready/failed
+  // when the corresponding terminal_update line arrives.
+  const _chip = document.getElementById("sidecar-status-chip");
+  const _chipState = document.getElementById("sidecar-chip-state");
+  const _chipElapsed = document.getElementById("sidecar-chip-elapsed");
+  if (_chip && _chipState) {
+    _chip.dataset.state = "starting";
+    _chip.hidden = false;
+    _chipState.textContent = "Starting...";
+    if (_chipElapsed) _chipElapsed.textContent = "0s/60s";
+  }
 
   if (invoke) {
     updateBackendStatus("Running", "Rust Backend Active");
-    logToTerminal("✓ Tauri Backend Connected", "success");
+    // Phase 1.2: this line USED to read "✓ Tauri Backend Connected"
+    // tagged "success", which was misleading -- it only confirms the
+    // Tauri RPC bridge is up, not that the Python sidecar is running.
+    // Users with a failed sidecar saw a green check immediately
+    // followed by "Sidecar startup failed at app launch" and were
+    // left guessing which "backend" was OK. Reword + downgrade tag
+    // so the log reflects what was actually verified.
+    logToTerminal("Tauri RPC bridge ready (Python sidecar status reported separately).", "info");
 
     await wireBackendEvents();
 
@@ -1142,12 +1535,71 @@ document.addEventListener("DOMContentLoaded", async () => {
 async function checkInstallHealth() {
   if (!invoke) return;
   try {
-    const h = await invoke("install_health");
+    // Two probes in parallel:
+    //   install_health -- structural Rust-side check (files exist, sidecar
+    //                     up, logs writable). Fast.
+    //   runtime_doctor -- functional Python-side self-test (torch.testing
+    //                     importable, VC++ present, port bindable). Slower
+    //                     (~3-5s on cold disk because of torch import).
+    // We merge the doctor's checks into the health rows so the existing
+    // verdict-aware banner handles them with no schema changes.
+    const [h, doctorRaw] = await Promise.all([
+      invoke("install_health"),
+      invoke("runtime_doctor").catch(e => {
+        console.warn("runtime_doctor invocation failed:", e);
+        return null;
+      }),
+    ]);
+
+    if (doctorRaw && Array.isArray(doctorRaw.checks)) {
+      // Map doctor's {name, status, detail} -> install_health's
+      // {id, label, severity, status, message} schema. Status/severity
+      // wording is normalized so the banner CSS classes line up.
+      const sevMap = { ok: "ok", warn: "warn", error: "error" };
+      const labelMap = {
+        python_boot:           "Bundled Python boots",
+        vc_redist:             "Visual C++ runtime",
+        torch_intact:          "PyTorch (incl. torch.testing)",
+        torchvision_intact:    "torchvision",
+        numpy_intact:          "NumPy (incl. numpy.testing)",
+        fastapi_intact:        "FastAPI / uvicorn",
+        cv2_intact:            "OpenCV (cv2)",
+        data_dir_writable:     "Local data dir writable",
+        sidecar_port_bindable: "Loopback port available",
+        // Shell-fallback names (synth_doctor_error in main.rs):
+        python_not_found:           "Bundled Python missing",
+        doctor_script_not_found:    "Runtime doctor missing",
+        spawn_failed:               "Doctor spawn failed",
+        doctor_unparseable_output:  "Doctor output corrupt",
+      };
+      for (const c of doctorRaw.checks) {
+        h.checks = h.checks || [];
+        h.checks.push({
+          id: `doctor_${c.name}`,
+          label: labelMap[c.name] || c.name,
+          severity: sevMap[c.status] || "error",
+          status: (c.status === "ok") ? "OK"
+                : (c.status === "warn") ? "Warning"
+                : "Error",
+          message: c.detail || "",
+        });
+      }
+      // Verdict can only get worse from the doctor's verdict, never better.
+      // (install_health says "ready", doctor says "error" -> show "error".)
+      const order = { ready: 0, warning: 1, error: 2 };
+      const merged = order[h.verdict] >= order[doctorRaw.verdict === "ok" ? "ready" : doctorRaw.verdict]
+        ? h.verdict
+        : (doctorRaw.verdict === "ok" ? "ready" : doctorRaw.verdict);
+      h.verdict = merged;
+      // Stash the raw doctor payload for the Settings -> Runtime tab.
+      window.__lastDoctor = doctorRaw;
+    }
 
     // Stash for the Settings -> Runtime tab to read without re-invoking.
     window.__lastHealth = h;
 
     // Sidebar gear gets a red dot when any check is severity=error.
+    // Warnings alone don't show the dot -- avoids alarm fatigue.
     const dot = document.getElementById("settings-health-dot");
     if (dot) {
       const anyErr = Array.isArray(h.checks)
@@ -1156,37 +1608,126 @@ async function checkInstallHealth() {
       dot.hidden = !anyErr;
     }
 
-    const banner   = document.getElementById("install-health-banner");
-    const detailEl = document.getElementById("install-health-detail");
-    if (!banner || !detailEl) return;
+    // Phase 4 (gap #5): hard-block the three action buttons when
+    // install_health verdict is "error". Without this, a user with a
+    // dead sidecar clicks Train and gets the fail-fast string from
+    // wait_for_sidecar -- which is correct but feels like the click
+    // "did something" before failing. With this, the button is
+    // visibly disabled with a tooltip pointing at Diagnosis. We DON'T
+    // disable on "warning" -- driver-missing alone is a per-action
+    // concern (preflight_action handles it).
+    applyHealthGate(h.verdict);
 
-    if (h.healthy) {
+    // Phase 5: keep dashboard hero + header chip in lockstep with
+    // the banner verdict. Without this they contradict each other
+    // ("System Ready" + "Backend installation is incomplete").
+    applyDashboardStatus(h.verdict);
+
+    const banner   = document.getElementById("install-health-banner");
+    const titleEl  = document.getElementById("install-health-title");
+    const detailEl = document.getElementById("install-health-detail");
+    if (!banner || !detailEl || !titleEl) return;
+
+    // Verdict: "ready" / "warning" / "error". Fall back to legacy
+    // healthy boolean for builds that predate the verdict field.
+    const verdict = h.verdict || (h.healthy ? "ready" : "error");
+
+    // Healthy -> hide. Warnings alone don't trigger the banner unless
+    // we want them to (we do, with softer copy -- see below).
+    if (verdict === "ready") {
       banner.hidden = true;
       logToTerminal("Install health: OK", "success");
       return;
     }
 
-    // Build a clean summary list of failing checks. Prefer the rich
-    // `checks` array (severity=error) over the legacy `issues` strings.
     const errs = Array.isArray(h.checks)
       ? h.checks.filter(c => c.severity === "error")
       : (h.issues || []).map(s => ({ label: s, message: "" }));
+    const warns = Array.isArray(h.checks)
+      ? h.checks.filter(c => c.severity === "warn")
+      : [];
 
-    const lines = errs.map(c => {
-      const label = (c.label || c.id || "").toString();
-      const msg   = (c.message || "").toString();
-      const safe  = (s) => s.replace(/[<>&]/g, ch => ({'<':'&lt;','>':'&gt;','&':'&amp;'})[ch]);
-      return `<li><strong>${safe(label)}</strong>${msg ? ` — <span style="opacity:.85">${safe(msg)}</span>` : ""}</li>`;
-    }).join("");
+    // Pick title + remediation by verdict, with extra branching for
+    // permissions-only error sets (the user CAN fix that without a
+    // reinstall -- "run as admin or relocate" is the actionable copy).
+    let title;
+    let remediation;
+    let cardClass;
+    let logSeverity;
+    let itemsToShow;
+
+    const isPermissionsOnly =
+      errs.length > 0 &&
+      errs.every(c =>
+        c.id === "logs_writable" ||
+        /writable|permission|access\s*denied/i.test(c.message || "")
+      );
+
+    if (verdict === "error") {
+      cardClass = "notification-card error";
+      logSeverity = "error";
+      itemsToShow = errs;
+      if (isPermissionsOnly) {
+        // User-fixable without a reinstall. Steam-grade: tell them
+        // exactly what to do and why.
+        title = "Permission issue — admin required";
+        remediation =
+          "The app can't write to its data directory. Two safe fixes:" +
+          "<ul style='margin-top:6px;'>" +
+            "<li>Right-click the app shortcut → <b>Run as administrator</b>.</li>" +
+            "<li>Or reinstall to a user-writable location " +
+              "(e.g. <code>%LOCALAPPDATA%\\BOT-MMORPG-AI</code>).</li>" +
+          "</ul>";
+      } else {
+        // Phase 5: framed as a startup failure (which it is), not an
+        // "install corruption" (which it usually isn't -- runtime
+        // doctor is typically green when this fires). Action ladder
+        // is the user-facing first response; advanced fixes live
+        // in the collapsible details below.
+        title = "Backend failed to start";
+        remediation =
+          "The AI backend did not start. This usually happens on first launch " +
+          "or if something blocks Python from running." +
+          "<div style='margin-top:10px;'><b>What to try:</b></div>" +
+          "<ol style='margin:6px 0 0 20px; padding:0;'>" +
+            "<li>Wait up to 60 seconds (first launch can be slow).</li>" +
+            "<li>Click <b>Retry</b>.</li>" +
+            "<li>Restart the app.</li>" +
+            "<li>If it still fails, click <b>Open logs</b> or use Advanced fixes below.</li>" +
+          "</ol>";
+      }
+    } else {
+      // verdict === "warning". Lighter visual + non-blocking copy.
+      cardClass = "notification-card warning";
+      logSeverity = "warning";
+      itemsToShow = warns;
+      title = "Action recommended";
+      remediation =
+        "The app is running, but a non-critical issue was detected. " +
+        "Review the items below — none of them block recording or training.";
+    }
+
+    titleEl.textContent = title;
+    banner.className = cardClass;
+
+    // Phase 5: keep the Detected list short (label only by default).
+    // The long technical messages bloat the landing page; they're
+    // available in full via Settings → System Tools → Run Diagnostics.
+    const lines = itemsToShow
+      .map(c => {
+        const label = (c.label || c.id || "").toString();
+        const safe = s => s.replace(/[<>&]/g, ch => ({"<":"&lt;",">":"&gt;","&":"&amp;"})[ch]);
+        return `<li>${safe(label)}</li>`;
+      })
+      .join("");
 
     detailEl.innerHTML =
-      (h.remediation || "Reinstall the latest installer to restore the missing components.") +
-      (lines ? `<br><br><strong>Detected:</strong><ul>${lines}</ul>` : "");
+      remediation + (lines ? `<div style='margin-top:10px;'><b>Detected:</b><ul style='margin:6px 0 0 20px;'>${lines}</ul></div>` : "");
 
     banner.hidden = false;
     logToTerminal(
-      "Install health: INCOMPLETE -- " + (h.issues || []).join("; "),
-      "error"
+      `Install health: ${verdict.toUpperCase()} -- ` + (h.issues || []).join("; "),
+      logSeverity
     );
     // NOTE: install-health-dismiss / install-health-open-diagnosis click
     // handlers are wired ONCE in the inline DOMContentLoaded block at the
@@ -1198,6 +1739,10 @@ async function checkInstallHealth() {
 
   refreshDriversCard();
 }
+// Phase 5: expose for the Retry button (wired in index.html DOMContentLoaded).
+// Keeping the bare `checkInstallHealth` name unchanged for the existing
+// in-file callers; this just aliases it on window for cross-script use.
+window.checkInstallHealth = checkInstallHealth;
 
 // GitHub-releases update probe. Renders #update-banner when a newer
 // version is published. Silently no-ops on network failure (offline
@@ -1452,6 +1997,22 @@ function wireEvents() {
     });
     // Generate initial dataset name
     updateDatasetName();
+  }
+
+  // Phase 22: also auto-fill the dataset-name input when the user
+  // focuses it (clicks into it / tabs to it), if it's still empty.
+  // Triple-redundant with the showTab hook + the toggleRecord
+  // fallback, but cheap insurance against any timing weirdness
+  // where one of the three fires too early (DOM not ready) or too
+  // late (user clicked Start within ms of opening the tab).
+  const datasetNameInput = getEl("teach-dataset-name");
+  if (datasetNameInput) {
+    datasetNameInput.addEventListener("focus", () => {
+      if (!datasetNameInput.value) {
+        const gid = getEl("teach-game-id")?.value || selectedGameId || DEFAULT_GAME_ID;
+        datasetNameInput.value = generateDatasetName(gid);
+      }
+    });
   }
 
   // Buttons
@@ -1754,10 +2315,20 @@ async function refreshDatasetListTauri() {
 
   try {
     const gameId = getEl("teach-game-id")?.value || selectedGameId || DEFAULT_GAME_ID;
-    const datasets = await invoke("list_datasets", { game_id: gameId });
+    // Phase 22: list_datasets / /modelhub/datasets returns
+    //   { ok: true|false, datasets: [...], game_id, [error, hint] }
+    // not a bare array. Older code treated `resp` AS the array which
+    // silently produced "No datasets found" forever even when datasets
+    // existed. Extract the inner array; tolerate the legacy bare-array
+    // form for forward compat.
+    const resp = await invoke("list_datasets", { game_id: gameId });
+    const datasets = Array.isArray(resp) ? resp : (resp && resp.datasets) || [];
 
     if (!datasets || datasets.length === 0) {
-      listEl.innerHTML = '<div style="color:var(--text-dim); font-size:12px;">No datasets found. Start recording!</div>';
+      const emptyMsg = resp && resp.error
+        ? `No datasets found (${resp.error})`
+        : "No datasets yet — recordings on the Teach tab show up here.";
+      listEl.innerHTML = `<div style="color:var(--text-dim); font-size:12px;">${emptyMsg}</div>`;
       return;
     }
 

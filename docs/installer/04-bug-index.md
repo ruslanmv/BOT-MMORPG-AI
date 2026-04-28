@@ -80,6 +80,90 @@ class as the previous bug.
 
 ## Runtime symptoms (install OK, app launches, but features fail)
 
+### `ModuleNotFoundError: No module named 'torch.testing'` followed by exit `-1073741819`
+
+The build pipeline's site-packages prune rule deleted runtime-required
+submodules. `import torch` succeeds at the package level (the directory
+is intact); a transitive `import torch.testing` then raises, and the
+half-initialized native `torch._C` extensions crash on interpreter
+shutdown with `STATUS_ACCESS_VIOLATION` (0xC0000005, exit code
+`-1073741819`).
+
+- **File:** `scripts/build_pipeline.ps1` (prune rule around line 580).
+- **Affected packages:** `torch/testing`, `numpy/testing`, and any other
+  `*/testing/` directory in mainstream scientific-Python wheels.
+- **Fix:** the prune `Where-Object` filter must match `tests` (plural)
+  only — never `test` or `testing`. Also: a post-prune integrity check
+  must `import` every required submodule under the bundled python.exe
+  so a future regression breaks the build, not the user's machine.
+- **End-user recovery (no rebuild):**
+  ```powershell
+  & "C:\Program Files\BOT-MMORPG-AI\runtime\py\python\python.exe" `
+    -m pip install --upgrade --force-reinstall --no-deps `
+    --index-url https://download.pytorch.org/whl/cpu torch torchvision
+  ```
+- **See:** `05-case-studies.md` Bug #9.
+
+### `torch.testing` / `numpy.testing` missing AT RUNTIME on a clean install (Bug #11, the AV-quarantine variant)
+
+Distinct from Bug #9 above. Bug #9 is the BUILD shipping a corrupted
+zip. Bug #11 is the BUILD shipping a clean zip but Defender (or
+corporate AV) deleting `torch/testing/` and `numpy/testing/` from
+disk after the Tauri shell extracts the zip into `%LOCALAPPDATA%`.
+
+**Distinguishing signal:** open Settings → System Tools → Run
+Diagnosis. The runtime doctor's `torch_intact` row shows:
+
+```
+ModuleNotFoundError: No module named 'torch.testing' |
+torch_root=C:\Users\<u>\AppData\Local\com.bot.mmorpg.ai\runtime\py\python\site-packages\torch |
+torch_testing_dir_exists=False
+```
+
+The boolean is the smoking gun: torch's package dir exists, the
+`testing/` subdirectory does not. AV-quarantine fits this pattern
+exactly — AV products typically delete specific signed binaries
+or directory trees that match a heuristic, not random files.
+
+- **File:** none — this is a runtime state issue, not a code bug.
+- **Recovery (in this exact order, the order matters):**
+  1. Click `[🛡 Add AV Exclusion]` in the install-health banner or
+     Settings → System Tools. UAC prompt → Defender excludes
+     `%LOCALAPPDATA%\com.bot.mmorpg.ai\runtime\py\`.
+  2. Click `[🔧 Repair Runtime]`. Re-extracts python-runtime.zip
+     into the now-excluded directory; AV gives it a pass.
+  3. Click `[↻ Restart Sidecar]` and / or `[▶ Run Diagnosis]`. The
+     doctor verdict should flip to `ok`.
+- **Last-resort recovery if the bundled zip itself is also broken
+  (an installer built before MVP-4 shipped):**
+  - Click `[🩺 Repair PyTorch (pip)]`. Downloads fresh torch +
+    torchvision + numpy from PyPI, force-reinstalling without deps.
+    2-5 minutes; ~250 MB; bypasses both the bundled zip AND any
+    AV interference (pip writes to a temp dir then atomic-renames,
+    which most AV products give a pass).
+- **Code that drives these recoveries:**
+  - `src-tauri/src/main.rs#add_av_exclusion`
+  - `src-tauri/src/main.rs#repair_runtime`
+  - `src-tauri/src/main.rs#repair_pytorch_via_pip`
+  - `src-tauri/src/main.rs#restart_sidecar`
+- **What the next session should fix:** see `09-architecture-end-to-end.md` §7
+  item #2. A pre-emptive AV exclusion at install time (NSIS post-install
+  hook) would close this fully so the user never has to click anything.
+- **See:** `05-case-studies.md` Bug #11.
+
+### "uvicorn entry point not found" / `importlib.metadata.PackageNotFoundError`
+
+The build pipeline stripped `*.dist-info/` directories to save
+installer size. A subset of runtime callers (uvicorn's CLI,
+`importlib.metadata.version()`, anything using entry points) need
+those directories present.
+
+- **File:** `scripts/build_pipeline.ps1` — the strip block around
+  line 569 must NOT match `*.dist-info`.
+- **Fix:** strip only `__pycache__/`, `*.pyc`, `*.pyi` (truly
+  auto-generated). Keep everything else pip installed.
+- **See:** `05-case-studies.md` Bug #10.
+
 ### "Sidecar API not ready after 5 s"
 
 The Python sidecar didn't print `READY url=...` to stdout within 5

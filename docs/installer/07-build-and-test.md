@@ -4,6 +4,12 @@ The actual commands. All `make` targets resolve to either
 `scripts/build_pipeline.ps1`, `scripts/verify_installer.ps1`, or
 `pytest`. None has hidden behavior.
 
+> Post-migration test status (this branch): **487 tests pass**, 3
+> Windows-only tests skip on Linux dev hosts. New `make` targets:
+> `make test-jobs` (sidecar JobRunner + routes) and `make test-doctor`
+> (runtime doctor contract). See [09-architecture-end-to-end.md](./09-architecture-end-to-end.md)
+> §8 for the end-to-end build-verification recipe.
+
 ## Prerequisites
 
 | Tool | Why | Auto-installed? |
