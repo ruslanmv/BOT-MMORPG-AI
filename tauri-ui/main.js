@@ -866,10 +866,10 @@ function updateDashboardStats() {
     statDatasets.textContent = currentCatalog.datasets.length || "0";
   }
   if (statModels) {
-    const totalModels = (currentCatalog.builtin_models.length || 0) +
-                        (currentCatalog.models.length || 0) +
-                        (currentCatalog.local_models.length || 0);
-    statModels.textContent = totalModels || DEFAULT_ARCHITECTURES.length.toString();
+    // Phase 31: count only trained-on-disk artifacts. Built-in
+    // architectures are training templates, not deployable models, so
+    // including them in the dashboard count was a category error.
+    statModels.textContent = String(currentCatalog.local_models?.length || 0);
   }
   if (statActive) {
     if (currentCatalog.active) {
@@ -928,6 +928,10 @@ async function loadCatalog(gameId) {
       d => d.name, d => d.id, "Choose dataset...");
   }
 
+  // Hidden state-shim selects (see index.html ModelHub section). The new
+  // card UI is the source of truth, but main.js still reads
+  // selectedLocalModelPath / selectedBuiltinModelPath off these handlers,
+  // so we keep them populated.
   const builtinSel = getEl("builtin-model-select");
   setSelectOptions(builtinSel, currentCatalog.builtin_models, labelForBuiltin, valueForBuiltin, "Choose architecture...");
 
@@ -951,47 +955,371 @@ async function loadCatalog(gameId) {
       (currentCatalog.active.name || JSON.stringify(currentCatalog.active)) : "None";
   }
 
+  // Render the new card-based ModelHub gallery + active-model section.
+  renderModelHubCards();
+
   updateDashboardStats();
   refreshRunBotGate();
+}
+
+// ----------------------------------------------------------------
+// ModelHub card UI (Phase 30)
+// ----------------------------------------------------------------
+// Replaces the legacy three-dropdown picker with a unified library:
+//   - Active model section at the top (the answer to "what runs?")
+//   - One card per model (built-in + local trained), sorted newest first
+//   - Badges: ACTIVE / LATEST / BUILT-IN
+//   - Per-card actions: Set Active / Validate / Delete (local only)
+// `_lastTrainedPath` is set by the training_finalized listener so the
+// just-finished model gets the "LATEST" badge + glow even before its
+// folder mtime overtakes older ones (e.g. when retraining on top).
+let _lastTrainedPath = "";
+
+function _activePathFromCatalog(active) {
+  if (!active) return "";
+  return String(active.model_dir || active.path || "").trim();
+}
+
+function _normPath(p) {
+  // OS-agnostic compare: lower-case + collapse separators.
+  return String(p || "").replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+}
+
+function _buildUnifiedModelList() {
+  // Phase 31: ModelHub now lists trained artifacts only. Built-in
+  // architectures (EfficientNet, ResNet, MobileNet, ...) are not
+  // deployable models — they're training templates and live in
+  // Train Brain. Showing them here was a category error: a card
+  // labelled "EfficientNet" looks like a runnable model but has no
+  // weights, no dataset, and no `.pth`. Rule: Architecture ≠ Trained
+  // Model. So this list is local-trained-only, sorted newest first.
+  const local = (currentCatalog.local_models || []).map(m => ({
+    kind: "local",
+    id: m.id || m.path || m.name || "",
+    name: m.name || m.id || "Trained Model",
+    path: m.path || m.model_dir || "",
+    arch: m.arch || m.architecture || "",
+    accuracy: m.accuracy != null ? m.accuracy : (m.metrics?.accuracy ?? null),
+    resolution: m.resolution || m.input_resolution || "",
+    frames: m.frames || m.num_frames || m.dataset_size || null,
+    dataset: m.dataset || m.dataset_id || "",
+    mtime_ms: m.mtime_ms || 0,
+    created_at: m.created_at || "",
+    has_artifacts: m.has_artifacts !== false,
+  }));
+  local.sort((a, b) => (b.mtime_ms || 0) - (a.mtime_ms || 0));
+  return local;
+}
+
+function _formatRelTime(ms) {
+  if (!ms) return "";
+  const diff = (Date.now() - ms) / 1000;
+  if (diff < 60) return "Just now";
+  if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
+  if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
+  if (diff < 86400 * 7) return `${Math.floor(diff / 86400)}d ago`;
+  try { return new Date(ms).toLocaleDateString(); } catch (_) { return ""; }
+}
+
+function _escapeHtml(s) {
+  return String(s ?? "").replace(/[&<>"']/g, c => (
+    { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]
+  ));
+}
+
+function renderModelHubCards() {
+  const grid = document.getElementById("mh-models-grid");
+  const empty = document.getElementById("mh-empty-state");
+  const countEl = document.getElementById("mh-models-count");
+  if (!grid) return;
+
+  const items = _buildUnifiedModelList();
+  const activePath = _normPath(_activePathFromCatalog(currentCatalog.active));
+  const lastTrained = _normPath(_lastTrainedPath);
+
+  // Pick LATEST: explicit lastTrained wins; otherwise newest model
+  // with a real artifact on disk.
+  let latestPath = "";
+  if (lastTrained) {
+    latestPath = lastTrained;
+  } else {
+    const firstWithArtifacts = items.find(it => it.has_artifacts);
+    if (firstWithArtifacts) latestPath = _normPath(firstWithArtifacts.path);
+  }
+
+  if (countEl) {
+    countEl.textContent = `${items.length} model${items.length === 1 ? "" : "s"}`;
+  }
+
+  // Clear (but keep the empty-state node in case we need to put it back)
+  grid.innerHTML = "";
+  if (items.length === 0) {
+    if (empty) { grid.appendChild(empty); empty.hidden = false; }
+    _renderActiveModelSection(null, items);
+    return;
+  }
+  if (empty) empty.hidden = true;
+
+  for (const it of items) {
+    const itPath = _normPath(it.path);
+    const isActive = itPath && itPath === activePath;
+    const isLatest = itPath && itPath === latestPath;
+
+    const card = document.createElement("div");
+    card.className = "mh-model";
+    if (isActive) card.classList.add("is-active");
+    if (isLatest) card.classList.add("is-latest");
+    card.dataset.path = it.path;
+    card.dataset.kind = it.kind;
+
+    const badges = [];
+    if (isActive) badges.push(`<span class="mh-badge badge-active">Active</span>`);
+    if (isLatest) badges.push(`<span class="mh-badge badge-latest">Latest</span>`);
+
+    // Phase 31: trained-model card. Each line is one fact about the
+    // artifact on disk (architecture used to train, dataset, accuracy,
+    // when). No more "Built-in" framing — those aren't here anymore.
+    const stats = [];
+    if (it.arch) stats.push(`<span class="mh-model-stat">Arch: <strong>${_escapeHtml(it.arch)}</strong></span>`);
+    if (it.dataset) stats.push(`<span class="mh-model-stat">Dataset: <strong>${_escapeHtml(it.dataset)}</strong></span>`);
+    if (it.resolution) stats.push(`<span class="mh-model-stat">${_escapeHtml(it.resolution)}</span>`);
+    if (it.frames) stats.push(`<span class="mh-model-stat"><strong>${_escapeHtml(it.frames)}</strong> frames</span>`);
+    if (it.accuracy != null) {
+      const acc = (typeof it.accuracy === "number") ? `${(it.accuracy * 100).toFixed(1)}%` : String(it.accuracy);
+      stats.push(`<span class="mh-model-stat">Acc: <strong>${_escapeHtml(acc)}</strong></span>`);
+    }
+    const rel = _formatRelTime(it.mtime_ms);
+    if (rel) stats.push(`<span class="mh-model-stat">${_escapeHtml(rel)}</span>`);
+
+    const setActiveLabel = isActive ? "✓ Active" : "Set Active";
+    const setActiveClass = isActive ? "btn btn-secondary" : "btn";
+
+    card.innerHTML = `
+      <div class="mh-badges">${badges.join("")}</div>
+      <div class="mh-model-name">${_escapeHtml(it.name)}</div>
+      <div class="mh-model-arch">Trained model${it.path ? " · " + _escapeHtml(it.path) : ""}</div>
+      <div class="mh-model-stats">${stats.join("")}</div>
+      <div class="mh-model-actions">
+        <button class="${setActiveClass}" data-mh-action="set-active" type="button" ${isActive ? "disabled" : ""}>${setActiveLabel}</button>
+        <button class="btn btn-secondary" data-mh-action="validate" type="button">Validate</button>
+        <button class="btn btn-danger" data-mh-action="delete" type="button">Delete</button>
+      </div>
+    `;
+
+    card.addEventListener("click", (ev) => {
+      const actionBtn = ev.target.closest("[data-mh-action]");
+      const action = actionBtn?.dataset.mhAction;
+      _selectModelCard(it);
+      if (!action) return;
+      ev.stopPropagation();
+      if (action === "set-active") _mhSetActiveFor(it);
+      else if (action === "validate") _mhValidateFor(it);
+      else if (action === "delete") _mhDeleteFor(it);
+    });
+
+    grid.appendChild(card);
+  }
+
+  // Pre-select the LATEST candidate visually so the user sees the
+  // "fresh from the oven" model first. Active is highlighted separately
+  // by its green border; we only auto-select the LATEST when no card
+  // is already selected.
+  if (latestPath) {
+    const candidate = items.find(it => _normPath(it.path) === latestPath);
+    if (candidate) _selectModelCard(candidate, /*silent*/ true);
+  }
+
+  _renderActiveModelSection(currentCatalog.active, items);
+}
+
+function _selectModelCard(it, silent) {
+  // Mirror the click into the hidden state-shim selects so existing
+  // setActiveModelFromUI / deleteSelectedModel / validateSelectedModel
+  // pick up the same target without a refactor. Phase 31: only local
+  // trained models live in the gallery now (architectures belong in
+  // Train Brain), so the dispatch is single-branch.
+  selectedLocalModelPath = it.path;
+  selectedBuiltinModelPath = "";
+  selectedModelRegistryId = "";
+  const localSel = getEl("local-model-select");
+  if (localSel && Array.from(localSel.options).some(o => o.value === it.path)) {
+    localSel.value = it.path;
+  }
+  // Visually mark the selected card.
+  document.querySelectorAll(".mh-model.is-selected").forEach(n => n.classList.remove("is-selected"));
+  const target = document.querySelector(`.mh-model[data-path="${(it.path || "").replace(/"/g, '\\"')}"]`);
+  if (target) target.classList.add("is-selected");
+  if (!silent) {
+    logToTerminal(`Selected model: ${it.name}`, "info");
+  }
+}
+
+async function _mhSetActiveFor(it) {
+  _selectModelCard(it, /*silent*/ true);
+  await setActiveModelFromUI();
+}
+async function _mhValidateFor(it) {
+  _selectModelCard(it, /*silent*/ true);
+  await validateSelectedModel();
+}
+async function _mhDeleteFor(it) {
+  _selectModelCard(it, /*silent*/ true);
+  await deleteSelectedModel();
+}
+
+function _renderActiveModelSection(active, items) {
+  const card = document.getElementById("mh-active-card");
+  const status = document.getElementById("mh-active-status");
+  const empty = document.getElementById("mh-active-empty");
+  const detail = document.getElementById("mh-active-detail");
+  const nameEl = document.getElementById("mh-active-name");
+  const metaEl = document.getElementById("mh-active-meta");
+  const goRun = document.getElementById("mh-go-run");
+  if (!card) return;
+
+  const path = _activePathFromCatalog(active);
+  if (!active || !path) {
+    card.dataset.state = "empty";
+    if (status) status.textContent = "No active model selected";
+    if (empty) empty.hidden = false;
+    if (detail) detail.hidden = true;
+    if (goRun) goRun.disabled = true;
+    return;
+  }
+  card.dataset.state = "set";
+  if (status) status.textContent = "● Active";
+  if (empty) empty.hidden = true;
+  if (detail) detail.hidden = false;
+
+  // Try to enrich the active card with the matching catalog item's metadata.
+  const match = (items || []).find(x => _normPath(x.path) === _normPath(path));
+  const displayName = match?.name || active.name || active.model_id || path.split(/[\\/]/).pop() || "Active model";
+  const metaParts = [];
+  if (match?.arch || active.arch) metaParts.push(_escapeHtml(match?.arch || active.arch));
+  if (match?.resolution) metaParts.push(_escapeHtml(match.resolution));
+  if (match?.accuracy != null) {
+    const acc = typeof match.accuracy === "number" ? `${(match.accuracy * 100).toFixed(1)}%` : String(match.accuracy);
+    metaParts.push(`Acc: <strong>${_escapeHtml(acc)}</strong>`);
+  }
+  metaParts.push(_escapeHtml(path));
+
+  if (nameEl) nameEl.textContent = displayName;
+  if (metaEl) metaEl.innerHTML = metaParts.join(" · ");
+  if (goRun) {
+    goRun.disabled = false;
+    goRun.onclick = () => {
+      if (typeof window.showTab === "function") window.showTab("run");
+      else document.getElementById("btn-run")?.click();
+    };
+  }
 }
 
 // Mirror the Rust-side gate for start_bot. 3-test_model.py declares
 // --model as required; start_bot in main.rs refuses to spawn without
 // an active model. Reflect that prerequisite in the UI so the user
 // sees the block before the click rather than as a runtime error.
+// Phase 30: Run Bot HUD state machine.
+// The Run Bot screen behaves like a game-launcher control HUD with
+// three discrete states: no-model | ready | running. The CTA label,
+// glow, and secondary CTA all switch off `card.dataset.state`. The
+// "running" state is set/cleared by toggleBot below; this gate
+// decides only between no-model and ready.
 function refreshRunBotGate() {
-  const card  = document.getElementById('run-bot-card');
-  const badge = document.getElementById('run-bot-state-badge');
-  const hint  = document.getElementById('run-bot-hint');
-  const btn   = document.getElementById('btnStartBot');
-  if (!card || !badge || !btn) return;
+  const card        = document.getElementById('run-bot-card');
+  const badge       = document.getElementById('run-bot-state-badge');
+  const btn         = document.getElementById('btnStartBot');
+  const ctaIcon     = document.getElementById('runbot-cta-icon');
+  const ctaLabel    = document.getElementById('runbot-cta-label');
+  const chooseBtn   = document.getElementById('btnRunChooseModel');
+  const activeIcon  = document.getElementById('runbot-active-icon');
+  const activeLabel = document.getElementById('runbot-active-label');
+  const activeSub   = document.getElementById('runbot-active-sub');
+  const statePill   = document.getElementById('bot-state');
+  const stateMeta   = document.getElementById('run-active-model');
+  if (!card || !btn) return;
+
+  // While the bot is actually running, leave that state alone — only
+  // toggleBot transitions in and out of "running".
+  if (card.dataset.state === 'running') return;
 
   const active = currentCatalog?.active;
   const hasActive = !!(active && (active.model_dir || active.path));
 
   if (hasActive) {
+    const name = active.name || active.model_id || active.model_dir || '(unnamed)';
+    const safeName = String(name).replace(/[<>&]/g, '');
     card.dataset.state = 'ready';
-    badge.className = 'diag-verdict ready';
-    badge.textContent = '● Ready';
+    if (badge) {
+      badge.className = 'runbot-hud-badge diag-verdict ready';
+      badge.textContent = '● READY';
+    }
     btn.disabled = false;
+    btn.removeAttribute('aria-disabled');
     btn.style.opacity = '';
     btn.style.cursor = '';
-    if (hint) {
-      const name = active.name || active.model_id || active.model_dir || '(unnamed)';
-      hint.innerHTML = `Active model: <b>${String(name).replace(/[<>&]/g, '')}</b>`;
-    }
+    if (ctaIcon) ctaIcon.textContent = '▶';
+    if (ctaLabel) ctaLabel.textContent = 'START BOT';
+    if (activeIcon) activeIcon.textContent = '🎮';
+    if (activeLabel) activeLabel.textContent = safeName;
+    if (activeSub) activeSub.textContent = '✔ Ready to play';
+    if (statePill) statePill.textContent = 'READY';
+    if (stateMeta) stateMeta.textContent = safeName;
+    if (chooseBtn) chooseBtn.hidden = true;
   } else {
     card.dataset.state = 'no-model';
-    badge.className = 'diag-verdict warning';
-    badge.textContent = '● No active model';
-    btn.disabled = true;
-    btn.style.opacity = '0.55';
-    btn.style.cursor = 'not-allowed';
-    if (hint) {
-      hint.innerHTML =
-        'No active model set. Open <b>ModelHub</b>, pick a trained model, ' +
-        'click <b>Set Active</b>, then come back here to start the bot.';
+    if (badge) {
+      badge.className = 'runbot-hud-badge diag-verdict warning';
+      badge.textContent = '● IDLE';
     }
+    btn.disabled = true;
+    btn.setAttribute('aria-disabled', 'true');
+    btn.title = 'Select a model first';
+    if (ctaIcon) ctaIcon.textContent = '🎯';
+    if (ctaLabel) ctaLabel.textContent = 'Choose Model First';
+    if (activeIcon) activeIcon.textContent = '🎮';
+    if (activeLabel) activeLabel.textContent = 'No active model';
+    if (activeSub) activeSub.textContent = 'Select a trained model to start playing';
+    if (statePill) statePill.textContent = 'IDLE';
+    if (stateMeta) stateMeta.textContent = '—';
+    if (chooseBtn) {
+      chooseBtn.hidden = false;
+      chooseBtn.onclick = () => {
+        if (typeof window.showTab === "function") window.showTab("models");
+        else document.getElementById("btn-models")?.click();
+      };
+    }
+  }
+}
+
+// Set / clear the visual "running" state on the Run Bot HUD. Called
+// from toggleBot so the start/stop CTA, badge, and pill stay in sync
+// with the actual bot lifecycle even when the catalog hasn't reloaded.
+function _setRunBotRunning(isRunning) {
+  const card     = document.getElementById('run-bot-card');
+  const badge    = document.getElementById('run-bot-state-badge');
+  const ctaIcon  = document.getElementById('runbot-cta-icon');
+  const ctaLabel = document.getElementById('runbot-cta-label');
+  const activeSub = document.getElementById('runbot-active-sub');
+  const statePill = document.getElementById('bot-state');
+  const visionLive = document.getElementById('runbot-vision-live');
+  if (!card) return;
+
+  if (isRunning) {
+    card.dataset.state = 'running';
+    if (badge) {
+      badge.className = 'runbot-hud-badge diag-verdict warning';
+      badge.textContent = '● RUNNING';
+    }
+    if (ctaIcon) ctaIcon.textContent = '■';
+    if (ctaLabel) ctaLabel.textContent = 'STOP BOT';
+    if (activeSub) activeSub.textContent = 'Bot active in game — press STOP to regain control';
+    if (statePill) statePill.textContent = 'RUNNING';
+    if (visionLive) visionLive.hidden = false;
+  } else {
+    if (visionLive) visionLive.hidden = true;
+    // Hand control back to the gate, which will set ready/no-model.
+    card.dataset.state = 'checking';
+    refreshRunBotGate();
   }
 }
 
@@ -1000,10 +1328,22 @@ async function setActiveModelFromUI() {
   const gid = selectedGameId || DEFAULT_GAME_ID;
   let model_id = "";
   let path = "";
+  // Phase 31: forward the resolved checkpoint file alongside the
+  // directory. The Python endpoint persists it as `model_file` and
+  // the Rust inference launcher prefers it over walking the dir,
+  // which is what fixes the "Permission denied: '...New Model'"
+  // error when the user activates a trained model whose folder
+  // contains spaces or where the resolution would otherwise depend on
+  // mtime ordering.
+  let model_file = "";
 
   if (selectedLocalModelPath) {
     model_id = "local";
     path = selectedLocalModelPath;
+    const found = (currentCatalog.local_models || []).find(
+      (m) => (m.path || m.model_dir) === selectedLocalModelPath
+    );
+    if (found && found.checkpoint) model_file = found.checkpoint;
   } else if (selectedBuiltinModelPath) {
     model_id = "builtin";
     path = selectedBuiltinModelPath;
@@ -1012,6 +1352,7 @@ async function setActiveModelFromUI() {
     const found = (currentCatalog.models || []).find((m) => valueForModel(m) === selectedModelRegistryId);
     path = found ? (found.path || "") : "";
     if (!path) path = selectedModelRegistryId;
+    if (found && found.checkpoint) model_file = found.checkpoint;
   }
 
   if (!path) {
@@ -1026,8 +1367,16 @@ async function setActiveModelFromUI() {
       model_id,
       modelId: model_id,
       path,
+      model_file,
+      modelFile: model_file,
     });
-    logToTerminal(`Active model set: ${path}`, "success");
+    const resolved = (res && res.model_file) || model_file;
+    logToTerminal(
+      resolved
+        ? `Active model set: ${path}\n  ↳ checkpoint: ${resolved}`
+        : `Active model set: ${path}`,
+      "success"
+    );
     await loadCatalog(gid);
     return res;
   } catch (e) {
@@ -1357,12 +1706,17 @@ window.analyzeLogs = async function () {
 };
 
 // RUN: Toggle Bot
+//
+// Phase 30: HUD-aware. CTA visuals are controlled by the parent
+// .runbot-hud[data-state] state machine, NOT by mutating the button's
+// inline style/text — the new CTA has child spans (icon + label) that
+// would be wiped by a naive `btn.innerText = ...`. We delegate all
+// label/glow updates to _setRunBotRunning + refreshRunBotGate.
 window.toggleBot = async function (btn) {
   if (!invoke) return alert("Tauri backend not found.");
   isBotRunning = !isBotRunning;
   const _rawRunMon = parseInt(getEl("run-monitor-select")?.value, 10);
   const monitorId = Number.isFinite(_rawRunMon) ? _rawRunMon : 0;
-  const botState = getEl("bot-state");
   const resolution = getEl("run-capture-resolution")?.value || "480x270";
 
   if (isBotRunning) {
@@ -1393,10 +1747,7 @@ window.toggleBot = async function (btn) {
         resolution,
       });
       logToTerminal(res, "success");
-      btn.innerText = "■ STOP BOT";
-      btn.style.background = "var(--accent)";
-      btn.style.color = "white";
-      if (botState) botState.innerText = "RUNNING";
+      _setRunBotRunning(true);
       // Only start live preview if user has it enabled (default: disabled)
       maybeStartLivePreviewTauri("run");
     } catch (err) {
@@ -1406,9 +1757,9 @@ window.toggleBot = async function (btn) {
           onClick: () => window.showTab && window.showTab('models') },
       ]);
       isBotRunning = false;
+      _setRunBotRunning(false);
     } finally {
       btn.disabled = false;
-      refreshRunBotGate();
     }
   } else {
     try {
@@ -1416,10 +1767,7 @@ window.toggleBot = async function (btn) {
       btn.disabled = true;
       const res = await invoke("stop_process");
       logToTerminal(res, "success");
-      btn.innerText = "▶ START BOT";
-      btn.style.background = "var(--success)";
-      btn.style.color = "black";
-      if (botState) botState.innerText = "IDLE";
+      _setRunBotRunning(false);
     } catch (err) {
       logToTerminal(`Failed to stop bot: ${err}`, "error");
     } finally {
@@ -1552,6 +1900,10 @@ async function wireBackendEvents() {
     // re-runs the gate so the button settles to ready/blocked based
     // on whether a dataset is still selected.
     _setTrainBadgeIdle();
+    // Phase 30: bot HUD restore — if the bot subprocess dies (clean
+    // exit or crash) the HUD must drop out of "running" so the CTA
+    // becomes a START button again instead of a stuck STOP button.
+    if (typeof _setRunBotRunning === "function") _setRunBotRunning(false);
   });
 
   // Phase 25 + 27: Rust emits this after stop_process -> /session/finalize
@@ -1575,6 +1927,71 @@ async function wireBackendEvents() {
       "Dataset archived",
       `${ds.file_count || "?"} file(s) • selected for training as "${did}".`
     );
+  });
+
+  // Phase 30: training_finalized — Rust emits this from the log-bridge
+  // worker when a `train` job reaches status=completed (see
+  // src-tauri/src/main.rs spawn_log_bridge_worker). Mirrors the
+  // recording_finalized flow but for trained models: refresh the
+  // ModelHub catalog, mark the just-trained model as the LATEST
+  // candidate, switch to the ModelHub tab, and surface the
+  // celebratory banner with a "Set Active & Run" CTA.
+  //
+  // Auto-select = YES, auto-activate = NO. The user must still click
+  // Set Active before the bot is allowed to run with the new model.
+  await listen("training_finalized", async (event) => {
+    const meta = event.payload || {};
+    const modelDir = String(meta.model_dir || "").trim();
+    const modelName = String(meta.model_name || "").trim();
+    const gid = String(meta.game_id || selectedGameId || DEFAULT_GAME_ID).trim();
+    if (!modelDir) return;
+
+    _lastTrainedPath = modelDir;
+    logToTerminal(`Training complete -> ${modelDir}`, "success");
+    window.notifySuccess?.(
+      "Training complete",
+      `${modelName || "New model"} is ready in ModelHub.`
+    );
+
+    // Refresh catalog so the new model appears in the gallery.
+    try {
+      await loadCatalog(gid);
+    } catch (e) {
+      console.warn("training_finalized: loadCatalog failed", e);
+    }
+
+    // Reveal celebration banner with Set Active CTA. The button
+    // pre-selects the freshly trained model card (via _lastTrainedPath
+    // which renderModelHubCards picked up) and calls Set Active for
+    // the user — but they still triggered it explicitly with a click.
+    const banner = document.getElementById("mh-just-trained-banner");
+    const sub = document.getElementById("mh-jt-sub");
+    const setBtn = document.getElementById("mh-jt-set-active");
+    const dismissBtn = document.getElementById("mh-jt-dismiss");
+    if (banner) banner.hidden = false;
+    if (sub) sub.textContent = `${modelName || "New Model"} is ready. Set it active to run the bot.`;
+    if (setBtn) {
+      setBtn.onclick = async () => {
+        // Mirror the latest-card selection into the hidden state shims.
+        selectedLocalModelPath = modelDir;
+        selectedBuiltinModelPath = "";
+        selectedModelRegistryId = "";
+        const localSel = getEl("local-model-select");
+        if (localSel && Array.from(localSel.options).some(o => o.value === modelDir)) {
+          localSel.value = modelDir;
+        }
+        await setActiveModelFromUI();
+        if (banner) banner.hidden = true;
+        if (typeof window.showTab === "function") window.showTab("run");
+      };
+    }
+    if (dismissBtn) {
+      dismissBtn.onclick = () => { if (banner) banner.hidden = true; };
+    }
+
+    // Switch to ModelHub so the user lands on the gallery, sees the
+    // glowing LATEST card, and can confirm activation.
+    if (typeof window.showTab === "function") window.showTab("models");
   });
 }
 
@@ -2277,6 +2694,11 @@ function wireEvents() {
   const btnOfflineEval = getEl("btnOfflineEval");
   if (btnOfflineEval) btnOfflineEval.addEventListener("click", () => runOfflineEvaluation());
 
+  // ModelHub gallery refresh button (re-runs the catalog fetch so the
+  // user can pick up newly trained models without restarting the app).
+  const btnMhRefresh = getEl("mh-refresh");
+  if (btnMhRefresh) btnMhRefresh.addEventListener("click", () => loadCatalog(selectedGameId));
+
   // Screen Preview buttons
   const btnRefreshTeachPreview = getEl("btnRefreshTeachPreview");
   if (btnRefreshTeachPreview) btnRefreshTeachPreview.addEventListener("click", () => refreshTeachPreview());
@@ -2477,6 +2899,11 @@ async function updatePreviewImageTauri(tab, monitorId) {
 
   const imgEl = getEl(tab + "-preview-img");
   const placeholder = getEl(tab + "-preview-placeholder");
+  // Phase 30: the Run viewport uses .runbot-viewport.is-live to swap
+  // between the empty state and the live image (CSS rule). Toggle the
+  // class instead of poking inline display so the AAA-style frame +
+  // gradient stay intact.
+  const container = getEl(tab + "-preview-container");
 
   try {
     const result = await invoke("get_screen_preview", { monitor_id: monitorId });
@@ -2486,6 +2913,7 @@ async function updatePreviewImageTauri(tab, monitorId) {
         imgEl.style.display = "block";
       }
       if (placeholder) placeholder.style.display = "none";
+      if (container) container.classList.add("is-live");
     }
   } catch (e) {
     console.warn("Preview error:", e);
