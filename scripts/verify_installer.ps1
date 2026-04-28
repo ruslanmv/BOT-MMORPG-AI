@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Verifies that the installer was built correctly with all required components.
 
@@ -16,16 +16,22 @@
 
 $ErrorActionPreference = "Stop"
 
-# IMPORTANT: keep this file ASCII-only. The release workflow spawns
+# IMPORTANT: this file MUST start with a UTF-8 BOM (the three bytes
+# EF BB BF immediately before "<#"). The release workflow spawns
 # `powershell -File scripts/verify_installer.ps1` which is Windows
 # PowerShell 5.1, not pwsh. PS 5.1 decodes source files per the system
-# ANSI codepage unless the file has a UTF-8 BOM. UTF-8 symbols like
-# the old check-mark glyph get mis-decoded as CP-1252, the function
-# body's string literal fails to parse, Write-* helpers never
+# ANSI codepage UNLESS the file has a UTF-8 BOM. Without the BOM, any
+# UTF-8 character introduced into this file (a fancy quote, em-dash,
+# check-mark glyph, ...) gets mis-decoded as CP-1252, the surrounding
+# string literal fails to parse, the Write-* helpers below never
 # register, and later calls fail with
-# "The term 'Write-Info' is not recognized as the name of a cmdlet".
-# That is the exact failure we are fixing here. Use [OK] / [FAIL] /
-# [INFO] sentinels instead of Unicode glyphs.
+#   "The term 'Write-Info' is not recognized as the name of a cmdlet"
+# That is the exact failure we are guarding against. The BOM forces
+# UTF-8 decoding regardless of the host's system codepage, so even if
+# a future edit reintroduces non-ASCII characters the file still
+# parses cleanly. Use [OK] / [FAIL] / [INFO] sentinels in
+# user-visible strings to keep the file ASCII-clean as a second line
+# of defense.
 
 function Write-Success($msg) {
     Write-Host "[OK]   $msg" -ForegroundColor Green

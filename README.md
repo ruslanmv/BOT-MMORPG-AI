@@ -115,9 +115,6 @@ Navigate from **Mondstadt** to **Thousand Wind Temple** automatically:
 
 Go to the **[Releases](https://github.com/ruslanmv/BOT-MMORPG-AI/releases)** page and download the latest `.exe` installer. Run it with administrator privileges and follow the wizard. No command line needed!
 
-![](assets/2026-04-28-23-17-49.png)
-
-
 ### Option B: Install from Source
 
 **Prerequisites:** Python 3.10+, Git. For the desktop UI you also need [Rust](https://rustup.rs/) (run `rustup` installer).
@@ -666,6 +663,8 @@ Please read our [Code of Conduct](CODE_OF_CONDUCT.md) before contributing.
 
 ### Join Our Gaming Community!
 
+![Slack Community](./assets/2025-12-26-22-17-39.png)
+
 **Get Help, Share Tips, Show Off Your Bots!**
 
 - 💬 **Slack**: [#bot-mmorpg-ai](https://ruslanmv.slack.com/archives/C0A5N63DKSS) - Live chat with other gamers
@@ -716,8 +715,7 @@ Special thanks to the AI Gaming Community for their continuous support and feedb
 
 ## Citation
 
-If 
-you use this project in your research, please cite:
+If you use this project in your research, please cite:
 
 ```bibtex
 @software{magana2025botmmorpgai,

@@ -2957,20 +2957,19 @@
         </div>
       </details>
 
-      <!-- HIDDEN STATE SHIMS — main.js still treats these <select>/<button>
-           nodes as the source of truth for selectedLocalModelPath /
-           selectedBuiltinModelPath / selectedModelRegistryId. We keep them
-           in the DOM (display:none) so the existing handlers continue to
-           work without a Phase-30-sized refactor. The new card UI writes
-           to these on click. -->
-      <div style="display:none;" aria-hidden="true">
-        <span id="active-model">None</span>
-        <select id="builtin-model-select"></select>
-        <select id="registry-model-select"></select>
-        <select id="local-model-select"></select>
-        <button id="btnSetActiveModel" type="button">Set Active Model</button>
-        <button id="btnDeleteModel" type="button">Delete Local Model</button>
-      </div>
+      <!-- Phase 31: the legacy hidden state-shim div (containing
+           #active-model / #builtin-model-select / #registry-model-select /
+           #local-model-select / #btnSetActiveModel / #btnDeleteModel)
+           was removed. It was only there to keep the pre-card handlers
+           working, but in some WebView2 builds `display:none` got
+           overridden and the shim leaked into the UI as a strip of raw
+           JSON ("{\"game\":...,\"model_dir\":...}") plus duplicate
+           "Choose architecture / Choose local model / Set Active Model /
+           Delete Local Model" controls below the gallery. The card
+           click path now writes to module-level JS variables directly
+           (selectedLocalModelPath etc.), so the DOM shim was deadweight
+           with a real production-leak risk. Removing the nodes is the
+           only way to guarantee the leak can't reappear. -->
     </div>
 
     <!-- QUICK START WIZARD -->

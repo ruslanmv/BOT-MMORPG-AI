@@ -919,7 +919,11 @@ async function loadCatalog(gameId) {
     logToTerminal(`ModelHub offline - using default architectures`, "info");
   }
 
-  // Populate UI dropdowns
+  // Validation panel's dataset picker (the only <select> still in
+  // the DOM after Phase 31 -- the legacy builtin/registry/local
+  // picker triplet was removed because its hidden state-shim was
+  // leaking raw JSON + duplicate controls into the page footer in
+  // some WebView2 builds).
   const dsSel = getEl("dataset-select");
   if (currentCatalog.datasets.length > 0) {
     setSelectOptions(dsSel, currentCatalog.datasets, labelForDataset, valueForDataset, "Choose dataset...");
@@ -928,34 +932,9 @@ async function loadCatalog(gameId) {
       d => d.name, d => d.id, "Choose dataset...");
   }
 
-  // Hidden state-shim selects (see index.html ModelHub section). The new
-  // card UI is the source of truth, but main.js still reads
-  // selectedLocalModelPath / selectedBuiltinModelPath off these handlers,
-  // so we keep them populated.
-  const builtinSel = getEl("builtin-model-select");
-  setSelectOptions(builtinSel, currentCatalog.builtin_models, labelForBuiltin, valueForBuiltin, "Choose architecture...");
-
-  const regSel = getEl("registry-model-select");
-  if (currentCatalog.models.length > 0) {
-    setSelectOptions(regSel, currentCatalog.models, labelForModel, valueForModel, "Choose registry model...");
-  } else {
-    setSelectOptions(regSel, [], labelForModel, valueForModel, "No registry models");
-  }
-
-  const localSel = getEl("local-model-select");
-  if (currentCatalog.local_models.length > 0) {
-    setSelectOptions(localSel, currentCatalog.local_models, labelForLocalModel, valueForLocalModel, "Choose local model...");
-  } else {
-    setSelectOptions(localSel, [], labelForLocalModel, valueForLocalModel, "No trained models yet");
-  }
-
-  const activeBox = getEl("active-model");
-  if (activeBox) {
-    activeBox.textContent = currentCatalog.active ?
-      (currentCatalog.active.name || JSON.stringify(currentCatalog.active)) : "None";
-  }
-
-  // Render the new card-based ModelHub gallery + active-model section.
+  // Render the card-based ModelHub gallery + active-model section.
+  // The cards are the source of truth for selectedLocalModelPath; no
+  // hidden DOM mirror exists or needs to.
   renderModelHubCards();
 
   updateDashboardStats();
@@ -1133,18 +1112,15 @@ function renderModelHubCards() {
 }
 
 function _selectModelCard(it, silent) {
-  // Mirror the click into the hidden state-shim selects so existing
+  // Phase 31: card click is the only source of truth. Writes go to
+  // module-level vars only -- the hidden DOM state-shim was removed
+  // (it was leaking JSON + duplicate controls into the page footer).
   // setActiveModelFromUI / deleteSelectedModel / validateSelectedModel
-  // pick up the same target without a refactor. Phase 31: only local
-  // trained models live in the gallery now (architectures belong in
-  // Train Brain), so the dispatch is single-branch.
+  // all read these vars directly, so the refactor is invisible to
+  // them.
   selectedLocalModelPath = it.path;
   selectedBuiltinModelPath = "";
   selectedModelRegistryId = "";
-  const localSel = getEl("local-model-select");
-  if (localSel && Array.from(localSel.options).some(o => o.value === it.path)) {
-    localSel.value = it.path;
-  }
   // Visually mark the selected card.
   document.querySelectorAll(".mh-model.is-selected").forEach(n => n.classList.remove("is-selected"));
   const target = document.querySelector(`.mh-model[data-path="${(it.path || "").replace(/"/g, '\\"')}"]`);
@@ -1972,14 +1948,12 @@ async function wireBackendEvents() {
     if (sub) sub.textContent = `${modelName || "New Model"} is ready. Set it active to run the bot.`;
     if (setBtn) {
       setBtn.onclick = async () => {
-        // Mirror the latest-card selection into the hidden state shims.
+        // Phase 31: write to the module-level selection vars only;
+        // setActiveModelFromUI reads from these directly. The hidden
+        // state-shim DOM was removed.
         selectedLocalModelPath = modelDir;
         selectedBuiltinModelPath = "";
         selectedModelRegistryId = "";
-        const localSel = getEl("local-model-select");
-        if (localSel && Array.from(localSel.options).some(o => o.value === modelDir)) {
-          localSel.value = modelDir;
-        }
         await setActiveModelFromUI();
         if (banner) banner.hidden = true;
         if (typeof window.showTab === "function") window.showTab("run");
@@ -2649,44 +2623,12 @@ function wireEvents() {
     });
   }
 
-  const builtinSel = getEl("builtin-model-select");
-  if (builtinSel) {
-    builtinSel.addEventListener("change", () => {
-      selectedBuiltinModelPath = builtinSel.value || "";
-      selectedModelRegistryId = "";
-      selectedLocalModelPath = "";
-      getEl("registry-model-select").value = "";
-      getEl("local-model-select").value = "";
-    });
-  }
-
-  const regSel = getEl("registry-model-select");
-  if (regSel) {
-    regSel.addEventListener("change", () => {
-      selectedModelRegistryId = regSel.value || "";
-      selectedBuiltinModelPath = "";
-      selectedLocalModelPath = "";
-      getEl("builtin-model-select").value = "";
-      getEl("local-model-select").value = "";
-    });
-  }
-
-  const localSel = getEl("local-model-select");
-  if (localSel) {
-    localSel.addEventListener("change", () => {
-      selectedLocalModelPath = localSel.value || "";
-      selectedBuiltinModelPath = "";
-      selectedModelRegistryId = "";
-      getEl("builtin-model-select").value = "";
-      getEl("registry-model-select").value = "";
-    });
-  }
-
-  const btnSetActive = getEl("btnSetActiveModel");
-  if (btnSetActive) btnSetActive.addEventListener("click", () => setActiveModelFromUI());
-
-  const btnDelete = getEl("btnDeleteModel");
-  if (btnDelete) btnDelete.addEventListener("click", () => deleteSelectedModel());
+  // Phase 31: the change listeners for #builtin-model-select /
+  // #registry-model-select / #local-model-select and the click
+  // handlers for #btnSetActiveModel / #btnDeleteModel were removed
+  // along with their DOM nodes. The card-based ModelHub gallery
+  // (renderModelHubCards) now drives selection + activation directly
+  // through _selectModelCard / _mhSetActiveFor / _mhDeleteFor.
 
   const btnValidate = getEl("btnValidateModel");
   if (btnValidate) btnValidate.addEventListener("click", () => validateSelectedModel());
