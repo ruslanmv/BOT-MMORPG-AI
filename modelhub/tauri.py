@@ -218,17 +218,58 @@ def _scan_versions_builtin_models(resource_root: Path, gid: str) -> List[Dict[st
 
 
 def _scan_datasets_fs(data_root: Path, gid: str) -> List[Dict[str, Any]]:
+    """Scan ``<data_root>/datasets/<gid>/`` for datasets.
+
+    Each immediate subdirectory is one dataset. As a fallback (issues
+    #57, #60), if the user has loose ``.npy`` files at the root of
+    ``datasets/<gid>/`` -- for example from running ``collect_data.py``
+    directly with ``--out datasets/<gid>`` or from a pre-v0.2.2 build
+    that didn't pin the output path -- expose those files as a synthetic
+    "Unsorted recordings" dataset so they don't disappear silently from
+    the Train tab.
+    """
     datasets_dir = data_root / "datasets" / gid
     if not datasets_dir.exists():
         return []
     out: List[Dict[str, Any]] = []
+    loose_npy_count = 0
+    loose_latest_mtime = 0.0
     for p in sorted(datasets_dir.iterdir()):
         if p.is_dir():
+            try:
+                npy_count = sum(1 for _ in p.rglob("*.npy"))
+            except Exception:
+                npy_count = 0
+            try:
+                png_count = sum(1 for _ in p.rglob("*.png")) + sum(
+                    1 for _ in p.rglob("*.jpg")
+                )
+            except Exception:
+                png_count = 0
             out.append({
                 "id": p.name,
                 "name": p.name,
                 "path": str(p.as_posix()),
+                "file_count": npy_count + png_count,
             })
+        elif p.is_file() and p.suffix.lower() == ".npy":
+            loose_npy_count += 1
+            try:
+                loose_latest_mtime = max(loose_latest_mtime, p.stat().st_mtime)
+            except Exception:
+                pass
+    if loose_npy_count > 0:
+        out.append({
+            "id": "_unsorted",
+            "name": "Unsorted recordings",
+            "path": str(datasets_dir.as_posix()),
+            "file_count": loose_npy_count,
+            "note": (
+                "Loose .npy files at the root of this game's datasets folder. "
+                "Move them into a named subfolder, or re-record so they get "
+                "archived into a proper dataset directory."
+            ),
+        })
     return out
 
 
