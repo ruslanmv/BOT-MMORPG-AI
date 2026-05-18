@@ -3362,11 +3362,26 @@ async fn repair_pytorch_via_pip(
         "[System] This is the deepest recovery option. May take 2-5 minutes on first run.".to_string(),
     );
 
-    // We run two pip invocations:
+    // We run three pip invocations:
     //   1. torch + torchvision from PyTorch's CPU wheel index
     //   2. numpy from default PyPI
-    // Both use --force-reinstall --no-deps so the existing site-packages
-    // tree is preserved and only the targeted packages are rewritten.
+    //   3. fastapi + uvicorn (sidecar HTTP API deps) from default PyPI
+    //
+    // Issue #58 / #26: when the bundled python-runtime.zip is missing
+    // or partially extracted (AV quarantine, antivirus heuristics on
+    // typing_inspection, etc.) the sidecar refuses to start with
+    // `No module named 'uvicorn'`. The original repair_pytorch_via_pip
+    // only touched torch/torchvision/numpy, leaving fastapi+uvicorn
+    // broken even after the user clicked the button -- so the sidecar
+    // stayed red. Reinstalling the backend stack from pip here turns
+    // this into a one-click fix.
+    //
+    // All three runs use --force-reinstall --no-deps so the existing
+    // site-packages tree is preserved and only the targeted packages
+    // are rewritten. We install fastapi/uvicorn WITH their transitive
+    // deps because they pull in a handful of small pure-python pieces
+    // (starlette, pydantic, h11, click, anyio) that the bundled
+    // runtime may also be missing alongside the top-level package.
     let runs: &[(&str, Vec<&str>)] = &[
         (
             "torch+torchvision",
@@ -3383,6 +3398,14 @@ async fn repair_pytorch_via_pip(
                 "-m", "pip", "install",
                 "--upgrade", "--force-reinstall", "--no-deps",
                 "numpy",
+            ],
+        ),
+        (
+            "fastapi+uvicorn",
+            vec![
+                "-m", "pip", "install",
+                "--upgrade", "--force-reinstall",
+                "fastapi", "uvicorn[standard]",
             ],
         ),
     ];
@@ -3678,7 +3701,26 @@ async fn start_recording(
         Value::String(if cap_mouse { "true" } else { "false" }.to_string()),
     );
 
-    let mut cmd = build_python_script_command(&app, "1-collect_data.py", &[], &window)?;
+    // Tell collect_data.py exactly where to write. Without --out it
+    // defaults to "data/raw" (relative to cwd=data_root), which lands
+    // outside the `datasets/<gid>/<name>/` layout that
+    // SessionManager.finalize_recording, _scan_datasets_fs, and the
+    // Train tab's dataset list all look at. End result: recording
+    // "succeeds" but no dataset ever appears in the UI (issues #57,
+    // #60). Pin the output to the same path the preflight already
+    // reserves at src-tauri/src/main.rs:4863 so the recording, the
+    // session bookkeeping, and the dataset listing all agree.
+    let dataset_out = local_data_root(&app)
+        .join("datasets")
+        .join(&gid)
+        .join(&name);
+    let dataset_out_s = dataset_out.display().to_string();
+    let mut cmd = build_python_script_command(
+        &app,
+        "1-collect_data.py",
+        &["--out", &dataset_out_s],
+        &window,
+    )?;
     for (k, v) in extra_env {
         cmd.env.insert(k, v);
     }

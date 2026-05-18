@@ -355,15 +355,45 @@ def _enable_gradient_checkpointing(model: nn.Module) -> bool:
     return enabled
 
 
+def _safe_total_vram_gb() -> Optional[float]:
+    """Return total GPU VRAM in GB, or None if it can't be determined.
+
+    PyTorch's CUDA build for CUDA 13 (>= torch 2.10) renamed the device
+    property `total_mem` -> `total_memory`. Older builds (<= CUDA 12.x)
+    expose `total_mem`. Probe both and fall back to None on systems
+    that lack either (forks, ROCm, CPU-only builds reporting
+    is_available()=True falsely, etc.) so callers can decide a safe
+    default instead of crashing the whole run. See issue #59.
+    """
+    if not PYTORCH_AVAILABLE or not torch.cuda.is_available():
+        return None
+    try:
+        props = torch.cuda.get_device_properties(0)
+    except Exception:
+        return None
+    for attr in ("total_memory", "total_mem"):
+        try:
+            val = getattr(props, attr, None)
+        except Exception:
+            val = None
+        if val is not None:
+            try:
+                return float(val) / 1e9
+            except (TypeError, ValueError):
+                continue
+    return None
+
+
 def _log_gpu_memory(prefix: str = "") -> None:
     """Print current GPU memory usage (no-op on CPU)."""
     if not PYTORCH_AVAILABLE or not torch.cuda.is_available():
         return
     alloc = torch.cuda.memory_allocated() / 1e9
     reserved = torch.cuda.memory_reserved() / 1e9
-    total = torch.cuda.get_device_properties(0).total_mem / 1e9
+    total = _safe_total_vram_gb()
+    total_str = f"{total:.2f}GB" if total is not None else "unknown"
     print(
-        f"  [GPU] {prefix}Allocated: {alloc:.2f}GB | Reserved: {reserved:.2f}GB | Total: {total:.2f}GB"
+        f"  [GPU] {prefix}Allocated: {alloc:.2f}GB | Reserved: {reserved:.2f}GB | Total: {total_str}"
     )
 
 
@@ -586,7 +616,18 @@ def main(argv=None) -> int:
     # Auto-detect safe batch-size for GPU VRAM (fixes #27 — CUDA OOM on 8GB cards)
     batch_size = args.batch_size
     if device.type == "cuda" and not args.cpu:
-        total_mem_gb = torch.cuda.get_device_properties(0).total_mem / 1e9
+        # _safe_total_vram_gb tolerates the CUDA 13 attribute rename
+        # (total_mem -> total_memory). If we can't read the size, fall
+        # back to the safest tier (treat the GPU as 6GB) so the user
+        # gets the auto-AMP+gradient-checkpointing path instead of a
+        # crash. See issue #59.
+        total_mem_gb = _safe_total_vram_gb()
+        if total_mem_gb is None:
+            print(
+                "[Auto] Could not read GPU VRAM size; assuming 6GB and "
+                "enabling conservative batch-size/AMP/gradient-checkpointing."
+            )
+            total_mem_gb = 6.0
         if total_mem_gb <= 6 and batch_size > 4:
             old_bs = batch_size
             batch_size = 4

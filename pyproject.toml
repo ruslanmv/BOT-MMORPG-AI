@@ -97,8 +97,25 @@ ml-legacy = [
   "tflearn>=0.5.0"
 ]
 
+# Full bundle installed by src-tauri/resources/scripts/install_ml_deps.ps1
+# into the embedded python runtime. Must include the sidecar HTTP API
+# deps (fastapi/uvicorn) or the launcher fails at startup with
+# `No module named 'uvicorn'` -- the bug reported in issue #58.
+ml = [
+    "bot-mmorpg-ai[backend]",
+    "torch>=2.0.0,<3.0.0",
+    "torchvision>=0.15.0,<1.0.0",
+    "timm>=0.9.0,<2.0.0",
+    "numpy>=1.19.0,<2.0.0",
+    "opencv-python>=4.5.0,<5.0.0",
+    "pillow>=9.0.0,<11.0.0",
+    "pywin32>=300; platform_system=='Windows'",
+    "pynput>=1.7.0,<2.0.0",
+    "mss>=6.1.0,<10.0.0",
+]
+
 all = [
-    "bot-mmorpg-ai[dev,docs,jupyter,launcher,backend,packaging]",
+    "bot-mmorpg-ai[dev,docs,jupyter,launcher,backend,packaging,ml]",
 ]
 
 [project.urls]
