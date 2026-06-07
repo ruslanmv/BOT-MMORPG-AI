@@ -17,6 +17,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   mouse recording is enabled. `2-train_model.py` now auto-detects the
   output-head size from the dataset's action vector (29 without mouse,
   39 with), and `--num-actions` defaults to `0` (auto) (issue #64).
+- Windows installer build no longer fails with
+  `Cannot open include file: 'Python.h'` / `Failed building wheel for
+  gevent`. The embeddable-Python wheelhouse builders now provision the
+  CPython headers + import library from the host interpreter so
+  dependencies that lack a prebuilt `cp310`/`cp311` wheel can compile.
 
 ## [1.0.0] - 2026-02-09
 

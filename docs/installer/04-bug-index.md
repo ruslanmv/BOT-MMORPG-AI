@@ -41,6 +41,27 @@ that the build pipeline's filter missed.
 - **Guardrail:** `build_pipeline.ps1:1167` already greps for the
   unquoted form. Don't disable that check.
 
+### `fatal error C1083: Cannot open include file: 'Python.h'` / `Failed building wheel for gevent`
+
+A dependency without a prebuilt `cp310`/`cp311` wheel (e.g. `gevent` /
+`greenlet`, pulled in transitively by `eel`) tries to compile from
+source against the **embeddable** Python runtime — which ships only the
+interpreter, no `Include\Python.h` and no `libs\python3XX.lib`. The MSVC
+compile starts and dies immediately on the missing header.
+
+- **File:** `scripts/prepare_python_from_pyproject_embed310_target.ps1`
+  and `..._embed311_target.ps1` (`Ensure-EmbeddedBuildHeaders`)
+- **Fix:** before any `pip wheel` / `pip install --target`, copy
+  `Include\*` and `libs\python3XX.lib` from a full host CPython of the
+  same minor version (the one `actions/setup-python` installs — headers
+  are ABI-stable across `3.X.Y` patch releases) into the embeddable
+  runtime dir. Also pass `--prefer-binary` so pip only compiles when no
+  wheel exists. Best-effort: warns and continues if no host interpreter
+  with headers is found.
+- **Why not just pin/remove the dep:** the header provisioning fixes the
+  whole class of "C-extension dep has no cp3XX wheel" build breaks, not
+  just this one package.
+
 ## Install-time symptoms (the .exe runs but the install is wrong)
 
 ### Folders literally named `{{this}}` or `{{this.[0]}}` appear under `$INSTDIR`
