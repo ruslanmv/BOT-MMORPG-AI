@@ -74,6 +74,86 @@ function Ensure-EmbeddedPython310Downloaded {
 $pyRuntimeDir = Join-Path $root "third_party\python\python-3.10.11-embed-amd64"
 $pyExe = Join-Path $pyRuntimeDir "python.exe"
 
+# -------------------------
+# 1b. C-extension build headers
+# -------------------------
+function Ensure-EmbeddedBuildHeaders {
+    <#
+      The Windows *embeddable* Python ships ONLY the runtime -- it has no
+      Include\Python.h and no libs\python3XX.lib. Any dependency without a
+      prebuilt cp3XX wheel (e.g. greenlet/gevent, pulled in transitively by
+      `eel`) then fails to compile with:
+
+          fatal error C1083: Cannot open include file: 'Python.h'
+          ERROR: Failed building wheel for gevent
+
+      Borrow the headers + import library from a full host CPython of the
+      SAME minor version (the one actions/setup-python installs). Headers
+      and the import lib are ABI-stable across 3.X.Y patch releases, so an
+      exact patch match is not required -- 3.10.anything works for the
+      3.10.11 embeddable runtime.
+
+      Best-effort: if no suitable host interpreter is found we warn and
+      continue. Deps that have binary wheels still install fine; only a
+      source-compile path needs these files, and that path was already
+      doomed without them.
+    #>
+    param([string]$PyDir, [string]$PyExe)
+
+    $incTarget = Join-Path $PyDir "Include"
+    if (Test-Path (Join-Path $incTarget "Python.h")) {
+        Ok "Embedded runtime already has Python.h -- C-extension builds enabled."
+        return
+    }
+
+    $dotVer = (& $PyExe -c "import sys;print(f'{sys.version_info.major}.{sys.version_info.minor}')").Trim()
+    $verTag = $dotVer.Replace(".", "")          # e.g. "3.10" -> "310"
+    $libName = "python$verTag.lib"              # e.g. "python310.lib"
+
+    # Probe for a full host interpreter of the matching minor version.
+    $hostInc = $null; $hostLib = $null
+    $probes = @(
+        @{ Exe = "python";  Args = @() },
+        @{ Exe = "py";      Args = @("-$dotVer") }
+    )
+    foreach ($probe in $probes) {
+        $probeExe = $probe.Exe
+        $cvArgs   = $probe.Args + @("-c", "import sys;print(f'{sys.version_info.major}.{sys.version_info.minor}')")
+        try {
+            $cv = (& $probeExe @cvArgs 2>$null)
+        } catch { continue }
+        if ($LASTEXITCODE -ne 0 -or -not $cv -or "$cv".Trim() -ne $dotVer) { continue }
+        $baseArgs = $probe.Args + @("-c", "import sys;print(sys.base_prefix)")
+        $base = ("$(& $probeExe @baseArgs 2>$null)").Trim()
+        if (-not $base) { continue }
+        $maybeInc = Join-Path $base "include"
+        if (Test-Path (Join-Path $maybeInc "Python.h")) {
+            $hostInc = $maybeInc
+            $maybeLib = Join-Path $base "libs\$libName"
+            if (Test-Path $maybeLib) { $hostLib = $maybeLib }
+            break
+        }
+    }
+
+    if (-not $hostInc) {
+        Warn "No full host Python $dotVer with headers found; C-extension deps lacking a cp$verTag wheel may fail to build."
+        return
+    }
+
+    Info "Provisioning build headers into embedded runtime from: $hostInc"
+    New-Item -ItemType Directory -Force -Path $incTarget | Out-Null
+    Copy-Item -Path (Join-Path $hostInc "*") -Destination $incTarget -Recurse -Force
+
+    if ($hostLib) {
+        $libTarget = Join-Path $PyDir "libs"
+        New-Item -ItemType Directory -Force -Path $libTarget | Out-Null
+        Copy-Item -Path $hostLib -Destination $libTarget -Force
+        Ok "Embedded runtime now has Python.h + $libName -- source builds enabled."
+    } else {
+        Warn "Copied headers but $libName not found on host; linking C extensions may still fail."
+    }
+}
+
 if (-not (Test-Path $pyExe)) {
     $pyRuntimeDir = Ensure-EmbeddedPython310Downloaded -Root $root
     $pyExe = Join-Path $pyRuntimeDir "python.exe"
@@ -143,6 +223,12 @@ Info "Upgrading build tools (including hatchling build backend)..."
 # don't have a current upper-bound conflict.
 & $pyExe -m pip install --upgrade pip "setuptools<82" wheel hatchling --quiet
 
+# Give the headerless embeddable runtime the Python.h + import lib it needs
+# so any dependency without a cp310 wheel (gevent/greenlet via eel) can
+# compile instead of failing the whole build. See bug-index "Failed
+# building wheel for gevent".
+Ensure-EmbeddedBuildHeaders -PyDir $pyRuntimeDir -PyExe $pyExe
+
 # -------------------------
 # 4. Preparing Directories
 # -------------------------
@@ -204,7 +290,10 @@ Info "Populating wheelhouse for $spec (Offline ready)..."
 # 'pip wheel' is smarter: it downloads binaries if they exist, OR builds from source if needed.
 # It ensures we end up with a .whl for EVERY dependency.
 Warn "Resolving and building all dependencies into wheels..."
-& $pyExe -m pip wheel --wheel-dir $wheelDir --find-links $wheelDir $spec
+# --prefer-binary: when a package publishes a compatible wheel, take it
+# instead of compiling from sdist. Cuts needless C builds on the
+# embeddable runtime; the header provisioning above covers the rest.
+& $pyExe -m pip wheel --prefer-binary --wheel-dir $wheelDir --find-links $wheelDir $spec
 if ($LASTEXITCODE -ne 0) {
     Fail "Failed to resolve/build wheels for $spec."
 }
