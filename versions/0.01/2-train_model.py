@@ -202,11 +202,23 @@ class GameplayDataset(BaseDataset):
         self.frames = np.array(all_frames)
         self.actions = np.array(all_actions, dtype=np.float32)
 
+        # Auto-detected width of the action vector. This is the single
+        # source of truth for sizing the model's output head. When mouse
+        # recording is enabled, collect_data appends 10 extra values
+        # (x, y, dx, dy, vx, vy, lmb, rmb, mmb, scroll) so the vector is
+        # 39 wide instead of 29 (keyboard=9 + gamepad=20). The trainer
+        # must size the head to match or BCEWithLogitsLoss raises
+        # "Target size ... must be the same as input size" (issue #64).
+        self.num_actions = (
+            self.actions.shape[1] if self.actions.ndim == 2 else len(self.actions[0])
+        )
+
         dt = time.time() - t0
         LOG.info(f"[Dataset] Loaded {len(self.frames)} sample(s) in {dt:.1f}s")
         LOG.info(f"[Dataset] Skipped files: {skipped_files}, skipped items: {skipped_items}")
         LOG.info(f"[Dataset] Frame shape: {self.frames[0].shape}")
         LOG.info(f"[Dataset] Action shape: {self.actions[0].shape}")
+        LOG.info(f"[Dataset] Auto-detected num_actions: {self.num_actions}")
 
     def __len__(self) -> int:
         return max(0, len(self.frames) - self.seq_len + 1)
@@ -430,7 +442,12 @@ def main(argv=None) -> int:
     )
     parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate")
     parser.add_argument("--seq-len", type=int, default=4, help="Sequence length for temporal models")
-    parser.add_argument("--num-actions", type=int, default=29, help="Number of output actions")
+    parser.add_argument(
+        "--num-actions",
+        type=int,
+        default=0,
+        help="Number of output actions (0 = auto-detect from data; issue #64)",
+    )
     parser.add_argument("--val-split", type=float, default=0.1, help="Validation split ratio")
     parser.add_argument("--no-pretrained", action="store_true", help="Don't use pretrained weights")
     parser.add_argument("--cpu", action="store_true", help="Force CPU training")
@@ -537,11 +554,22 @@ def main(argv=None) -> int:
         if val_size > 0 else None
     )
 
+    # Resolve the output-head size. Prefer the value auto-detected from
+    # the dataset so the model head always matches the recorded action
+    # vector (29 keyboard+gamepad, or 39 when mouse recording is on).
+    # A positive --num-actions overrides it for advanced use. This fixes
+    # the "Target size ... must be the same as input size" crash (#64).
+    num_actions = args.num_actions if args.num_actions > 0 else dataset.num_actions
+    LOG.info(f"Action vector size: {num_actions}")
+    if num_actions > 29:
+        mouse_extra = num_actions - 29
+        LOG.info(f"  (keyboard=9 + gamepad=20 + mouse={mouse_extra})")
+
     # Create model
     LOG.info(f"Creating model: {args.model}")
     model = get_model(
         args.model,
-        num_actions=args.num_actions,
+        num_actions=num_actions,
         temporal_frames=seq_len,
         pretrained=not args.no_pretrained,
     )

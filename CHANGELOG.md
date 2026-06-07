@@ -5,6 +5,19 @@ All notable changes to BOT-MMORPG-AI will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- Recordings no longer disappear from the Train tab: the bundled
+  `versions/0.01/1-collect_data.py` now honors the `--out` argument the
+  Tauri shell passes, so data lands in `datasets/<game>/<name>/` where
+  the dataset scanner looks (issues #57, #60, #63, #65).
+- Training no longer crashes with
+  `Target size (... 39) must be the same as input size (... 29)` when
+  mouse recording is enabled. `2-train_model.py` now auto-detects the
+  output-head size from the dataset's action vector (29 without mouse,
+  39 with), and `--num-actions` defaults to `0` (auto) (issue #64).
+
 ## [1.0.0] - 2026-02-09
 
 ### Added
