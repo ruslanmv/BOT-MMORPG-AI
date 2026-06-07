@@ -208,6 +208,38 @@ The PowerShell driver script computes the wrong driver path under PROD.
   not `$INSTDIR\resources\drivers\`).
 - **See:** `05-case-studies.md` Bug #5 (`9d8a16f`).
 
+### "Recording saved" but no dataset appears in the Train tab
+
+The Rust shell spawns `1-collect_data.py` with
+`--out <data_root>/datasets/<gid>/<name>` so the recording lands where
+`modelhub/tauri.py::_scan_datasets_fs` looks. The **legacy**
+`versions/0.01/1-collect_data.py` had no argument parser, so it ignored
+`--out` entirely and wrote to a bare `datasets/` folder (driven only by
+`BOTMMO_OUTPUT_DIR`). Result: recording "succeeds" but the file lands
+outside `datasets/<gid>/` and never shows up in the UI.
+
+- **File:** `versions/0.01/1-collect_data.py` (`_resolve_output_dir`)
+- **Fix:** parse `--out` (with `parse_known_args` so future flags don't
+  crash the recorder) and use it as the output dir, falling back to
+  `BOTMMO_OUTPUT_DIR` then the default. Keeps the writer, the session
+  bookkeeping, and `_scan_datasets_fs` all pointed at the same path.
+- **Issues:** #57, #60, #63, #65.
+
+### Training crash: `Target size (... 39) must be the same as input size (... 29)`
+
+`BCEWithLogitsLoss` failed in `2-train_model.py` because the dataset's
+action vector was 39 wide (29 keyboard+gamepad **plus** 10 mouse values
+when mouse recording is on) while the model's output head was hard-sized
+to 29 via the `--num-actions` default.
+
+- **File:** `versions/0.01/2-train_model.py` (`GameplayDataset.num_actions`,
+  `main()` head-size resolution)
+- **Fix:** auto-detect the head size from the dataset
+  (`self.actions.shape[1]`) and default `--num-actions` to `0` (auto). A
+  positive `--num-actions` still overrides for advanced use. The model
+  head now always matches the recorded action width (29 or 39).
+- **Issue:** #64.
+
 ## UI-layer symptoms (frontend can't reach the backend)
 
 ### Notification "Dismiss" / "×" / "Later" buttons appear inert

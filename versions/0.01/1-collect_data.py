@@ -2,6 +2,7 @@ import os
 import sys
 import time
 import signal
+import argparse
 from pathlib import Path
 
 import cv2
@@ -188,8 +189,35 @@ def save_chunk(path: Path, data: list) -> None:
     print(f"[SAVED] {path} ({len(data)} samples)")
 
 
-def main():
-    out_path, idx = next_available_file(OUTPUT_DIR, FILE_PREFIX)
+def _resolve_output_dir(argv=None) -> Path:
+    """Decide where to write the .npy chunks.
+
+    Priority (highest first):
+      1. ``--out PATH`` on the command line. The Tauri shell spawns us
+         with ``--out <data_root>/datasets/<gid>/<name>`` so the
+         recording lands exactly where the Train tab's scanner
+         (``modelhub/tauri.py::_scan_datasets_fs``) looks. Before this
+         was honored, the flag was silently ignored and recordings
+         landed in a bare ``datasets/`` folder that never showed up in
+         the UI -- the "dataset not appearing after recording" bug
+         (issues #57, #60, #63, #65).
+      2. ``BOTMMO_OUTPUT_DIR`` environment variable (legacy launcher).
+      3. The default ``datasets/`` relative to the working directory.
+
+    Unknown args are tolerated (parse_known_args) so a future caller can
+    pass extra flags without crashing the recorder mid-launch.
+    """
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("--out", "--output", dest="out", default=None)
+    args, _unknown = parser.parse_known_args(argv)
+    if args.out:
+        return Path(args.out)
+    return OUTPUT_DIR
+
+
+def main(argv=None):
+    output_dir = _resolve_output_dir(argv)
+    out_path, idx = next_available_file(output_dir, FILE_PREFIX)
 
     # Mouse recording support (issues #21, #33, #36)
     mouse_enabled = os.getenv("BOTMMO_CAPTURE_MOUSE", "").lower() == "true"
@@ -202,7 +230,7 @@ def main():
     print(f"[Collector] CaptureRegion: {CAPTURE_REGION}")
     print(f"[Collector] Resolution   : {RESOLUTION}")
     print(f"[Collector] Mouse Record : {'ENABLED' if mouse_enabled else 'DISABLED'}")
-    print(f"[Collector] Output Dir   : {OUTPUT_DIR.resolve()}")
+    print(f"[Collector] Output Dir   : {output_dir.resolve()}")
     print(f"[Collector] Output File  : {out_path.name}")
     print("=================================================")
     if not mouse_enabled:
@@ -346,7 +374,7 @@ def main():
                 save_chunk(out_path, training_data)
                 training_data = []
                 idx += 1
-                out_path = OUTPUT_DIR / f"{FILE_PREFIX}-{idx}.npy"
+                out_path = output_dir / f"{FILE_PREFIX}-{idx}.npy"
 
     finally:
         # Save remainder so stopping from launcher doesn't lose data
