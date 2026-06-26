@@ -471,12 +471,25 @@ def create_app(token: str):
             diag["cuda_available"] = torch.cuda.is_available()
             if torch.cuda.is_available():
                 diag["gpu_name"] = torch.cuda.get_device_name(0)
-                diag["gpu_vram_gb"] = round(
-                    torch.cuda.get_device_properties(0).total_mem / 1e9, 1
-                )
+                # CUDA 13 / torch >= 2.10 renamed the device property
+                # `total_mem` -> `total_memory`. Probe both so this
+                # diagnostics endpoint doesn't raise AttributeError on
+                # newer builds (which the `except ImportError` below would
+                # NOT catch). Mirrors _safe_total_vram_gb in
+                # train_model.py. See issue #59.
+                props = torch.cuda.get_device_properties(0)
+                vram = getattr(props, "total_memory", None)
+                if vram is None:
+                    vram = getattr(props, "total_mem", None)
+                diag["gpu_vram_gb"] = round(vram / 1e9, 1) if vram else None
         except ImportError:
             diag["pytorch_version"] = None
             diag["cuda_available"] = False
+        except Exception as e:
+            # GPU probing must never abort the whole diagnostics payload
+            # (#26/#37 rely on this endpoint to debug broken setups).
+            diag.setdefault("pytorch_version", None)
+            diag["gpu_probe_error"] = str(e)
 
         # List available games
         if mh_list_games:
