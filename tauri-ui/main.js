@@ -713,8 +713,42 @@ const ACTION_SPACES = {
 // GAME PRESET AUTO-CONFIGURATION
 // =============================================================================
 
+// Turn any free-text game name into a filesystem-safe id that matches
+// the folder the backend creates under datasets/<id>/. The backend only
+// .strip()s the value (see modelhub/tauri.py:_normalize_game_id and
+// src-tauri/src/main.rs:normalize_game_id), so the UI is responsible for
+// making the id consistent. Applying the SAME normalization on the record
+// (write) path and every refresh (read) path is what guarantees a custom
+// game's dataset is found again after recording. Idempotent for built-in
+// ids like "genshin_impact" / "world_of_warcraft".
+function normalizeCustomGameId(value) {
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    || DEFAULT_GAME_ID;
+}
+
+// The currently active game id, taken from the visible inputs and
+// normalized. Used by stop/refresh flows so they never fall back to a
+// stale selectedGameId (the root cause of the custom-game bug).
+function getActiveGameIdFromInputs() {
+  return normalizeCustomGameId(
+    getEl("teach-game-id")?.value
+    || getEl("train-game-id")?.value
+    || selectedGameId
+    || DEFAULT_GAME_ID
+  );
+}
+
 function applyGamePreset(gameId) {
+  gameId = normalizeCustomGameId(gameId);
+  const isKnownPreset = Boolean(GAME_PRESETS[gameId]);
+  // Unknown (custom) games borrow the "custom" preset's safe capture/
+  // model defaults but keep their real id + a readable display name.
   const preset = GAME_PRESETS[gameId] || GAME_PRESETS.custom;
+  const displayName = isKnownPreset ? preset.name : gameId.replace(/_/g, " ");
 
   // Update resolution selects
   const teachRes = getEl("teach-capture-resolution");
@@ -725,7 +759,9 @@ function applyGamePreset(gameId) {
   // Update resolution hints
   const teachHint = getEl("teach-resolution-hint");
   const runHint = getEl("run-resolution-hint");
-  const hintText = `Optimized for ${preset.name}`;
+  const hintText = isKnownPreset
+    ? `Optimized for ${preset.name}`
+    : `Using custom game profile: ${displayName}`;
   if (teachHint) teachHint.textContent = hintText;
   if (runHint) runHint.textContent = hintText;
 
@@ -746,7 +782,7 @@ function applyGamePreset(gameId) {
   // Update active game pill
   const activeGamePill = getEl("active-game-pill");
   if (activeGamePill) {
-    activeGamePill.innerHTML = `${preset.icon} ${preset.name}`;
+    activeGamePill.innerHTML = `${preset.icon} ${displayName}`;
     activeGamePill.style.color = preset.color;
   }
 
@@ -757,7 +793,7 @@ function applyGamePreset(gameId) {
       <div style="display:flex; gap:12px; align-items:flex-start;">
         <span style="font-size:32px;">${preset.icon}</span>
         <div>
-          <strong style="color:${preset.color};">${preset.name}</strong>
+          <strong style="color:${preset.color};">${displayName}</strong>
           <p style="font-size:12px; color:var(--text-dim); margin:4px 0 0;">${preset.description}</p>
           <p style="font-size:11px; color:var(--text-dim); margin-top:4px;">
             <strong>Resolution:</strong> ${preset.resolution} |
@@ -773,7 +809,7 @@ function applyGamePreset(gameId) {
   selectedGameId = gameId;
   localStorage.setItem('selected_game_preset', gameId);
 
-  logToTerminal(`Applied preset for ${preset.name}: ${preset.resolution}, ${preset.action_space}, ${preset.architecture}`, "success");
+  logToTerminal(`${isKnownPreset ? "Applied preset" : "Using custom game"} for ${displayName}: ${preset.resolution}, ${preset.action_space}, ${preset.architecture}`, "success");
 
   return preset;
 }
@@ -1470,7 +1506,21 @@ window.toggleRecord = async function (btn) {
     try {
       logToTerminal("Requesting recording start...", "info");
       btn.disabled = true;
-      const game_id = (getEl("teach-game-id")?.value || selectedGameId || DEFAULT_GAME_ID).trim();
+      // Normalize the typed game id to the SAME safe form used by every
+      // refresh path, then put ALL game-id state in lockstep before we
+      // record. This guarantees the folder we record into
+      // (datasets/<game_id>/) is the exact folder the Train tab later
+      // scans -- the mismatch here was why custom-game recordings were
+      // invisible (they landed under a custom id while the Train tab
+      // still looked under a stale built-in like genshin_impact). We sync
+      // the identity fields directly rather than calling applyGamePreset()
+      // so a user's hand-picked capture resolution isn't reset on record.
+      const game_id = getActiveGameIdFromInputs();
+      selectedGameId = game_id;
+      const _teachGameEl = getEl("teach-game-id");
+      const _trainGameEl = getEl("train-game-id");
+      if (_teachGameEl) _teachGameEl.value = game_id;
+      if (_trainGameEl) _trainGameEl.value = game_id;
 
       // Phase 21+23-A: client-side auto-generate is the FIRST line of
       // defense. The server-side preflight (Rust) is the AUTHORITY:
@@ -1561,9 +1611,14 @@ window.toggleRecord = async function (btn) {
         status.style.color = "var(--success)";
       }
       window.notifySuccess?.("Recording saved", "Dataset is ready for training.");
-      // Refresh dataset list after recording
-      await refreshDatasetListTauri();
-      await loadCatalog(selectedGameId);
+      // Refresh dataset list + catalog for the game we ACTUALLY recorded
+      // (read from the live inputs), never a stale selectedGameId. The
+      // authoritative refresh still happens in the recording_finalized
+      // handler below using the backend's reported game_id; this is the
+      // immediate-feedback pass for when that event is slow/absent.
+      const stoppedGameId = getActiveGameIdFromInputs();
+      await refreshDatasetListTauri(undefined, stoppedGameId);
+      await loadCatalog(stoppedGameId);
     } catch (err) {
       logToTerminal(`Error stopping recording: ${err}`, "error");
       window.notifyError?.("Could not stop recording cleanly", String(err));
@@ -1589,7 +1644,12 @@ window.startTraining = async function () {
 
     const dsSel = getEl("train-dataset-id");
     const dsValue = dsSel ? (dsSel.value || "") : "";
-    const game_id = (getEl("train-game-id")?.value || selectedGameId || DEFAULT_GAME_ID).trim();
+    // Normalize so training scans the SAME datasets/<game_id> folder the
+    // recording was written into (train-game-id keeps priority here since
+    // this is the Train tab). Without this, a custom game typed straight
+    // into the Train field would train against datasets/<raw name>/ and
+    // miss the normalized folder the recorder created.
+    const game_id = normalizeCustomGameId(getEl("train-game-id")?.value || selectedGameId || DEFAULT_GAME_ID);
     const model_name = (getEl("train-model-name")?.value || "New Model").trim();
     // Phase 29: priority-ordered resolver instead of trusting one
     // state field. Walks select.value -> data-dataset-id -> label
@@ -1917,9 +1977,22 @@ async function wireBackendEvents() {
   await listen("recording_finalized", (event) => {
     const ds = event.payload || {};
     const did = (ds.id || "").trim();
+    // The backend tells us the EXACT game folder it archived under
+    // (session_manager.finalize_recording -> entry.game_id). Trust it as
+    // the source of truth so we refresh the right folder even if the
+    // selected game drifted while recording. Fall back to the live
+    // inputs only if the payload omitted it.
+    const gid = normalizeCustomGameId(ds.game_id || getActiveGameIdFromInputs());
     if (!did) return;
     selectedDatasetId = did;
-    refreshDatasetListTauri(did).catch(e =>
+    // Re-sync all game-id state to the finalized game so the Teach/Train
+    // tabs and any later manual refresh point at the same folder.
+    selectedGameId = gid;
+    const teachGameId = getEl("teach-game-id");
+    const trainGameId = getEl("train-game-id");
+    if (teachGameId) teachGameId.value = gid;
+    if (trainGameId) trainGameId.value = gid;
+    refreshDatasetListTauri(did, gid).catch(e =>
       console.warn("recording_finalized: failed to refresh dataset list", e)
     );
     logToTerminal(`Dataset ready for training: ${did}`, "success");
@@ -3347,7 +3420,7 @@ function _setTrainBadgeIdle() {
   _refreshTrainGate();
 }
 
-async function refreshDatasetListTauri(preferId) {
+async function refreshDatasetListTauri(preferId, gameIdOverride) {
   const listEl = getEl("teach-dataset-list");
 
   if (listEl) {
@@ -3360,11 +3433,14 @@ async function refreshDatasetListTauri(preferId) {
     return;
   }
 
-  // Phase 27: prefer the Train-tab game id if the user is currently
-  // operating on the Train tab; otherwise stay backwards-compatible
-  // with the Teach-tab driven flow.
-  const gameId = (
-    getEl("train-game-id")?.value
+  // An explicit override (from the stop/finalize flows) wins so an
+  // event-driven refresh can target the game that was actually recorded
+  // and never gets routed to stale state. Otherwise prefer the Train-tab
+  // game id, then Teach, staying backwards-compatible. Normalized so the
+  // scanned folder matches the safe id used at record time.
+  const gameId = normalizeCustomGameId(
+    gameIdOverride
+    || getEl("train-game-id")?.value
     || getEl("teach-game-id")?.value
     || selectedGameId
     || DEFAULT_GAME_ID
@@ -3569,15 +3645,19 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   }
 
-  // Sync teach game-id input changes
+  // Sync teach game-id input changes. Previously this ignored anything
+  // that wasn't a built-in preset, which left selectedGameId/train-game-id
+  // stuck on the prior game for custom titles -- the core of issue #70.
+  // Now ANY game id is normalized + applied so the whole UI (and the
+  // dataset folder it later scans) follows the custom game.
   const teachGameInput = getEl("teach-game-id");
   if (teachGameInput) {
     teachGameInput.addEventListener("change", () => {
-      const gameId = teachGameInput.value?.toLowerCase().replace(/\s+/g, '_');
-      if (GAME_PRESETS[gameId]) {
-        applyGamePreset(gameId);
-        populateGamePresetGrid();
-      }
+      const gameId = normalizeCustomGameId(teachGameInput.value);
+      applyGamePreset(gameId);
+      populateGamePresetGrid();
+      loadCatalog(gameId);
+      refreshDatasetListTauri(undefined, gameId);
     });
   }
 });
