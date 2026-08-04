@@ -37,7 +37,7 @@ Exit codes
 Output schema
 -------------
   {
-    "doctor_version": "1.0.0",
+    "doctor_version": "1.1.0",
     "verdict": "ok" | "warning" | "error",
     "elapsed_ms": int,
     "platform": {os, python_version, executable, prefix},
@@ -74,7 +74,7 @@ import time
 from dataclasses import asdict, dataclass, field
 from typing import Callable, List, Optional
 
-DOCTOR_VERSION = "1.0.0"
+DOCTOR_VERSION = "1.1.0"
 
 
 # --------------------------------------------------------------------------
@@ -178,10 +178,42 @@ def _resolve_pkg_root(pkg: str) -> str:
     return "<not found on sys.path>"
 
 
+def _missing_submodule_context(pkg_root: str, missing: str) -> str:
+    """Describe where a missing submodule *should* live on disk.
+
+    Issue #75: users reported `No module named 'torch._strobelight'`
+    while the doctor's detail talked exclusively about torch/testing/ --
+    one bundle even showed `torch_testing_dir_exists=True` right next to
+    advice to un-quarantine torch/testing. The name of the module that
+    actually failed, and whether ITS directory exists, is the
+    diagnostic; the torch.testing story was a hard-coded leftover from
+    the first bug of this class.
+
+    Returns a "path=... exists=..." fragment, or "" when we can't map it.
+    """
+    if not missing or pkg_root == "<not found on sys.path>":
+        return ""
+    parts = missing.split(".")
+    if len(parts) < 2:
+        return ""
+    # torch._strobelight -> <torch_root>/_strobelight
+    rel = os.path.join(*parts[1:])
+    candidate = os.path.join(pkg_root, rel)
+    exists = os.path.isdir(candidate) or os.path.isfile(candidate + ".py")
+    return f" | missing_module_path={candidate} | missing_module_path_exists={exists}"
+
+
 def _check_torch_intact() -> CheckResult:
     # The whole reason this doctor exists: a previous build prune
     # deleted torch/testing/. Verify the FULL torch surface, not
     # just the top-level package.
+    #
+    # `import torch` alone is NOT sufficient: torch's own __init__ pulls
+    # in a long tail of private subpackages (torch._strobelight among
+    # them, issue #75), so a partial extract that loses one of those
+    # fails at `import torch` with a name the operator has never heard
+    # of. We probe the public surface explicitly and let the exception
+    # carry whichever private module actually went missing.
     import importlib
 
     submodules = ["torch", "torch.testing", "torch.fx", "torch.nn", "torch.utils.data"]
@@ -199,9 +231,9 @@ def _check_torch_intact() -> CheckResult:
         # production failures: missing subpackages after partial extract /
         # AV quarantine, and DLL-load crashes from wheel corruption. The
         # `torch_testing_dir_exists` boolean is the smoking gun for the
-        # AV-quarantine pattern: if Python can't import torch.testing AND
-        # the directory is gone from disk, an external actor (Defender,
-        # corporate AV) deleted it after extraction.
+        # AV-quarantine pattern: if Python can't import torch AND the
+        # testing directory is gone from disk, an external actor
+        # (Defender, corporate AV) deleted it after extraction.
         torch_root = _resolve_pkg_root("torch")
         testing_dir = (
             os.path.join(torch_root, "testing")
@@ -209,16 +241,50 @@ def _check_torch_intact() -> CheckResult:
             else "<unknown>"
         )
         testing_exists = os.path.isdir(testing_dir) if testing_dir != "<unknown>" else False
-        return CheckResult(
-            "torch_intact",
-            "error",
+
+        # Which module actually failed? ModuleNotFoundError carries it on
+        # `.name`; fall back to parsing the message for other importers.
+        missing = getattr(e, "name", "") or ""
+        if not missing:
+            import re as _re
+
+            m = _re.search(r"No module named '([^']+)'", str(e))
+            missing = m.group(1) if m else ""
+
+        detail = (
             f"{type(e).__name__}: {e} | torch_root={torch_root} | "
-            f"torch_testing_dir_exists={testing_exists}. "
-            "Likely partial/corrupted runtime extract or antivirus quarantine. "
-            "Click [Add AV Exclusion] then [Repair Runtime] in the UI -- "
-            "the order matters: AV exclusion first prevents the re-quarantine "
-            "of torch/testing/ during re-extraction.",
+            f"torch_testing_dir_exists={testing_exists}"
         )
+        if missing:
+            detail += f" | missing_module={missing}"
+            detail += _missing_submodule_context(torch_root, missing)
+        detail += ". "
+
+        # Remediation, tailored to the failure that actually happened.
+        # Recommending "AV exclusion then Repair Runtime" for a module
+        # the shipped zip never contained sends users in a circle --
+        # which is exactly what issue #75 reported after following the
+        # old advice.
+        if missing and missing != "torch.testing" and testing_exists:
+            detail += (
+                f"The rest of torch is present, so this is not a broad "
+                f"quarantine -- '{missing}' alone is missing from the "
+                "installed package. Re-extracting the same bundle will not "
+                "add a file it never had: use [Repair PyTorch via pip] "
+                "(Settings -> System Tools), which downloads a fresh torch "
+                "wheel from upstream. Add the AV exclusion first if you run "
+                "third-party antivirus."
+            )
+        else:
+            detail += (
+                "Likely partial/corrupted runtime extract or antivirus "
+                "quarantine. Click [Add AV Exclusion] then [Repair Runtime] "
+                "in the UI -- the order matters: AV exclusion first prevents "
+                "the re-quarantine of torch/testing/ during re-extraction. "
+                "If that does not clear it, use [Repair PyTorch via pip]."
+            )
+
+        return CheckResult("torch_intact", "error", detail)
 
 
 def _check_torchvision_intact() -> CheckResult:

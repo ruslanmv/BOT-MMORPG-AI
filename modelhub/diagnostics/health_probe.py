@@ -37,6 +37,35 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+# Issue #76: every subprocess we read text from must pin an explicit
+# encoding AND an error handler.
+#
+# The sidecar runs under PYTHONUTF8=1 / PYTHONIOENCODING=utf-8 (set by
+# the Tauri shell), so `text=True` decodes child output as UTF-8. Windows
+# console tools do not honour that -- on a Russian install `tasklist`
+# emits cp866, and the first Cyrillic byte blew up inside
+# subprocess's reader THREAD:
+#
+#   Exception in thread Thread-13 (_readerthread):
+#     File "subprocess.py", line 1515, in _readerthread
+#     File "codecs.py", line 322, in decode
+#   UnicodeDecodeError: 'utf-8' codec can't decode byte 0x8a in position 44
+#
+# Because that raises off the main thread, `subprocess.run` returned a
+# CompletedProcess with stdout=None instead of propagating; the AV probe
+# then died on `rc.stdout.lower()` and every debug bundle from a
+# non-English Windows was missing its antivirus section while the
+# training log filled with tracebacks that looked like a training crash.
+#
+# errors="replace" keeps the probe lossy-but-alive: a mojibake process
+# name is still greppable, an exploded reader thread is not.
+_SUBPROCESS_TEXT_KWARGS: Dict[str, Any] = {
+    "capture_output": True,
+    "text": True,
+    "encoding": "utf-8",
+    "errors": "replace",
+}
+
 # How many bytes of each file to hash when computing the integrity prefix.
 # Full-file hash on python-runtime.zip (~220 MB) would block the UI for
 # seconds; first 1 MB is plenty to catch truncation / corruption.
@@ -279,11 +308,10 @@ def _embedded_python_health(install_dir: Path) -> Dict[str, Any]:
     try:
         rc = subprocess.run(
             [str(py), "--version"],
-            capture_output=True,
-            text=True,
             timeout=5,
+            **_SUBPROCESS_TEXT_KWARGS,
         )
-        out["version"] = (rc.stdout + rc.stderr).strip()
+        out["version"] = ((rc.stdout or "") + (rc.stderr or "")).strip()
         out["runs"] = rc.returncode == 0
     except Exception as e:  # noqa: BLE001
         out["version_error"] = f"{type(e).__name__}: {e}"
@@ -299,9 +327,8 @@ def _embedded_python_health(install_dir: Path) -> Dict[str, Any]:
         try:
             r = subprocess.run(
                 [str(py), "-c", f"import {pkg}"],
-                capture_output=True,
-                text=True,
                 timeout=10,
+                **_SUBPROCESS_TEXT_KWARGS,
             )
             importable[pkg] = r.returncode == 0
         except Exception:  # noqa: BLE001
@@ -393,13 +420,12 @@ def _antivirus_hint() -> Dict[str, Any]:
         # so we don't have to deal with column-aligned parsing.
         rc = subprocess.run(
             ["tasklist", "/FO", "CSV", "/NH"],
-            capture_output=True,
-            text=True,
             timeout=5,
+            **_SUBPROCESS_TEXT_KWARGS,
         )
         if rc.returncode != 0:
             return {"error": f"tasklist exit={rc.returncode}"}
-        out_lower = rc.stdout.lower()
+        out_lower = (rc.stdout or "").lower()
         for proc in suspects:
             if proc.lower() in out_lower:
                 found.append(proc)
