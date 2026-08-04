@@ -138,19 +138,29 @@ class HardwareDetector:
                     ["sysctl", "-n", "hw.memsize"],
                     capture_output=True,
                     text=True,
+                    encoding="utf-8",
+                    errors="replace",
                     timeout=5,
                 )
                 if result.returncode == 0:
-                    return int(result.stdout.strip()) // (1024 * 1024)
+                    return int((result.stdout or "").strip()) // (1024 * 1024)
             elif system == "Windows":
+                # Issue #76: pin the codec. Under PYTHONUTF8=1 the
+                # default text decode is UTF-8, but wmic emits the OEM
+                # codepage on localized Windows -- the UnicodeDecodeError
+                # is raised inside subprocess's reader thread, so it does
+                # not surface here as an exception, it just prints a
+                # traceback and leaves stdout as None.
                 result = subprocess.run(
                     ["wmic", "OS", "get", "TotalVisibleMemorySize"],
                     capture_output=True,
                     text=True,
+                    encoding="utf-8",
+                    errors="replace",
                     timeout=5,
                 )
                 if result.returncode == 0:
-                    lines = result.stdout.strip().split("\n")
+                    lines = (result.stdout or "").strip().split("\n")
                     if len(lines) > 1:
                         kb = int(lines[1].strip())
                         return kb // 1024

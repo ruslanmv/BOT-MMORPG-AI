@@ -276,6 +276,56 @@ fn normalize_game_id(game_id: Option<String>) -> String {
     }
 }
 
+/// Architecture allow-list. Mirrors MODEL_REGISTRY in
+/// src/bot_mmorpg/scripts/models_pytorch.py (the single source of truth
+/// -- 2-train_model.py forwards to it via get_model()). Adding a new
+/// model class? Add it to the backend registry first, then here.
+///
+/// Also mirrors DEFAULT_ARCHITECTURES in tauri-ui/main.js, which the UI
+/// uses as its fallback catalog. `custom` is a synthetic value the UI
+/// never emits, kept as a no-op for safety.
+///
+/// Phase 25: was out of sync (had `resnet50`, which does not exist in
+/// the registry, and was missing every modern / advanced / legacy arch
+/// the UI offers), so the train preflight rejected valid archs like
+/// `efficientnet_simple` with "Unknown architecture".
+const KNOWN_ARCHS: &[&str] = &[
+    "custom",
+    // Modern (recommended)
+    "efficientnet_lstm",
+    "efficientnet_simple",
+    "mobilenet_v3",
+    // Alias: 14 shipped game profiles spell it this way. The Python
+    // side normalises it via MODEL_ALIASES, so accept it here rather
+    // than blocking the action with "Unknown architecture".
+    "mobilenetv3",
+    "resnet18_lstm",
+    // Advanced (experimental)
+    "efficientnet_transformer",
+    "multihead_action",
+    "game_attention",
+    // Legacy (backward compatibility)
+    "inception_v3",
+    "alexnet",
+    "sentnet",
+    "sentnet_2d",
+];
+
+/// True when `s` is a bare architecture id rather than a model path.
+///
+/// Issue #76: the UI's fallback catalog advertises architectures with
+/// `path == id`, so an activated architecture reaches the bot preflight
+/// as a `model_dir` that is a single token like "efficientnet_lstm".
+/// Anything containing a path separator is a real (if possibly stale)
+/// directory and must NOT be reported as an architecture.
+fn is_architecture_id(s: &str) -> bool {
+    let t = s.trim();
+    if t.is_empty() || t.contains('/') || t.contains('\\') {
+        return false;
+    }
+    KNOWN_ARCHS.contains(&t)
+}
+
 /// Dev repo root helper (src-tauri parent)
 fn dev_repo_root() -> PathBuf {
     std::env::current_dir()
@@ -4966,35 +5016,8 @@ async fn preflight_action(
                     ));
                 }
             }
-            // Architecture allow-list. Mirrors MODEL_REGISTRY in
-            // src/bot_mmorpg/scripts/models_pytorch.py (the single
-            // source of truth -- 2-train_model.py forwards to it via
-            // get_model()).  Adding a new model class? Add it to the
-            // backend registry first, then add the same key here.
-            //
-            // Phase 25: was out of sync (had `resnet50` which doesn't
-            // exist in the registry, and was missing every modern /
-            // advanced / legacy arch the UI offers), so the train
-            // preflight rejected valid archs like `efficientnet_simple`
-            // with "Unknown architecture". Plus `custom` -- a synthetic
-            // value the UI never emits but kept as a no-op for safety.
-            const KNOWN_ARCHS: &[&str] = &[
-                "custom",
-                // Modern (recommended)
-                "efficientnet_lstm",
-                "efficientnet_simple",
-                "mobilenet_v3",
-                "resnet18_lstm",
-                // Advanced (experimental)
-                "efficientnet_transformer",
-                "multihead_action",
-                "game_attention",
-                // Legacy (backward compatibility)
-                "inception_v3",
-                "alexnet",
-                "sentnet",
-                "sentnet_2d",
-            ];
+            // Architecture allow-list lives at module scope (see
+            // KNOWN_ARCHS) so is_architecture_id() shares it.
             let a = arch.unwrap_or_else(|| "custom".to_string());
             if !KNOWN_ARCHS.contains(&a.as_str()) {
                 reasons.push(format!(
@@ -5024,10 +5047,26 @@ async fn preflight_action(
                                 .to_string(),
                         );
                     } else if !Path::new(model_dir).exists() {
-                        reasons.push(format!(
-                            "Active model directory missing on disk: {}. The model was deleted or moved -- pick another in the Models tab.",
-                            model_dir
-                        ));
+                        // Issue #76: distinguish "the folder vanished"
+                        // from "you activated an architecture template".
+                        // The UI's fallback catalog (used whenever the
+                        // sidecar reports no bundled builtins, i.e. every
+                        // Custom Game) lists architectures with
+                        // path == the arch id, so a user who clicked Set
+                        // Active on one stored model_dir="efficientnet_lstm"
+                        // and was then told their model had been "deleted
+                        // or moved" -- naming a folder that never existed.
+                        if is_architecture_id(model_dir) {
+                            reasons.push(format!(
+                                "'{}' is a training architecture, not a trained model. Architectures are templates: record a dataset, train it with '{}' in the Train tab, then activate the resulting model in the Models tab.",
+                                model_dir, model_dir
+                            ));
+                        } else {
+                            reasons.push(format!(
+                                "Active model directory missing on disk: {}. The model was deleted or moved -- pick another in the Models tab.",
+                                model_dir
+                            ));
+                        }
                     }
                 }
                 Err(_) => {
@@ -6700,6 +6739,63 @@ mod tests {
     fn test_normalize_game_id_whitespace_only() {
         let result = normalize_game_id(Some("   ".to_string()));
         assert_eq!(result, DEFAULT_GAME_ID);
+    }
+
+    // --- is_architecture_id (issue #76) ---
+    //
+    // The UI's fallback catalog advertises architectures with
+    // path == id, so an activated architecture reaches the bot
+    // preflight as a bare token. Telling that user their model was
+    // "deleted or moved" was the single most confusing message in
+    // issue #76 -- it named a directory that never existed.
+
+    #[test]
+    fn test_is_architecture_id_recognises_bare_arch() {
+        assert!(is_architecture_id("efficientnet_lstm"));
+        assert!(is_architecture_id("resnet18_lstm"));
+        assert!(is_architecture_id("  mobilenet_v3  "));
+    }
+
+    #[test]
+    fn test_is_architecture_id_rejects_paths() {
+        // A real model dir must never be misreported as a template,
+        // even when its LAST component happens to be an arch name.
+        assert!(!is_architecture_id(
+            "C:\\Users\\x\\AppData\\Local\\com.bot.mmorpg.ai\\trained_models\\custom\\efficientnet_lstm"
+        ));
+        assert!(!is_architecture_id("trained_models/custom/efficientnet_lstm"));
+    }
+
+    #[test]
+    fn test_is_architecture_id_rejects_unknown_and_empty() {
+        assert!(!is_architecture_id(""));
+        assert!(!is_architecture_id("   "));
+        assert!(!is_architecture_id("my_trained_model_v3"));
+    }
+
+    #[test]
+    fn test_known_archs_covers_ui_default_architectures() {
+        // Guards the mobilenet_v3 / mobilenetv3 split that made the
+        // train preflight reject a model the UI itself offered.
+        let ui_defaults = [
+            "efficientnet_lstm",
+            "efficientnet_simple",
+            "mobilenet_v3",
+            "mobilenetv3",
+            "resnet18_lstm",
+            "efficientnet_transformer",
+            "multihead_action",
+            "game_attention",
+            "inception_v3",
+            "alexnet",
+        ];
+        for arch in ui_defaults {
+            assert!(
+                KNOWN_ARCHS.contains(&arch),
+                "UI offers architecture '{}' that the train preflight rejects",
+                arch
+            );
+        }
     }
 
     // --- parse_ready_line ---

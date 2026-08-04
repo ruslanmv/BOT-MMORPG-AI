@@ -1181,6 +1181,35 @@ MODEL_INFO: Dict[str, Dict[str, Any]] = {
 }
 
 
+# Architecture ids that appear in shipped game profiles and older UI
+# builds but are not MODEL_REGISTRY keys.
+#
+# Issue #76: every Custom Game starts from
+# game_profiles/_template/profile.yaml, which specifies `mobilenetv3`
+# (14 shipped profiles do). MODEL_REGISTRY only knows `mobilenet_v3`, so
+# get_model() raised "Unknown model: mobilenetv3" and the training job
+# died before the first epoch -- with the traceback buried in the
+# sidecar log rather than surfaced in the UI.
+#
+# Normalising here (rather than mass-editing the profiles) also covers
+# profiles users wrote themselves against the documented spelling.
+MODEL_ALIASES: Dict[str, str] = {
+    "mobilenetv3": "mobilenet_v3",
+    "mobilenet-v3": "mobilenet_v3",
+    "mobilenet_v3_small": "mobilenet_v3",
+}
+
+
+def resolve_model_name(model_name: str) -> str:
+    """Map a profile/UI-supplied architecture id onto a registry key.
+
+    Unknown names pass through unchanged so the caller still raises a
+    "Unknown model: ..." error naming what the user actually asked for.
+    """
+    key = str(model_name or "").strip().lower()
+    return MODEL_ALIASES.get(key, key)
+
+
 def list_models() -> List[str]:
     """Return list of available model names."""
     return list(MODEL_REGISTRY.keys())
@@ -1188,9 +1217,10 @@ def list_models() -> List[str]:
 
 def get_model_info(model_name: str) -> Dict[str, Any]:
     """Get metadata about a model."""
-    if model_name not in MODEL_INFO:
+    resolved = resolve_model_name(model_name)
+    if resolved not in MODEL_INFO:
         raise ValueError(f"Unknown model: {model_name}. Available: {list_models()}")
-    return MODEL_INFO[model_name]
+    return MODEL_INFO[resolved]
 
 
 def get_model(
@@ -1217,6 +1247,10 @@ def get_model(
         model = get_model('efficientnet_lstm', num_actions=29)
         model = get_model('mobilenet_v3', num_actions=29, pretrained=False)
     """
+    # Issue #76: profiles ship `mobilenetv3`, the registry key is
+    # `mobilenet_v3`. Normalise before every lookup below.
+    model_name = resolve_model_name(model_name)
+
     if model_name not in MODEL_REGISTRY:
         raise ValueError(f"Unknown model: {model_name}. Available: {list_models()}")
 

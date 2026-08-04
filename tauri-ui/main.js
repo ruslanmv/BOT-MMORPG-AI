@@ -23,8 +23,75 @@ const BUILD_TAG = "%BUILD_TAG%";
 window.__BUILD_TAG__ = BUILD_TAG;
 
 // State & Tauri Globals
-const invoke = window.__TAURI__ ? window.__TAURI__.invoke : null;
+const __rawInvoke = window.__TAURI__ ? window.__TAURI__.invoke : null;
 const listen = window.__TAURI__ ? window.__TAURI__.event.listen : null;
+
+// ---------------------------------------------------------------
+// Issues #70 / #76: the argument-name bridge.
+//
+// Tauri derives each command's argument struct with serde's default
+// camelCase renaming, so a Rust handler declared as
+//
+//     async fn list_datasets(game_id: Option<String>)
+//
+// expects the JS payload key `gameId` -- NOT `game_id`. Half of this
+// file was written against the snake_case names, which produced two
+// distinct failure classes depending on the Rust type:
+//
+//   Option<T> args  -> silently deserialize to None. `list_datasets`,
+//                      `mh_get_catalog_data`, `generate_dataset_name`,
+//                      `open_datasets_folder` and `delete_dataset` all
+//                      dropped `game_id` and fell back to
+//                      DEFAULT_GAME_ID ("genshin_impact"). Recording
+//                      wrote to datasets/<custom game>/ (start_recording
+//                      happened to send both key styles) while every
+//                      listing read datasets/genshin_impact/ -- so a
+//                      custom-game recording existed on disk but never
+//                      appeared in the Train tab. That is issue #70
+//                      verbatim, including why "select Genshin Impact"
+//                      was a working workaround.
+//   Required args   -> hard error. `modelhub_validate_model` produced
+//                      "invalid args `modelDir` ... missing required
+//                      key modelDir" (issue #76).
+//
+// Rather than hand-patch every call site (and re-break on the next one
+// added), normalize centrally: every payload key is emitted in BOTH
+// snake_case and camelCase. Serde ignores the unknown twin, so this is
+// safe for handlers using either convention, including any older
+// shipped binary a user upgrades from.
+// ---------------------------------------------------------------
+function __toCamel(key) {
+  return key.replace(/_+([a-z0-9])/g, (_, c) => c.toUpperCase());
+}
+
+function __toSnake(key) {
+  return key.replace(/([a-z0-9])([A-Z])/g, "$1_$2").toLowerCase();
+}
+
+function normalizeInvokeArgs(args) {
+  if (!args || typeof args !== "object" || Array.isArray(args)) return args;
+  const out = { ...args };
+  for (const [k, v] of Object.entries(args)) {
+    const camel = __toCamel(k);
+    const snake = __toSnake(k);
+    // Never overwrite a key the caller set explicitly -- a call site
+    // that already sends both forms stays authoritative.
+    if (camel !== k && !(camel in out)) out[camel] = v;
+    if (snake !== k && !(snake in out)) out[snake] = v;
+  }
+  return out;
+}
+
+const invoke = __rawInvoke
+  ? (cmd, args, options) =>
+      args === undefined || args === null
+        ? __rawInvoke(cmd)
+        : __rawInvoke(cmd, normalizeInvokeArgs(args), options)
+  : null;
+
+// Exposed for the UI regression tests (and for debug bundles, where
+// seeing the exact payload the shell received is worth a lot).
+window.__normalizeInvokeArgs = normalizeInvokeArgs;
 
 // Global State
 let isRecording = false;
@@ -137,17 +204,11 @@ function applyHealthGate(verdict) {
 async function preflightOrAlert(kind, params) {
   if (!invoke) return { ok: true, reasons: [] };
   try {
-    // Bridge hardening: some shipped runtimes bind command args via
-    // camelCase names while our UI state uses snake_case keys. Emit
-    // both forms for preflight payloads so either binding convention
-    // receives the same values.
-    const payload = { kind, ...params };
-    Object.entries(params || {}).forEach(([k, v]) => {
-      if (!k.includes("_")) return;
-      const camel = k.replace(/_([a-z])/g, (_, c) => c.toUpperCase());
-      if (!(camel in payload)) payload[camel] = v;
-    });
-    const res = await invoke("preflight_action", payload);
+    // Bridge hardening now lives in normalizeInvokeArgs() (see the
+    // invoke wrapper at the top of this file), which emits both the
+    // snake_case and camelCase form of every key for EVERY command --
+    // preflight_action was only one of a dozen affected call sites.
+    const res = await invoke("preflight_action", { kind, ...params });
     if (res && res.ok) return res;
     const reasons = (res && Array.isArray(res.reasons) && res.reasons.length)
       ? res.reasons
@@ -683,7 +744,11 @@ const DEFAULT_GAMES = Object.values(GAME_PRESETS).map(g => ({
 const DEFAULT_ARCHITECTURES = [
   { id: "efficientnet_lstm", name: "EfficientNet-LSTM (Recommended)", recommended: true, tier: "modern" },
   { id: "efficientnet_simple", name: "EfficientNet (Balanced)", tier: "modern" },
-  { id: "mobilenetv3", name: "MobileNetV3 (Fast)", tier: "modern" },
+  // Registry key is `mobilenet_v3` (MODEL_REGISTRY in
+  // src/bot_mmorpg/scripts/models_pytorch.py). This list used to say
+  // `mobilenetv3`, which the train preflight rejected as "Unknown
+  // architecture" and which get_model() would have raised on anyway.
+  { id: "mobilenet_v3", name: "MobileNetV3 (Fast)", tier: "modern" },
   { id: "resnet18_lstm", name: "ResNet18-LSTM", tier: "modern" },
   { id: "efficientnet_transformer", name: "EfficientNet-Transformer (Advanced)", tier: "advanced" },
   { id: "multihead_action", name: "Multi-Head Action (Simultaneous)", tier: "advanced" },
@@ -846,6 +911,23 @@ function labelForBuiltin(b) {
 }
 function valueForBuiltin(b) {
   return b.path || b.id || "";
+}
+
+// Issue #76: when the sidecar reports no bundled builtin models (the
+// normal case for a Custom Game), loadCatalog falls back to
+// DEFAULT_ARCHITECTURES and synthesises entries whose `path` is just
+// the architecture id ("efficientnet_lstm"). Those are training
+// TEMPLATES, not model folders -- activating one stored
+// model_dir="efficientnet_lstm" and the bot preflight then rejected the
+// run with "Active model directory missing on disk: efficientnet_lstm",
+// which reads like the user deleted something they never had.
+//
+// A real builtin always carries a filesystem path. So: no separator +
+// a known architecture id == a template, never a deployable model.
+function isArchitectureTemplatePath(p) {
+  const s = String(p || "").trim();
+  if (!s || s.includes("/") || s.includes("\\")) return false;
+  return DEFAULT_ARCHITECTURES.some((a) => a.id === s);
 }
 
 function labelForLocalModel(m) {
@@ -1393,6 +1475,24 @@ async function setActiveModelFromUI() {
 
   if (!path) {
     alert("Select a model (local/builtin/registry) first.");
+    return;
+  }
+
+  // Issue #76: block the "activated an architecture template" trap at
+  // the source instead of letting it fail later inside the bot
+  // preflight with a misleading "model directory missing on disk".
+  if (isArchitectureTemplatePath(path)) {
+    const msg =
+      `"${path}" is a training architecture, not a trained model.\n\n` +
+      "Architectures are templates you pick in the Train tab. Record a " +
+      "dataset, train it with this architecture, then activate the " +
+      "resulting model from the Trained Models section.";
+    logToTerminal(`Set Active rejected: ${path} is an architecture template, not a trained model.`, "warning");
+    if (window.notifyError) {
+      window.notifyError("Not a trained model", msg);
+    } else {
+      alert(msg);
+    }
     return;
   }
 
