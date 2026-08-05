@@ -37,7 +37,7 @@ Exit codes
 Output schema
 -------------
   {
-    "doctor_version": "1.1.0",
+    "doctor_version": "1.2.0",
     "verdict": "ok" | "warning" | "error",
     "elapsed_ms": int,
     "platform": {os, python_version, executable, prefix},
@@ -74,7 +74,7 @@ import time
 from dataclasses import asdict, dataclass, field
 from typing import Callable, List, Optional
 
-DOCTOR_VERSION = "1.1.0"
+DOCTOR_VERSION = "1.2.0"
 
 
 # --------------------------------------------------------------------------
@@ -203,6 +203,172 @@ def _missing_submodule_context(pkg_root: str, missing: str) -> str:
     return f" | missing_module_path={candidate} | missing_module_path_exists={exists}"
 
 
+# External native dependency of torch's fbgemm.dll on Windows. It is
+# NOT part of the VC++ redistributable (so _check_vc_redist passing
+# tells you nothing about it) -- torch ships it inside torch/lib/, and
+# it is the single most common missing file behind
+# "DLL load failed while importing _C" (issue #79).
+_TORCH_EXTERNAL_DLL = "libomp140.x86_64.dll"
+
+
+def _is_dll_load_failure(exc: BaseException) -> bool:
+    """True when an import failed because the OS could not load a native
+    library, rather than because a Python module was absent.
+
+    Windows raises ``ImportError: DLL load failed while importing _C``;
+    Linux/macOS raise ``ImportError: lib*.so: cannot open shared object
+    file`` or a dlopen error. Both mean "the .pyd/.so is there, its
+    dependencies are not" -- a different remediation from a missing
+    package.
+    """
+    if isinstance(exc, ModuleNotFoundError):
+        return False
+    text = str(exc).lower()
+    if "dll load failed" in text:
+        return True
+    if "cannot open shared object file" in text:
+        return True
+    if getattr(exc, "winerror", None) == 126:  # ERROR_MOD_NOT_FOUND
+        return True
+    return False
+
+
+def _torch_lib_dir(torch_root: str) -> Optional[str]:
+    if not torch_root or torch_root == "<not found on sys.path>":
+        return None
+    lib_dir = os.path.join(torch_root, "lib")
+    return lib_dir if os.path.isdir(lib_dir) else None
+
+
+def _list_dlls(directory: str) -> List[str]:
+    """Native libraries in `directory`, sorted. Never raises."""
+    suffixes = (".dll", ".so", ".dylib", ".pyd")
+    try:
+        return sorted(
+            name
+            for name in os.listdir(directory)
+            if name.lower().endswith(suffixes)
+        )
+    except BaseException:  # noqa: BLE001 -- unreadable dir is a datapoint
+        return []
+
+
+def _torch_native_payload_context(torch_root: str) -> str:
+    """Inventory fragment for a DLL-load failure detail.
+
+    Says whether torch/lib/ exists and how many native libraries are in
+    it. Zero (or a missing directory) is conclusive: the native payload
+    did not survive install, and no amount of re-extracting a short
+    bundle will conjure it back.
+    """
+    lib_dir = _torch_lib_dir(torch_root)
+    if lib_dir is None:
+        expected = (
+            os.path.join(torch_root, "lib")
+            if torch_root and torch_root != "<not found on sys.path>"
+            else "<unknown>"
+        )
+        return f" | torch_lib_dir={expected} | torch_lib_dir_exists=False"
+    dlls = _list_dlls(lib_dir)
+    frag = f" | torch_lib_dir={lib_dir} | torch_lib_count={len(dlls)}"
+    if sys.platform == "win32":
+        frag += f" | {_TORCH_EXTERNAL_DLL}={_TORCH_EXTERNAL_DLL in dlls}"
+    return frag
+
+
+def _torch_install_roots() -> List[str]:
+    """Every sys.path entry that contains a `torch` package directory.
+
+    Issue #79 surfaced an install with torch under
+    ``runtime/py/python/lib/site-packages`` while the launcher exported
+    ``runtime/py/python/site-packages`` on PYTHONPATH. When two trees
+    exist, a repair that rewrites one can leave the other -- the one
+    actually imported -- untouched, so the failure survives a "repair
+    succeeded" message. Listing them makes that visible in the bundle.
+    """
+    roots: List[str] = []
+    for entry in sys.path:
+        if not entry:
+            continue
+        try:
+            candidate = os.path.join(entry, "torch")
+            if os.path.isdir(candidate) and candidate not in roots:
+                roots.append(candidate)
+        except BaseException:  # noqa: BLE001
+            continue
+    return roots
+
+
+def _check_torch_dlls() -> CheckResult:
+    """Inventory torch's native payload (issue #79).
+
+    torch_intact tells you the import failed. This tells you WHY when
+    the cause is native: whether torch/lib/ survived install, how many
+    libraries are in it, whether the classic missing external dependency
+    is present, and whether more than one torch tree is installed.
+
+    Deliberately never imports torch -- it runs even when the import
+    that motivated it crashes the interpreter.
+    """
+    torch_root = _resolve_pkg_root("torch")
+    if torch_root == "<not found on sys.path>":
+        # torch_intact already reports this; don't double-flag it.
+        return CheckResult(
+            "torch_dlls",
+            "warn",
+            "torch is not on sys.path -- see torch_intact for the cause.",
+        )
+
+    roots = _torch_install_roots()
+    multi = ""
+    if len(roots) > 1:
+        multi = (
+            f" WARNING: {len(roots)} torch trees on sys.path ({'; '.join(roots)}) "
+            "-- a repair may rewrite one while the interpreter imports the "
+            "other. Remove the stale copy."
+        )
+
+    lib_dir = _torch_lib_dir(torch_root)
+    if lib_dir is None:
+        return CheckResult(
+            "torch_dlls",
+            "error",
+            f"torch/lib/ is missing entirely (expected at "
+            f"{os.path.join(torch_root, 'lib')}). torch's native libraries "
+            "did not survive install -- antivirus quarantine or a truncated "
+            "extract. Run [Add AV Exclusion] then [Repair PyTorch via pip]."
+            + multi,
+        )
+
+    dlls = _list_dlls(lib_dir)
+    if not dlls:
+        return CheckResult(
+            "torch_dlls",
+            "error",
+            f"torch/lib/ exists at {lib_dir} but contains no native "
+            "libraries. Same failure class as a missing directory: run "
+            "[Add AV Exclusion] then [Repair PyTorch via pip]." + multi,
+        )
+
+    if sys.platform == "win32" and _TORCH_EXTERNAL_DLL not in dlls:
+        return CheckResult(
+            "torch_dlls",
+            "warn",
+            f"{len(dlls)} native librar(ies) in {lib_dir}, but "
+            f"{_TORCH_EXTERNAL_DLL} is not among them. torch's fbgemm.dll "
+            "depends on it, and its absence is a common cause of "
+            "'DLL load failed while importing _C'. If torch_intact reports "
+            "that error, run [Repair PyTorch via pip]." + multi,
+        )
+
+    status = "warn" if multi else "ok"
+    return CheckResult(
+        "torch_dlls",
+        status,
+        f"{len(dlls)} native librar(ies) present in {lib_dir}." + multi,
+    )
+
+
 def _check_torch_intact() -> CheckResult:
     # The whole reason this doctor exists: a previous build prune
     # deleted torch/testing/. Verify the FULL torch surface, not
@@ -251,11 +417,26 @@ def _check_torch_intact() -> CheckResult:
             m = _re.search(r"No module named '([^']+)'", str(e))
             missing = m.group(1) if m else ""
 
+        # Issue #79: a DLL-load failure is a DIFFERENT bug class from a
+        # missing Python module, and reporting it as one is actively
+        # misleading. `ImportError: DLL load failed while importing _C`
+        # means Python FOUND torch/_C.pyd and the OS then refused to
+        # load it -- because a native dependency in torch/lib/ (or an
+        # external one like libomp140.x86_64.dll) could not be
+        # resolved. The old code labelled that `missing_module=_C`,
+        # which reads as "the _C package is gone" and sends the
+        # operator looking for a Python file that is sitting right
+        # there.
+        dll_failure = _is_dll_load_failure(e)
+
         detail = (
             f"{type(e).__name__}: {e} | torch_root={torch_root} | "
             f"torch_testing_dir_exists={testing_exists}"
         )
-        if missing:
+        if dll_failure:
+            detail += " | failure_class=dll_load"
+            detail += _torch_native_payload_context(torch_root)
+        elif missing:
             detail += f" | missing_module={missing}"
             detail += _missing_submodule_context(torch_root, missing)
         detail += ". "
@@ -265,7 +446,20 @@ def _check_torch_intact() -> CheckResult:
         # the shipped zip never contained sends users in a circle --
         # which is exactly what issue #75 reported after following the
         # old advice.
-        if missing and missing != "torch.testing" and testing_exists:
+        if dll_failure:
+            detail += (
+                "The Python side of torch is present but its native "
+                "libraries could not be loaded -- see the torch_dlls row "
+                "below for which files are on disk. Re-extracting the "
+                "runtime only helps if antivirus removed the DLLs after "
+                "install, so do it in this order: [Add AV Exclusion], then "
+                "[Repair PyTorch via pip] (Settings -> System Tools), which "
+                "downloads a complete torch wheel from upstream and is the "
+                "reliable fix when the bundled payload itself is short. "
+                "[Repair Runtime] alone re-extracts the same files and will "
+                "not add a DLL the bundle never had."
+            )
+        elif missing and missing != "torch.testing" and testing_exists:
             detail += (
                 f"The rest of torch is present, so this is not a broad "
                 f"quarantine -- '{missing}' alone is missing from the "
@@ -433,6 +627,7 @@ def run_selftest(data_dir: Optional[str] = None) -> DoctorReport:
         _check_python_boot,
         _check_vc_redist,
         _check_torch_intact,
+        _check_torch_dlls,
         _check_torchvision_intact,
         _check_numpy_intact,
         _check_fastapi_intact,
@@ -444,6 +639,7 @@ def run_selftest(data_dir: Optional[str] = None) -> DoctorReport:
         _check_python_boot: "python_boot",
         _check_vc_redist: "vc_redist",
         _check_torch_intact: "torch_intact",
+        _check_torch_dlls: "torch_dlls",
         _check_torchvision_intact: "torchvision_intact",
         _check_numpy_intact: "numpy_intact",
         _check_fastapi_intact: "fastapi_intact",

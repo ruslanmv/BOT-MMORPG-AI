@@ -2285,6 +2285,7 @@ async function checkInstallHealth() {
         python_boot:           "Bundled Python boots",
         vc_redist:             "Visual C++ runtime",
         torch_intact:          "PyTorch (incl. torch.testing)",
+        torch_dlls:            "PyTorch native libraries",
         torchvision_intact:    "torchvision",
         numpy_intact:          "NumPy (incl. numpy.testing)",
         fastapi_intact:        "FastAPI / uvicorn",
@@ -2450,8 +2451,27 @@ async function checkInstallHealth() {
       remediation + (lines ? `<div style='margin-top:10px;'><b>Detected:</b><ul style='margin:6px 0 0 20px;'>${lines}</ul></div>` : "");
 
     banner.hidden = false;
+    // Issue #79: this used to log only `h.issues`, the LEGACY string
+    // array that install_health builds from its own rows. The runtime
+    // doctor's failures are merged into `h.checks` (and can push the
+    // verdict to "error") without ever touching `h.issues` -- so a user
+    // whose only fault was a doctor row saw the bare line
+    // "Install health: ERROR --" with nothing after the dashes, in a
+    // log they were then asked to paste into a bug report.
+    //
+    // Prefer the merged checks; fall back to the legacy array for older
+    // shells that don't emit `checks`.
+    const reported = (errs.length ? errs : warns)
+      .map(c => {
+        const label = (c.label || c.id || "").toString().trim();
+        const message = (c.message || "").toString().trim();
+        return label && message ? `${label}: ${message}` : (label || message);
+      })
+      .filter(Boolean);
+    const summary = reported.length ? reported : (h.issues || []);
     logToTerminal(
-      `Install health: ${verdict.toUpperCase()} -- ` + (h.issues || []).join("; "),
+      `Install health: ${verdict.toUpperCase()} -- ` +
+        (summary.length ? summary.join("; ") : "no per-check detail reported"),
       logSeverity
     );
     // NOTE: install-health-dismiss / install-health-open-diagnosis click
