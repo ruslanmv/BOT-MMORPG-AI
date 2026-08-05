@@ -439,13 +439,43 @@ def _antivirus_hint() -> Dict[str, Any]:
 # ---------------------------------------------------------------------
 
 
+def _resolve_resource_root(data_root: Path) -> Path:
+    """Locate the tree that holds the SHIPPED files.
+
+    Issue #79: `deep_probe` passed the data root to every sub-probe,
+    including `_file_integrity`. But `_CRITICAL_FILES` are relative to
+    the INSTALL directory (`C:\\Program Files\\BOT-MMORPG-AI`), while the
+    data root is `%LOCALAPPDATA%\\com.bot.mmorpg.ai` -- two different
+    trees since the MVP-1 migration. Every single bundled file therefore
+    reported `"status": "missing"`, which makes a debug bundle look like
+    a catastrophically broken install and buries whatever the real fault
+    was. In the #79 bundle all 11 critical files were flagged missing on
+    a machine whose sidecar was running happily off those very files.
+
+    The Rust launcher exports MODELHUB_RESOURCE_ROOT; fall back to the
+    data root only when it is absent, so behaviour is unchanged for any
+    caller that genuinely has one combined tree.
+    """
+    env_root = os.environ.get("MODELHUB_RESOURCE_ROOT") or os.environ.get("BOT_INSTALL_DIR")
+    if env_root:
+        try:
+            candidate = Path(env_root).resolve()
+            if candidate.exists():
+                return candidate
+        except Exception:  # noqa: BLE001
+            pass
+    return data_root
+
+
 def deep_probe(install_dir: Optional[Path] = None) -> Dict[str, Any]:
     """
     Run every probe and return a structured dict. Never raises; each
     sub-probe is wrapped in its own try/except.
 
-    `install_dir` defaults to MODELHUB_DATA_ROOT (set by the Rust
-    launcher), then to cwd as a fallback.
+    `install_dir` is the DATA root (runtime/, datasets/, models/, logs/)
+    and defaults to MODELHUB_DATA_ROOT (set by the Rust launcher), then
+    to cwd. File-integrity checks run against the RESOURCE root instead
+    -- see `_resolve_resource_root`.
     """
     if install_dir is None:
         install_dir = Path(
@@ -454,7 +484,16 @@ def deep_probe(install_dir: Optional[Path] = None) -> Dict[str, Any]:
             or os.getcwd()
         ).resolve()
 
-    out: Dict[str, Any] = {"install_dir": str(install_dir)}
+    resource_root = _resolve_resource_root(install_dir)
+
+    out: Dict[str, Any] = {
+        "install_dir": str(install_dir),
+        # Both roots are reported so a reader can tell at a glance
+        # whether a "missing" row means the file is gone or the probe
+        # looked in the wrong tree.
+        "data_root": str(install_dir),
+        "resource_root": str(resource_root),
+    }
 
     for name, fn in [
         ("system", _system_info),
@@ -463,7 +502,7 @@ def deep_probe(install_dir: Optional[Path] = None) -> Dict[str, Any]:
         ("filesystem", lambda: _filesystem_hazards(install_dir)),
         ("network", _network_info),
         ("python_runtime", lambda: _embedded_python_health(install_dir)),
-        ("file_integrity", lambda: _file_integrity(install_dir)),
+        ("file_integrity", lambda: _file_integrity(resource_root)),
         ("environment", _redact_env),
         ("antivirus", _antivirus_hint),
     ]:
