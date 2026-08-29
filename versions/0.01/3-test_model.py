@@ -110,13 +110,48 @@ LOG_LEN = 25
 MOTION_REQ = 800
 
 # Action weights for prediction adjustment
-# Format: [keyboard(9), gamepad(20)] = 29 total
-ACTION_WEIGHTS = np.array([
+# Format: [keyboard(9), gamepad(20)] = 29 base actions
+_BASE_ACTION_WEIGHTS = np.array([
     4.5, 0.1, 0.1, 0.1, 1.8, 1.8, 0.5, 0.5, 0.2,  # Keyboard: W, S, A, D, WA, WD, SA, SD, NK
     1, 1, 1, 1, 1, 1,  # Gamepad: LT, RT, Lx, Ly, Rx, Ry
     1, 1, 1, 1, 1, 1, 1, 1, 1, 1,  # Gamepad: UP, DOWN, LEFT, RIGHT, START, SELECT, L3, R3, LB, RB
     1, 1, 1, 1  # Gamepad: A, B, X, Y
 ])
+
+# Mouse weight block: [x, y, dx, dy, vx, vy, lmb, rmb, mmb, scroll].
+# Position/delta/velocity are continuous outputs (never chosen by argmax),
+# so their weights stay low and out of the way of discrete actions.
+_MOUSE_WEIGHTS_10 = np.array([0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 1.0, 1.0, 0.8, 0.3])
+
+# Legacy 6-value mouse: [x, y, lmb, rmb, mmb, scroll]
+_MOUSE_WEIGHTS_6 = np.array([0.1, 0.1, 1.0, 1.0, 0.8, 0.3])
+
+
+def build_action_weights(num_actions: int) -> np.ndarray:
+    """Build an action-weight array matching the model's output width.
+
+    Recording with the mouse enabled appends 10 values to the 29-slot
+    keyboard+gamepad vector, so a model trained that way emits 39
+    outputs. Multiplying those 39 predictions by a fixed 29-slot weight
+    array raised a broadcast error at the first frame (issue #82).
+    """
+    if num_actions <= 29:
+        return _BASE_ACTION_WEIGHTS[:num_actions].copy()
+
+    mouse_size = num_actions - 29
+    if mouse_size == 10:
+        mouse_w = _MOUSE_WEIGHTS_10
+    elif mouse_size == 6:
+        mouse_w = _MOUSE_WEIGHTS_6
+    else:
+        # Unknown mouse layout - neutral weight, still never argmax'd
+        mouse_w = np.ones(mouse_size) * 0.5
+
+    return np.concatenate([_BASE_ACTION_WEIGHTS, mouse_w])
+
+
+# Default for backward compatibility (29 actions, no mouse)
+ACTION_WEIGHTS = build_action_weights(29)
 
 # Action names for logging
 ACTION_NAMES = [
@@ -275,6 +310,16 @@ class InferenceEngine:
         self.model, self.metadata = self._load_model()
         self.model.eval()
 
+        # Output width the checkpoint was actually trained with. load_model
+        # resolves this from the checkpoint (metadata, else the stored
+        # weights), so a mouse-enabled model (39 outputs) runs without the
+        # "size mismatch for action_head" failure of issue #82.
+        self.num_actions = int(
+            self.metadata.get('num_actions', getattr(self.model, 'num_actions', 29))
+        )
+        self.has_mouse_output = self.num_actions > 29
+        self._action_weights = build_action_weights(self.num_actions)
+
         # Check if model is temporal
         self.is_temporal = self.metadata.get('temporal_frames', 1) > 1
         if self.is_temporal:
@@ -295,6 +340,10 @@ class InferenceEngine:
         print(f"  Model: {self.model_path.name}")
         print(f"  Architecture: {self.metadata.get('model_name', 'Unknown')}")
         print(f"  Device: {self.device}")
+        print(
+            f"  Actions: {self.num_actions} "
+            f"(mouse={'on' if self.has_mouse_output else 'off'})"
+        )
         print(f"  Temporal: {self.is_temporal} (frames={self.temporal_frames})")
         print(f"  Gamepad: {'Enabled' if self.enable_gamepad else 'Disabled'}")
         print(f"{'='*60}\n")
@@ -349,7 +398,7 @@ class InferenceEngine:
 
             # Wait until buffer is full
             if len(self.frame_buffer) < self.temporal_frames:
-                return 0, 0.0, np.zeros(29)  # Default action
+                return 0, 0.0, np.zeros(self.num_actions)  # Default action
 
             # Stack frames: (seq, C, H, W)
             input_tensor = torch.stack(list(self.frame_buffer), dim=0)
@@ -367,12 +416,14 @@ class InferenceEngine:
         predictions = probs.cpu().numpy()[0]
         predictions = np.round(predictions, 2)
 
-        # Apply action weights
-        weighted = predictions * ACTION_WEIGHTS
+        # Apply action weights (sized to this model's output width)
+        weighted = predictions * self._action_weights
         weighted_abs = np.abs(weighted)
 
-        # Get best action
-        action_idx = int(np.argmax(weighted_abs))
+        # The best discrete action comes from the first 29 slots only;
+        # mouse outputs beyond them are continuous, not argmax candidates.
+        discrete_end = min(29, len(weighted_abs))
+        action_idx = int(np.argmax(weighted_abs[:discrete_end]))
         action_val = weighted[action_idx]
 
         return action_idx, action_val, predictions

@@ -329,6 +329,7 @@ class ResNet18LSTM(nn.Module):
     ):
         super().__init__()
 
+        self.num_actions = num_actions
         self.temporal_frames = temporal_frames
 
         # ResNet18 backbone
@@ -537,6 +538,8 @@ class AlexNetLegacy(nn.Module):
     ):
         super().__init__()
 
+        self.num_actions = num_actions
+
         self.features = nn.Sequential(
             nn.Conv2d(in_channels, 96, 11, stride=4, padding=2),
             nn.ReLU(inplace=True),
@@ -609,6 +612,8 @@ class SentNetLegacy(nn.Module):
     ):
         super().__init__()
 
+        self.num_actions = num_actions
+
         self.features = nn.Sequential(
             nn.Conv3d(3, 96, 11, stride=4, padding=2),
             nn.ReLU(inplace=True),
@@ -680,6 +685,8 @@ class SentNet2D(nn.Module):
         dropout: float = 0.5,
     ):
         super().__init__()
+
+        self.num_actions = num_actions
 
         self.features = nn.Sequential(
             nn.Conv2d(3, 96, 11, stride=4, padding=2),
@@ -1304,6 +1311,72 @@ def get_device(prefer_gpu: bool = True) -> torch.device:
     return torch.device("cpu")
 
 
+def _extract_state_dict(checkpoint: Any) -> Dict[str, Any]:
+    """Pull the tensor state dict out of a checkpoint of any vintage."""
+    if not isinstance(checkpoint, dict):
+        return checkpoint
+    for key in ("model_state_dict", "state_dict"):
+        if key in checkpoint:
+            return checkpoint[key]
+    # Checkpoint is the bare state dict (possibly with scalar metadata mixed in)
+    return {
+        k: v
+        for k, v in checkpoint.items()
+        if not isinstance(v, (int, float, str, bool, type(None)))
+    }
+
+
+def infer_num_actions(state_dict: Dict[str, Any], reference: nn.Module) -> Optional[int]:
+    """Infer a checkpoint's output-head width by diffing it against a model.
+
+    ``reference`` is a freshly built model whose output width is
+    ``reference.num_actions``. Every parameter whose leading dimension
+    equals that width is an output-head tensor; if the checkpoint stores
+    a different leading dimension for those same keys, that value is the
+    width the checkpoint was actually trained with.
+
+    Returns None when nothing can be inferred (architectures whose head
+    width is not a single number, e.g. MultiHeadGameModel, or a
+    checkpoint whose keys do not line up with the reference at all).
+
+    Issue #82: a model trained with mouse recording on has 39 outputs
+    (keyboard 9 + gamepad 20 + mouse 10) but ``load_model`` used to
+    build the architecture with the default 29, so "Run Bot" died with
+    "size mismatch for action_head.3.weight" before the first frame.
+    """
+    ref_width = getattr(reference, "num_actions", None)
+    if not isinstance(ref_width, int) or ref_width <= 0:
+        return None
+
+    try:
+        ref_state = reference.state_dict()
+    except Exception:
+        return None
+
+    votes: Dict[int, int] = {}
+    for key, ref_tensor in ref_state.items():
+        if getattr(ref_tensor, "ndim", 0) < 1 or ref_tensor.shape[0] != ref_width:
+            continue
+        ckpt_tensor = state_dict.get(key)
+        if ckpt_tensor is None or getattr(ckpt_tensor, "ndim", 0) < 1:
+            continue
+        # Only the leading dimension may differ; anything else is a
+        # different architecture, not a different action count.
+        if tuple(ref_tensor.shape[1:]) != tuple(ckpt_tensor.shape[1:]):
+            continue
+        width = int(ckpt_tensor.shape[0])
+        votes[width] = votes.get(width, 0) + 1
+
+    if not votes:
+        return None
+    # Unanimity required: a split vote means the leading dimension is not
+    # uniquely the action count, so guessing would be worse than failing
+    # with the original (explicit) size-mismatch error.
+    if len(votes) > 1:
+        return None
+    return next(iter(votes))
+
+
 def load_model(
     checkpoint_path: str,
     model_name: Optional[str] = None,
@@ -1316,10 +1389,18 @@ def load_model(
     The checkpoint should contain 'model_name' metadata to auto-detect architecture.
     If not available, model_name parameter must be provided.
 
+    The output-head width is taken from the checkpoint (its ``num_actions``
+    metadata, else inferred from the stored weights) rather than from the
+    ``num_actions`` argument, so a model trained with mouse recording on
+    (39 outputs) loads even when the caller assumes the 29-action default
+    (issue #82). The resolved value is returned in the metadata dict as
+    ``num_actions`` so callers can size their action tables accordingly.
+
     Args:
         checkpoint_path: Path to .pth checkpoint file
         model_name: Name of the model architecture (auto-detected if None)
-        num_actions: Number of output actions
+        num_actions: Number of output actions, used only as a fallback when
+            the checkpoint carries no usable width
         device: Device to load model on (default: auto-detect)
 
     Returns:
@@ -1367,31 +1448,48 @@ def load_model(
     # Get temporal frames from metadata
     temporal_frames = metadata.get("temporal_frames", 4)
 
+    state_dict = _extract_state_dict(checkpoint)
+
+    # Resolve the output width the checkpoint was trained with (#82).
+    # Metadata is authoritative when present (written by save_model);
+    # otherwise diff the stored weights against a probe model, which is
+    # what makes checkpoints from older builds loadable too.
+    resolved_actions = num_actions
+    meta_actions = metadata.get("num_actions")
+    if isinstance(meta_actions, int) and meta_actions > 0:
+        resolved_actions = meta_actions
+
     # Create model
     model = get_model(
         model_name,
-        num_actions=num_actions,
+        num_actions=resolved_actions,
         temporal_frames=temporal_frames,
         pretrained=False,
     )
 
+    if state_dict:
+        inferred = infer_num_actions(state_dict, model)
+        if inferred is not None and inferred != resolved_actions:
+            print(
+                f"[Model] Checkpoint was trained with {inferred} actions "
+                f"(requested {resolved_actions}); rebuilding the output head "
+                f"to match the checkpoint."
+            )
+            resolved_actions = inferred
+            model = get_model(
+                model_name,
+                num_actions=resolved_actions,
+                temporal_frames=temporal_frames,
+                pretrained=False,
+            )
+
     # Load state dict
-    if isinstance(checkpoint, dict):
-        if "model_state_dict" in checkpoint:
-            model.load_state_dict(checkpoint["model_state_dict"])
-        elif "state_dict" in checkpoint:
-            model.load_state_dict(checkpoint["state_dict"])
-        else:
-            # Checkpoint is the state dict itself (wrapped in dict)
-            state_dict = {
-                k: v
-                for k, v in checkpoint.items()
-                if not isinstance(v, (int, float, str, bool, type(None)))
-            }
-            if state_dict:
-                model.load_state_dict(state_dict)
-    else:
-        model.load_state_dict(checkpoint)
+    if state_dict:
+        model.load_state_dict(state_dict)
+
+    # Surface the resolved width so callers size their action tables from
+    # the checkpoint rather than from a hardcoded 29.
+    metadata["num_actions"] = resolved_actions
 
     model.to(device)
     model.eval()
@@ -1427,6 +1525,12 @@ def save_model(
         "model_name": model_name or model.__class__.__name__,
         "num_parameters": count_parameters(model),
     }
+
+    # Record the output width so inference rebuilds the same head without
+    # having to infer it from the weights (issue #82).
+    head_width = getattr(model, "num_actions", None)
+    if isinstance(head_width, int) and head_width > 0:
+        checkpoint["num_actions"] = head_width
 
     if optimizer is not None:
         checkpoint["optimizer_state_dict"] = optimizer.state_dict()

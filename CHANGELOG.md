@@ -8,6 +8,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- Running a bot trained with mouse recording no longer fails with
+  `size mismatch for action_head.3.weight ... torch.Size([39, 256]) ...
+  torch.Size([29, 256])`. `load_model()` now takes the output-head width
+  from the checkpoint — its `num_actions` metadata, or inferred from the
+  stored weights for checkpoints saved by earlier builds — instead of
+  always rebuilding the 29-action default, `save_model()` records the
+  width, and `3-test_model.py` sizes its action-weight table from the
+  loaded model (issue #82).
+- The screen preview works again. The Rust shell has always forwarded
+  Preview to `POST /capture/preview`, but the Python sidecar never
+  defined that route, so every request 404'd and both preview panes
+  stayed on "No Preview yet" with nothing in the log. The sidecar now
+  serves `/capture/preview` and `/capture/monitors`, and the UI reports a
+  failed capture instead of silently staying blank (issues #57, #81).
+- Screen capture is correct on 4K and other scaled displays. The capture
+  module now declares per-monitor DPI awareness at import, so Windows
+  reports real physical pixels instead of a virtualized desktop —
+  lowering the display resolution never helped because scaling, not
+  resolution, triggered the virtualization. Capture also tolerates
+  padded GDI scanlines and falls back to `mss` when a BitBlt comes back
+  blank or fails (issues #81, #8).
+- Training on the GPU no longer dies with a CUDA out-of-memory dump at
+  the default batch size. The shipped trainer
+  (`versions/0.01/2-train_model.py`) now fits the batch size to the
+  detected VRAM, enables mixed precision (which also removes the
+  "GPU slower than CPU" result) and gradient checkpointing on small
+  cards, and skips an out-of-memory batch instead of aborting the run.
+  `--no-autotune` keeps a hand-picked `--batch-size` (issue #27).
 - Recordings no longer disappear from the Train tab: the bundled
   `versions/0.01/1-collect_data.py` now honors the `--out` argument the
   Tauri shell passes, so data lands in `datasets/<game>/<name>/` where
