@@ -199,6 +199,23 @@ seconds of being spawned.
 - **Fix:** bump the timeout to 20-30s, or capture sidecar stderr into
   the in-app log so the import error is visible.
 
+### Sidecar dies at import with `TypeError: Unable to evaluate type annotation '... | None'`
+
+A FastAPI route parameter used a PEP 604 union (`Dict[str, Any] | None`),
+which only parses on Python 3.10+. `from __future__ import annotations`
+does not defer it: FastAPI evaluates route annotations when the route is
+registered, so it just becomes a string FastAPI must `eval`. The failure
+takes down `create_app()` — the whole backend, not one endpoint — on any
+interpreter older than 3.10.
+
+- **File:** `modelhub/tauri.py` (route signatures)
+- **Fix:** use `Optional[...]` in route parameters. Only affects Python
+  3.9 and older, so the shipped bundle (3.10/3.11) never showed it while
+  a dev checkout on 3.9 could not start the backend at all.
+- **Guardrail:** `tests/test_issue_81_82_regressions.py::
+  test_sidecar_routes_avoid_python_310_only_annotations` parses every
+  route signature, so this holds on interpreters that would accept it.
+
 ### "Script 'X.py' not found" with multiple `tried:` paths
 
 The Rust script resolver didn't find the script.

@@ -1326,7 +1326,9 @@ def _extract_state_dict(checkpoint: Any) -> Dict[str, Any]:
     }
 
 
-def infer_num_actions(state_dict: Dict[str, Any], reference: nn.Module) -> Optional[int]:
+def infer_num_actions(
+    state_dict: Dict[str, Any], reference: nn.Module
+) -> Optional[int]:
     """Infer a checkpoint's output-head width by diffing it against a model.
 
     ``reference`` is a freshly built model whose output width is
