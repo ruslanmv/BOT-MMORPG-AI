@@ -35,6 +35,7 @@ that reintroduces it fails here rather than in someone's living room.
 
 from __future__ import annotations
 
+import ast
 import importlib.util
 import pathlib
 import sys
@@ -224,8 +225,10 @@ def test_infer_num_actions_declines_when_the_vote_is_split():
 @requires_torch
 def test_versioned_models_pytorch_carries_the_same_fix():
     """versions/0.01 is what the packaged app imports -- keep it in sync."""
-    src_text = (SRC / "bot_mmorpg" / "scripts" / "models_pytorch.py").read_text()
-    versioned_text = (VERSIONS / "models_pytorch.py").read_text()
+    src_text = (SRC / "bot_mmorpg" / "scripts" / "models_pytorch.py").read_text(
+        encoding="utf-8"
+    )
+    versioned_text = (VERSIONS / "models_pytorch.py").read_text(encoding="utf-8")
     assert "def infer_num_actions" in versioned_text
     assert src_text == versioned_text, (
         "versions/0.01/models_pytorch.py has drifted from the src copy; "
@@ -403,8 +406,10 @@ def test_thumbnail_downscales_4k_without_upscaling_small_frames(monkeypatch):
 @requires_cv2
 def test_versioned_grabscreen_carries_the_same_fix():
     """versions/0.01/grabscreen.py is what the recorder imports."""
-    src_text = (SRC / "bot_mmorpg" / "scripts" / "grabscreen.py").read_text()
-    versioned_text = (VERSIONS / "grabscreen.py").read_text()
+    src_text = (SRC / "bot_mmorpg" / "scripts" / "grabscreen.py").read_text(
+        encoding="utf-8"
+    )
+    versioned_text = (VERSIONS / "grabscreen.py").read_text(encoding="utf-8")
     assert "def enable_dpi_awareness" in versioned_text
     assert src_text == versioned_text
 
@@ -514,9 +519,50 @@ def test_capture_preview_reports_missing_dependencies(monkeypatch):
     assert "hint" in body
 
 
+def test_sidecar_routes_avoid_python_310_only_annotations():
+    """Route annotations must stay evaluable on the oldest supported Python.
+
+    FastAPI resolves a route's annotations when the route is registered,
+    so `from __future__ import annotations` does not defer them -- it
+    just turns them into strings FastAPI must eval. A PEP 604 union
+    (`Dict[str, Any] | None`) therefore made create_app() itself raise
+    "Unable to evaluate type annotation" on Python 3.9, taking down the
+    whole sidecar rather than one endpoint. Parsed statically so this
+    holds on every interpreter, including the ones that would accept it.
+    """
+    tree = ast.parse((ROOT / "modelhub" / "tauri.py").read_text(encoding="utf-8"))
+
+    def is_route(node):
+        return any(
+            isinstance(d, ast.Call)
+            and isinstance(d.func, ast.Attribute)
+            and d.func.attr in {"get", "post", "put", "delete", "patch"}
+            for d in node.decorator_list
+        )
+
+    offenders = []
+    routes = 0
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        if not is_route(node):
+            continue
+        routes += 1
+        for arg in list(node.args.args) + list(node.args.kwonlyargs):
+            ann = arg.annotation
+            if isinstance(ann, ast.BinOp) and isinstance(ann.op, ast.BitOr):
+                offenders.append(f"{node.name}({arg.arg})")
+
+    assert routes > 0, "no routes found -- the scan is not looking at the right file"
+    assert not offenders, (
+        "PEP 604 unions in sidecar route signatures break create_app() on "
+        f"Python 3.9: {offenders}. Use Optional[...] instead."
+    )
+
+
 def test_ui_reports_a_failed_preview_instead_of_staying_blank():
     """'No Preview yet' with an empty log is indistinguishable from idle."""
-    js = (ROOT / "tauri-ui" / "main.js").read_text()
+    js = (ROOT / "tauri-ui" / "main.js").read_text(encoding="utf-8")
     assert "Screen preview failed: " in js
     assert "_lastPreviewError" in js
 
@@ -601,7 +647,7 @@ def test_cpu_training_is_left_alone(monkeypatch):
 def test_trainer_exposes_the_autotune_escape_hatches():
     """An advanced user must be able to keep their own batch size."""
     trainer = _load_versioned("issue27_trainer_args", "2-train_model.py")
-    text = (VERSIONS / "2-train_model.py").read_text()
+    text = (VERSIONS / "2-train_model.py").read_text(encoding="utf-8")
     assert "--no-autotune" in text
     assert "--amp" in text
     assert hasattr(trainer, "autotune_batch_size")

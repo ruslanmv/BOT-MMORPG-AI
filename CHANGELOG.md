@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- The sidecar starts on Python 3.9 again. One route annotation used the
+  3.10+ `Dict[str, Any] | None` spelling; FastAPI evaluates route
+  annotations at registration time, so `create_app()` itself raised
+  `TypeError: Unable to evaluate type annotation` and the whole backend
+  failed to come up — not just that endpoint. `pyproject` declares
+  `>=3.8` and CI covers 3.9, so route signatures now stay on the
+  `typing` spellings, guarded by a test that parses them.
 - Running a bot trained with mouse recording no longer fails with
   `size mismatch for action_head.3.weight ... torch.Size([39, 256]) ...
   torch.Size([29, 256])`. `load_model()` now takes the output-head width

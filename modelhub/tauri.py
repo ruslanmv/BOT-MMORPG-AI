@@ -593,7 +593,13 @@ def create_app(token: str):
         return {"ok": True}
 
     @app.post("/session/finalize")
-    async def finalize(payload: Dict[str, Any] | None = None, x_auth_token: Optional[str] = Header(default=None)):
+    # `Dict[str, Any] | None` here is a Python 3.10+ spelling, and the
+    # module's `from __future__ import annotations` does not help: FastAPI
+    # evaluates route annotations when the route is registered, so on 3.9
+    # create_app() itself raised "Unable to evaluate type annotation
+    # 'Dict[str, Any] | None'" and the whole sidecar failed to start.
+    # pyproject declares >=3.8 and CI covers 3.9 -- keep the typing spelling.
+    async def finalize(payload: Optional[Dict[str, Any]] = None, x_auth_token: Optional[str] = Header(default=None)):
         _auth(x_auth_token)
         if not session_manager or not getattr(session_manager, "active_session", None):
             return {"ok": True, "finalized": None}
