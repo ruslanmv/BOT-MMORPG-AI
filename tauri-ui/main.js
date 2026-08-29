@@ -3019,6 +3019,9 @@ let selectedMonitorTeach = 0;
 let selectedMonitorRun = 0;
 let livePreviewEnabledTeach = false;
 let livePreviewEnabledRun = false;
+// Last preview error surfaced to the terminal, so the live loop reports a
+// persistent failure once instead of twice a second.
+let _lastPreviewError = null;
 
 async function loadMonitorsTauri() {
   if (!invoke) return;
@@ -3107,6 +3110,19 @@ async function updatePreviewImageTauri(tab, monitorId) {
       }
       if (placeholder) placeholder.style.display = "none";
       if (container) container.classList.add("is-live");
+      // Recovered: report the next failure even if it repeats this one.
+      _lastPreviewError = null;
+    } else if (result && result.ok === false) {
+      // The pane used to stay on "No Preview yet" with nothing in the
+      // log, so a broken capture looked identical to one nobody had
+      // started yet (issues #57, #81). Report what the backend said,
+      // once per distinct message so the 2 FPS live loop cannot spam.
+      const detail = [result.error, result.hint].filter(Boolean).join(" ");
+      const msg = "Screen preview failed: " + (detail || "unknown error");
+      if (msg !== _lastPreviewError) {
+        _lastPreviewError = msg;
+        logToTerminal(msg, "error");
+      }
     }
   } catch (e) {
     console.warn("Preview error:", e);

@@ -32,6 +32,61 @@ except ImportError:
     _MSS_AVAILABLE = False
 
 
+def enable_dpi_awareness():
+    """Opt this process into true physical pixels on Windows.
+
+    A process that has not declared DPI awareness gets a *virtualized*
+    desktop from Win32: on a 4K monitor at 150% scaling,
+    GetSystemMetrics reports 2560x1440 and BitBlt hands back a
+    DWM-rescaled, blurry copy of the desktop instead of the real
+    3840x2160 pixels. Lowering the display resolution does not help,
+    because scaling -- not resolution -- is what triggers the
+    virtualization. That is issue #81: "I got a 4K screen but even if I
+    lowered my resolution it still won't capture my screen."
+
+    Declares awareness through the newest API the OS offers and falls
+    back down the chain (Win10 1703 -> Win8.1 -> Vista). Safe to call
+    repeatedly and on non-Windows platforms, where it is a no-op.
+
+    Returns:
+        bool: True if the process is DPI-aware after this call.
+    """
+    if not IS_WINDOWS:
+        return False
+
+    import ctypes
+
+    # Win10 1703+: per-monitor v2, the only mode that stays correct when
+    # the window is dragged between monitors of differing scale.
+    try:
+        # DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 == -4
+        if ctypes.windll.user32.SetProcessDpiAwarenessContext(-4):
+            return True
+    except (AttributeError, OSError):
+        pass
+
+    # Win8.1+: PROCESS_PER_MONITOR_DPI_AWARE == 2
+    try:
+        # S_OK (0) or E_ACCESSDENIED (already set by a manifest) both mean
+        # the process ends up DPI-aware.
+        hresult = ctypes.windll.shcore.SetProcessDpiAwareness(2)
+        if hresult in (0, -2147024891):
+            return True
+    except (AttributeError, OSError):
+        pass
+
+    # Vista+: system-DPI aware. Better than nothing on a scaled 4K panel.
+    try:
+        return bool(ctypes.windll.user32.SetProcessDPIAware())
+    except (AttributeError, OSError):
+        return False
+
+
+# Declare awareness at import time, before any capture call reads the
+# screen metrics -- Windows latches the process's awareness on first use.
+_DPI_AWARE = enable_dpi_awareness()
+
+
 def list_monitors():
     """
     List all available monitors/screens.
@@ -124,11 +179,15 @@ def grab_screen_thumbnail(monitor_id=1, max_width=320, max_height=180):
     """
     img = grab_screen_monitor(monitor_id)
     h, w = img.shape[:2]
+    if h == 0 or w == 0:
+        raise RuntimeError(f"Captured an empty frame from monitor {monitor_id}.")
 
-    # Calculate scale to fit within max dimensions
-    scale = min(max_width / w, max_height / h)
-    new_w = int(w * scale)
-    new_h = int(h * scale)
+    # Calculate scale to fit within max dimensions. Never upscale: a
+    # thumbnail of a 4K screen is a downscale, and clamping to >= 1px
+    # keeps cv2.resize from rejecting a degenerate size.
+    scale = min(max_width / w, max_height / h, 1.0)
+    new_w = max(1, int(w * scale))
+    new_h = max(1, int(h * scale))
 
     return cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_AREA)
 
@@ -171,6 +230,12 @@ def _grab_screen_win32(region=None):
         left = win32api.GetSystemMetrics(win32con.SM_XVIRTUALSCREEN)
         top = win32api.GetSystemMetrics(win32con.SM_YVIRTUALSCREEN)
 
+    if width <= 0 or height <= 0:
+        raise RuntimeError(
+            f"Win32 reported a {width}x{height} capture area; "
+            "the screen metrics are unusable."
+        )
+
     hwindc = win32gui.GetWindowDC(hwin)
     srcdc = win32ui.CreateDCFromHandle(hwindc)
     memdc = srcdc.CreateCompatibleDC()
@@ -182,14 +247,43 @@ def _grab_screen_win32(region=None):
     signedIntsArray = bmp.GetBitmapBits(True)
     # Fix: Use np.frombuffer instead of deprecated np.fromstring
     img = np.frombuffer(signedIntsArray, dtype="uint8")
-    img.shape = (height, width, 4)
 
     srcdc.DeleteDC()
     memdc.DeleteDC()
     win32gui.ReleaseDC(hwin, hwindc)
     win32gui.DeleteObject(bmp.GetHandle())
 
+    # GDI pads each scanline to a 4-byte boundary and, on some scaled
+    # displays, hands back a bitmap slightly wider than requested.
+    # Reshaping blindly raised "cannot reshape array of size N" and took
+    # the whole recording down (issue #81); derive the real row width
+    # from the buffer instead so the capture survives.
+    expected = height * width * 4
+    if img.size != expected:
+        if img.size % (height * 4) != 0:
+            raise RuntimeError(
+                f"Win32 returned {img.size} bytes for a {width}x{height} "
+                "capture; the bitmap layout is unusable."
+            )
+        actual_width = img.size // (height * 4)
+        img = img.reshape(height, actual_width, 4)[:, :width]
+    else:
+        img = img.reshape(height, width, 4)
+
     return cv2.cvtColor(img, cv2.COLOR_BGRA2RGB)
+
+
+def _is_blank(img):
+    """True when a frame carries no picture at all (all-black / empty).
+
+    A GDI BitBlt of the desktop DC returns solid black for windows drawn
+    through a path it cannot read -- fullscreen-exclusive games and some
+    hardware-accelerated compositors. Detecting it lets the caller retry
+    through mss, which reads the composited desktop instead.
+    """
+    if img is None or getattr(img, "size", 0) == 0:
+        return True
+    return bool(img.max() == 0)
 
 
 def _grab_screen_mss(region=None):
@@ -327,7 +421,25 @@ def grab_screen(region=None):
     """
     # Prefer Win32 on Windows for best performance
     if IS_WINDOWS and _WIN32_AVAILABLE:
-        return _grab_screen_win32(region)
+        try:
+            img = _grab_screen_win32(region)
+        except Exception:
+            # A GDI failure is not fatal while mss can still read the
+            # screen; re-raise only when there is no second path.
+            if not _MSS_AVAILABLE:
+                raise
+            img = None
+        if img is not None and not _is_blank(img):
+            return img
+        if not _MSS_AVAILABLE:
+            # Nothing to fall back to -- hand back whatever GDI produced
+            # rather than raising on a legitimately black screen.
+            if img is not None:
+                return img
+            raise RuntimeError("Win32 screen capture failed and mss is not installed.")
+        # Blank GDI frame (fullscreen-exclusive game, protected output):
+        # mss reads the composited desktop and usually succeeds.
+        return _grab_screen_mss(region)
 
     # Fallback to mss (cross-platform)
     if _MSS_AVAILABLE:

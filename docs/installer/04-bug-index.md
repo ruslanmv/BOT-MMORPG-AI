@@ -261,6 +261,71 @@ to 29 via the `--num-actions` default.
   head now always matches the recorded action width (29 or 39).
 - **Issue:** #64.
 
+### Run Bot fails: `size mismatch for action_head.3.weight ... torch.Size([39, 256]) ... torch.Size([29, 256])`
+
+The mirror image of #64, on the inference side. Training now sizes the
+head to the dataset (39 with mouse recording on), but `load_model()`
+rebuilt the architecture with its 29-action default and then tried to
+load 39-wide weights into it, so the job died at model load.
+
+- **File:** `versions/0.01/models_pytorch.py` and
+  `src/bot_mmorpg/scripts/models_pytorch.py` (`load_model`,
+  `save_model`, `infer_num_actions`), plus
+  `versions/0.01/3-test_model.py` (action-weight sizing)
+- **Fix:** `save_model` records `num_actions`; `load_model` takes the
+  width from the checkpoint — metadata first, else inferred by diffing
+  the stored weights against a probe model, which also recovers
+  checkpoints from older builds — and returns it in the metadata so the
+  inference engine sizes its action-weight table to match.
+- **Issue:** #82.
+
+### Preview pane stuck on "No Preview yet" / "screen capture won't capture my screen"
+
+`get_screen_preview` in `src-tauri/src/main.rs` forwards to the sidecar's
+`POST /capture/preview`, but that route was never defined in
+`modelhub/tauri.py`. Every request 404'd, the UI's catch block left the
+placeholder up, and nothing reached the log — indistinguishable from a
+preview nobody had started.
+
+- **File:** `modelhub/tauri.py` (`/capture/preview`, `/capture/monitors`,
+  `_import_grabscreen`), `tauri-ui/main.js` (`updatePreviewImageTauri`)
+- **Fix:** implement both routes. `_import_grabscreen` resolves the
+  capture module across all three layouts — installed package, dev
+  src-layout checkout, and the shipped bundle, which ships
+  `resources/versions/0.01/grabscreen.py` but no `src/` tree. The UI now
+  logs the backend's error + hint instead of staying silent.
+- **Issue:** #57, #81.
+
+### Capture is blurry, cropped, or empty on a 4K / scaled display
+
+A process that has not declared DPI awareness gets a virtualized desktop
+from Win32: `GetSystemMetrics` reports the scaled size and `BitBlt`
+returns a DWM-rescaled copy. Lowering the display resolution never
+helped because *scaling*, not resolution, triggers the virtualization.
+
+- **File:** `src/bot_mmorpg/scripts/grabscreen.py` and its
+  `versions/0.01/` twin (`enable_dpi_awareness`, `_grab_screen_win32`)
+- **Fix:** declare per-monitor-v2 DPI awareness at import (falling back
+  down the Win8.1 / Vista chain), tolerate GDI's padded scanlines
+  instead of reshaping blindly, and fall back to `mss` when a BitBlt
+  comes back blank or throws.
+- **Issue:** #81, #8.
+
+### Training dies with a CUDA out-of-memory dump, or the GPU is slower than the CPU
+
+The shipped trainer ran a fixed batch size in fp32 with no OOM handling,
+so an 8 GB card died mid-epoch and a card that survived trained slower
+than CPU for lack of mixed precision.
+
+- **File:** `versions/0.01/2-train_model.py` (`autotune_batch_size`,
+  `train_epoch`)
+- **Fix:** fit the batch size to the detected VRAM, enable AMP (and
+  gradient checkpointing on small cards), and skip an out-of-memory
+  batch instead of aborting — stopping with an actionable
+  `--batch-size N` message only if OOM keeps repeating. `--no-autotune`
+  keeps a hand-picked batch size.
+- **Issue:** #27.
+
 ## UI-layer symptoms (frontend can't reach the backend)
 
 ### Notification "Dismiss" / "×" / "Later" buttons appear inert

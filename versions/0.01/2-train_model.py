@@ -13,6 +13,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import gc
 import sys
 import os
 import time
@@ -246,6 +247,14 @@ class GameplayDataset(BaseDataset):
 # Training Functions
 # =============================================================================
 
+def _autocast_cuda():
+    """CUDA autocast context, across the torch 2.0 -> 2.4 API move."""
+    try:
+        return torch.amp.autocast("cuda")
+    except (AttributeError, TypeError):
+        return torch.cuda.amp.autocast()
+
+
 def train_epoch(
     model: nn.Module,
     dataloader: DataLoader,
@@ -254,11 +263,14 @@ def train_epoch(
     device: torch.device,
     epoch: int,
     log_every_batches: int = 10,
+    scaler=None,
+    use_amp: bool = False,
 ) -> float:
-    """Train for one epoch."""
+    """Train for one epoch, with optional mixed precision and OOM recovery."""
     model.train()
     total_loss = 0.0
     num_batches = len(dataloader)
+    oom_count = 0
 
     if num_batches == 0:
         return 0.0
@@ -267,21 +279,57 @@ def train_epoch(
         frames = frames.to(device)
         actions = actions.to(device)
 
-        optimizer.zero_grad()
-        outputs = model(frames)
-        loss = criterion(outputs, actions)
-        loss.backward()
+        try:
+            optimizer.zero_grad()
 
-        # Gradient clipping
-        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            if use_amp and scaler is not None:
+                with _autocast_cuda():
+                    outputs = model(frames)
+                    loss = criterion(outputs, actions)
+                scaler.scale(loss).backward()
+                scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                outputs = model(frames)
+                loss = criterion(outputs, actions)
+                loss.backward()
 
-        optimizer.step()
-        total_loss += loss.item()
+                # Gradient clipping
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+
+                optimizer.step()
+
+            total_loss += loss.item()
+
+        except RuntimeError as e:
+            # A single oversized batch used to abort the whole run with a
+            # raw CUDA OOM traceback (issue #27). Drop the batch, free the
+            # allocator's cache and keep going; a run that OOMs constantly
+            # still stops, but with an actionable message.
+            if "out of memory" not in str(e).lower():
+                raise
+            oom_count += 1
+            if device.type == "cuda":
+                torch.cuda.empty_cache()
+            gc.collect()
+            suggested = max(1, (dataloader.batch_size or 2) // 2)
+            LOG.warning(
+                f"    [OOM] Skipped batch {batch_idx} (total skips: {oom_count}). "
+                f"Retry with --batch-size {suggested} if this repeats."
+            )
+            if oom_count > 5:
+                raise RuntimeError(
+                    f"Too many CUDA out-of-memory errors ({oom_count}). "
+                    f"Re-run with --batch-size {suggested}."
+                ) from e
+            continue
 
         if (batch_idx % log_every_batches == 0) or (batch_idx == num_batches):
             LOG.info(f"    [Epoch {epoch}] Batch {batch_idx:>4}/{num_batches} | loss={loss.item():.4f}")
 
-    return total_loss / num_batches
+    return total_loss / max(1, num_batches - oom_count)
 
 
 def validate(
@@ -317,6 +365,99 @@ def validate(
     return avg_loss, accuracy
 
 
+def _safe_total_vram_gb() -> Optional[float]:
+    """Total GPU VRAM in GB, or None when it cannot be determined.
+
+    PyTorch's CUDA 13 build renamed the device property `total_mem` ->
+    `total_memory`; older builds only have `total_mem`. Probe both and
+    give up quietly on anything else (ROCm, forks, a CPU-only build that
+    reports is_available() anyway) so a missing attribute never takes
+    down the run. See issue #59.
+    """
+    if not PYTORCH_AVAILABLE or not torch.cuda.is_available():
+        return None
+    try:
+        props = torch.cuda.get_device_properties(0)
+    except Exception:  # noqa: BLE001
+        return None
+    for attr in ("total_memory", "total_mem"):
+        val = getattr(props, attr, None)
+        if val is not None:
+            try:
+                return float(val) / 1e9
+            except (TypeError, ValueError):
+                continue
+    return None
+
+
+def _enable_gradient_checkpointing(model: "nn.Module") -> bool:
+    """Trade compute for VRAM on backbones that support it."""
+    enabled = False
+    backbone = getattr(model, "backbone", None)
+    features = getattr(backbone, "features", None)
+    if features is not None:
+        for module in features:
+            if hasattr(module, "gradient_checkpointing_enable"):
+                module.gradient_checkpointing_enable()
+                enabled = True
+    if hasattr(model, "set_grad_checkpointing"):
+        model.set_grad_checkpointing(True)
+        enabled = True
+    return enabled
+
+
+def autotune_batch_size(
+    batch_size: int, device: "torch.device"
+) -> Tuple[int, bool, bool]:
+    """Pick VRAM-safe training settings for the detected GPU.
+
+    The shipped default of 8 still OOMs on 6 GB cards, and a user who
+    manually raised it has no way to know their card cannot take it --
+    the run just dies mid-epoch with a CUDA allocator dump (issue #27).
+    Scale the batch down to what the card holds and turn on mixed
+    precision, which is both lighter and *faster* than the fp32 fallback
+    the reporter measured as "slower than CPU".
+
+    Returns:
+        (batch_size, use_amp, use_gradient_checkpointing)
+    """
+    if device.type != "cuda":
+        return batch_size, False, False
+
+    total_gb = _safe_total_vram_gb()
+    if total_gb is None:
+        LOG.info(
+            "[Auto] Could not read GPU VRAM size; assuming 6GB and using "
+            "conservative batch size + AMP + gradient checkpointing."
+        )
+        total_gb = 6.0
+
+    if total_gb <= 6 and batch_size > 4:
+        LOG.info(
+            f"[Auto] GPU has {total_gb:.1f}GB VRAM — reducing batch_size "
+            f"{batch_size} -> 4, enabling AMP (fp16) and gradient checkpointing"
+        )
+        return 4, True, True
+    if total_gb <= 8 and batch_size > 8:
+        LOG.info(
+            f"[Auto] GPU has {total_gb:.1f}GB VRAM — reducing batch_size "
+            f"{batch_size} -> 8, enabling AMP (fp16) and gradient checkpointing"
+        )
+        return 8, True, True
+    if total_gb <= 12 and batch_size > 16:
+        LOG.info(
+            f"[Auto] GPU has {total_gb:.1f}GB VRAM — reducing batch_size "
+            f"{batch_size} -> 16 and enabling AMP (fp16)"
+        )
+        return 16, True, False
+
+    # Plenty of VRAM: keep the requested batch but still use AMP, which
+    # is the difference between "GPU slower than CPU" and a real speedup
+    # on any tensor-core card.
+    LOG.info(f"[Auto] GPU has {total_gb:.1f}GB VRAM — enabling AMP (fp16)")
+    return batch_size, True, False
+
+
 def train_model(
     model: nn.Module,
     train_loader: DataLoader,
@@ -326,9 +467,32 @@ def train_model(
     learning_rate: float = 1e-4,
     save_dir: Path = Path("artifacts/model"),
     model_name: str = "model",
+    use_amp: bool = False,
+    use_gradient_checkpointing: bool = False,
 ) -> nn.Module:
     """Full training loop with validation and checkpointing."""
     model = model.to(device)
+
+    if use_gradient_checkpointing and _enable_gradient_checkpointing(model):
+        LOG.info("Gradient checkpointing enabled (lower VRAM, ~20% slower/epoch)")
+
+    # `torch.amp.GradScaler("cuda")` landed in torch 2.4; pyproject still
+    # allows 2.0, so fall back to the older namespace and, failing that,
+    # train in fp32 rather than crashing a run that used to work.
+    scaler = None
+    if use_amp and device.type == "cuda":
+        try:
+            scaler = torch.amp.GradScaler("cuda")
+        except (AttributeError, TypeError):
+            try:
+                scaler = torch.cuda.amp.GradScaler()
+            except Exception:  # noqa: BLE001
+                LOG.warning(
+                    "Mixed precision unavailable on this PyTorch build; "
+                    "continuing in fp32."
+                )
+    if scaler is None:
+        use_amp = False
 
     save_dir = Path(save_dir)
     save_dir.mkdir(parents=True, exist_ok=True)
@@ -348,6 +512,8 @@ def train_model(
     LOG.info(f"Learning rate   : {learning_rate}")
     LOG.info(f"Train batches   : {len(train_loader)}")
     LOG.info(f"Val batches     : {len(val_loader) if val_loader else 0}")
+    LOG.info(f"Batch size      : {train_loader.batch_size}")
+    LOG.info(f"Mixed precision : {'on (fp16)' if use_amp else 'off'}")
     LOG.info(f"Artifacts dir   : {save_dir.resolve()}")
     LOG.info(hr())
 
@@ -365,6 +531,8 @@ def train_model(
             device=device,
             epoch=ep,
             log_every_batches=10,
+            scaler=scaler,
+            use_amp=use_amp,
         )
 
         val_loss = None
@@ -447,6 +615,16 @@ def main(argv=None) -> int:
         type=int,
         default=0,
         help="Number of output actions (0 = auto-detect from data; issue #64)",
+    )
+    parser.add_argument(
+        "--amp",
+        action="store_true",
+        help="Force mixed-precision (fp16) training on CUDA.",
+    )
+    parser.add_argument(
+        "--no-autotune",
+        action="store_true",
+        help="Use --batch-size verbatim instead of fitting it to the GPU's VRAM (issue #27).",
     )
     parser.add_argument("--val-split", type=float, default=0.1, help="Validation split ratio")
     parser.add_argument("--no-pretrained", action="store_true", help="Don't use pretrained weights")
@@ -540,17 +718,29 @@ def main(argv=None) -> int:
     LOG.info(f"Train samples : {len(train_dataset)}")
     LOG.info(f"Val samples   : {len(val_dataset)}")
 
+    # Fit the batch size to the GPU actually present, and turn on mixed
+    # precision where it helps (issue #27). --no-autotune skips the whole
+    # thing so an advanced user's --batch-size is used verbatim.
+    if args.no_autotune:
+        batch_size, use_amp, use_grad_ckpt = args.batch_size, args.amp, False
+        LOG.info(f"[Auto] Disabled — using --batch-size {batch_size} as given")
+    else:
+        batch_size, use_amp, use_grad_ckpt = autotune_batch_size(
+            args.batch_size, device
+        )
+        use_amp = use_amp or args.amp
+
     # Dataloaders
     train_loader = DataLoader(
         train_dataset,
-        batch_size=args.batch_size,
+        batch_size=batch_size,
         shuffle=True,
         num_workers=0,
         pin_memory=(device.type == "cuda"),
     )
 
     val_loader = (
-        DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, num_workers=0)
+        DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=0)
         if val_size > 0 else None
     )
 
@@ -587,6 +777,8 @@ def main(argv=None) -> int:
         learning_rate=args.lr,
         save_dir=out_dir,
         model_name=args.model,
+        use_amp=use_amp,
+        use_gradient_checkpointing=use_grad_ckpt,
     )
 
     LOG.info(hr("TRAINING COMPLETE"))

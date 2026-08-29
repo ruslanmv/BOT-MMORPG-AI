@@ -190,6 +190,67 @@ def _normalize_game_id(game_id: Optional[str]) -> str:
     return gid if gid else DEFAULT_GAME_ID
 
 
+def _import_grabscreen():
+    """Import the screen-capture module, whatever the layout.
+
+    Three layouts have to work:
+      1. The package is installed (`pip install -e .`) -- plain import.
+      2. A dev checkout, where `bot_mmorpg` is a src-layout package and
+         only the repo root is on sys.path -- add `<repo>/src`.
+      3. A shipped install, which bundles
+         `resources/versions/<ver>/grabscreen.py` (an identical copy)
+         but no `src/` tree at all -- load that file directly.
+
+    Raises ImportError naming everything probed when none of them work,
+    so the endpoint can report something actionable instead of 500ing.
+    """
+    try:
+        from bot_mmorpg.scripts import grabscreen  # noqa: PLC0415
+
+        return grabscreen
+    except ImportError:
+        pass
+
+    probed: List[str] = []
+
+    for root in (repo_root, RESOURCE_ROOT, RESOURCE_ROOT / "resources"):
+        candidate = Path(root) / "src"
+        probed.append(str(candidate))
+        if not (candidate / "bot_mmorpg").is_dir():
+            continue
+        if str(candidate) not in sys.path:
+            sys.path.insert(0, str(candidate))
+        try:
+            from bot_mmorpg.scripts import grabscreen  # noqa: PLC0415
+
+            return grabscreen
+        except ImportError:
+            continue
+
+    # Shipped install: load the bundled standalone copy by path.
+    import importlib.util
+
+    for root in (RESOURCE_ROOT, RESOURCE_ROOT / "resources", repo_root):
+        bundled = Path(root) / "versions" / DEFAULT_VERSION / "grabscreen.py"
+        probed.append(str(bundled))
+        if not bundled.is_file():
+            continue
+        spec = importlib.util.spec_from_file_location(
+            "bot_mmorpg_grabscreen_bundled", bundled
+        )
+        if spec is None or spec.loader is None:
+            continue
+        module = importlib.util.module_from_spec(spec)
+        sys.modules["bot_mmorpg_grabscreen_bundled"] = module
+        spec.loader.exec_module(module)
+        return module
+
+    raise ImportError(
+        "bot_mmorpg.scripts.grabscreen not importable; probed: "
+        + ", ".join(probed)
+    )
+
+
 # ----------------------------
 # Fallback scanners (guarantee UI is never empty)
 # ----------------------------
@@ -550,6 +611,84 @@ def create_app(token: str):
             session_manager.finalize_training()
             return {"ok": True, "finalized": "training"}
         return {"ok": True, "finalized": "unknown"}
+
+    # -------- Screen capture endpoints --------
+    #
+    # The Rust shell has always forwarded "Preview" to POST
+    # /capture/preview (main.rs::get_screen_preview) and the monitor
+    # picker to the sidecar, but neither route existed here -- every
+    # request 404'd and the UI fell back to its empty state. That is the
+    # "screen capture won't capture my screen" of issue #81 and the
+    # "Preview section only shows 'No Preview yet'" of issue #57: the
+    # capture code was fine, nothing was ever asked to run it.
+
+    @app.get("/capture/monitors")
+    async def capture_monitors(x_auth_token: Optional[str] = Header(default=None)):
+        _auth(x_auth_token)
+        try:
+            grabscreen = _import_grabscreen()
+        except Exception as e:  # noqa: BLE001
+            return {
+                "ok": False,
+                "monitors": [],
+                "error": f"Screen capture unavailable: {e}",
+                "hint": (
+                    "Install the capture dependencies: "
+                    "pip install mss (all platforms) or pywin32 (Windows)."
+                ),
+            }
+        try:
+            return {"ok": True, "monitors": grabscreen.list_monitors()}
+        except Exception as e:  # noqa: BLE001
+            return {"ok": False, "monitors": [], "error": str(e)}
+
+    @app.post("/capture/preview")
+    async def capture_preview(
+        payload: Optional[Dict[str, Any]] = None,
+        x_auth_token: Optional[str] = Header(default=None),
+    ):
+        _auth(x_auth_token)
+        payload = payload or {}
+
+        # The shell sends 0 for "primary"; grabscreen numbers monitors
+        # from 1 (mss convention), so 0 means "first real monitor".
+        try:
+            monitor_id = int(payload.get("monitor_id") or 0)
+        except (TypeError, ValueError):
+            monitor_id = 0
+        if monitor_id < 1:
+            monitor_id = 1
+
+        try:
+            width = int(payload.get("width") or 640)
+            height = int(payload.get("height") or 360)
+        except (TypeError, ValueError):
+            width, height = 640, 360
+
+        try:
+            grabscreen = _import_grabscreen()
+        except Exception as e:  # noqa: BLE001
+            return {
+                "ok": False,
+                "error": f"Screen capture unavailable: {e}",
+                "hint": (
+                    "Install the capture dependencies: "
+                    "pip install mss (all platforms) or pywin32 (Windows)."
+                ),
+            }
+
+        try:
+            image = grabscreen.grab_screen_base64(monitor_id, width, height, 70)
+        except Exception as e:  # noqa: BLE001
+            return {"ok": False, "error": str(e)}
+
+        return {
+            "ok": True,
+            "monitor_id": monitor_id,
+            "format": "jpeg",
+            "encoding": "base64",
+            "image": image,
+        }
 
     # -------- ModelHub endpoints --------
 
