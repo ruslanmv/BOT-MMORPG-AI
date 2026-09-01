@@ -109,12 +109,62 @@ def _bootstrap_sys_path() -> None:
             sys.path.insert(0, path_str)
 
 
+def _bootstrap_site_packages() -> None:
+    """Put THIS interpreter's own site-packages onto sys.path.
+
+    The bundled runtime installs third-party deps (fastapi, uvicorn,
+    torch, numpy, ...) into the embedded interpreter, and the sidecar is
+    supposed to see them via the patched `pythonXY._pth` + `import site`.
+    Two things break that in the field (issue #85):
+
+      * The Rust supervisor passes an explicit ``PYTHONPATH`` that lists
+        ``runtime\\py\\python\\site-packages`` (the build's
+        ``pip --target`` location) but NOT the interpreter's standard
+        ``Lib\\site-packages``. Any repair that shells out to
+        ``pip install`` -- including the app's own "Repair PyTorch via
+        pip" -- writes to ``Lib\\site-packages`` by default, so those
+        packages land in a directory the sidecar never adds. The result
+        is exactly the reported failure: ``No module named 'uvicorn'``
+        with a second, shadow ``torch`` tree the doctor warns about.
+      * If a repair rewrites ``pythonXY._pth`` without ``import site``,
+        the whole site machinery goes quiet and even ``site-packages``
+        stops resolving.
+
+    Adding both site directories, derived from ``sys.executable`` /
+    ``sys.prefix`` at runtime, makes the sidecar self-sufficient: it
+    finds its own installed packages no matter which location a repair
+    used and regardless of the supervisor-supplied PYTHONPATH. Appended
+    (not inserted at front) so a project checkout on ``sys.path[0]`` still
+    wins; guarded by ``is_dir()`` so nonexistent paths are skipped; and
+    wrapped so this never raises (a bad path must not abort startup).
+    """
+    try:
+        roots = {Path(sys.prefix)}
+        try:
+            roots.add(Path(sys.executable).resolve().parent)
+        except (OSError, ValueError):
+            pass
+
+        # Both layouts the bundled runtime can present:
+        #   <prefix>\site-packages     -- pip install --target (build)
+        #   <prefix>\Lib\site-packages -- standard install (pip repair)
+        for root in roots:
+            for rel in ("site-packages", os.path.join("Lib", "site-packages")):
+                sp = root / rel
+                sp_str = str(sp)
+                if sp_str not in sys.path and sp.is_dir():
+                    sys.path.append(sp_str)
+    except Exception:  # noqa: BLE001 -- bootstrapping must never raise
+        pass
+
+
 def main() -> int:
     # Bootstrap BEFORE the import. If we leave it inside the try/except
     # below, an exception here gets swallowed into the FAILED line --
     # which is fine, but bootstrapping should never raise (we use
     # try/except inside _bootstrap_sys_path to be sure).
     _bootstrap_sys_path()
+    _bootstrap_site_packages()
 
     # Top-level safety net so EVERY launch failure produces a uniform,
     # parseable marker. Without this, an ImportError in

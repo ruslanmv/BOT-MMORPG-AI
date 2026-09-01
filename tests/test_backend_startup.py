@@ -5,7 +5,94 @@ Validates that main_backend.py correctly parses CLI args and forwards
 them to modelhub.tauri with the right parameter names.
 """
 
+import importlib.util
+import pathlib
+import sys
+
 from unittest.mock import MagicMock, patch
+
+ROOT = pathlib.Path(__file__).resolve().parents[1]
+
+
+def _load_entry_main():
+    """Import backend/entry_main.py under a unique name."""
+    spec = importlib.util.spec_from_file_location(
+        "entry_main_under_test", ROOT / "backend" / "entry_main.py"
+    )
+    assert spec is not None and spec.loader is not None
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules["entry_main_under_test"] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
+class TestSidecarSitePackagesBootstrap:
+    """Issue #85: the sidecar must find its own interpreter's packages.
+
+    The bundled runtime can hold third-party deps in either
+    ``<prefix>\\site-packages`` (the build's ``pip --target``) or
+    ``<prefix>\\Lib\\site-packages`` (where a pip-based repair installs).
+    The Rust supervisor only put the former on PYTHONPATH, so a repaired
+    ``uvicorn`` in the latter was invisible -> ``No module named
+    'uvicorn'``. entry_main now adds both, derived from sys.prefix.
+    """
+
+    def test_lib_site_packages_is_added_when_present(self, tmp_path, monkeypatch):
+        entry = _load_entry_main()
+
+        # A fake interpreter prefix whose deps live only in Lib/site-packages
+        # -- the location a `pip install` repair uses by default.
+        lib_sp = tmp_path / "Lib" / "site-packages"
+        lib_sp.mkdir(parents=True)
+
+        monkeypatch.setattr(sys, "prefix", str(tmp_path))
+        monkeypatch.setattr(sys, "executable", str(tmp_path / "python.exe"))
+        monkeypatch.setattr(sys, "path", list(sys.path))
+
+        entry._bootstrap_site_packages()
+
+        assert str(lib_sp) in sys.path
+
+    def test_flat_site_packages_is_added_when_present(self, tmp_path, monkeypatch):
+        entry = _load_entry_main()
+
+        flat_sp = tmp_path / "site-packages"
+        flat_sp.mkdir()
+
+        monkeypatch.setattr(sys, "prefix", str(tmp_path))
+        monkeypatch.setattr(sys, "executable", str(tmp_path / "python.exe"))
+        monkeypatch.setattr(sys, "path", list(sys.path))
+
+        entry._bootstrap_site_packages()
+
+        assert str(flat_sp) in sys.path
+
+    def test_missing_dirs_are_skipped_and_do_not_raise(self, tmp_path, monkeypatch):
+        entry = _load_entry_main()
+
+        monkeypatch.setattr(sys, "prefix", str(tmp_path))  # empty prefix
+        monkeypatch.setattr(sys, "executable", str(tmp_path / "python.exe"))
+        before = list(sys.path)
+        monkeypatch.setattr(sys, "path", list(sys.path))
+
+        entry._bootstrap_site_packages()  # must not raise
+
+        # Nothing existed to add, so the path is unchanged.
+        assert sys.path == before
+
+    def test_bootstrap_is_idempotent(self, tmp_path, monkeypatch):
+        entry = _load_entry_main()
+
+        (tmp_path / "Lib" / "site-packages").mkdir(parents=True)
+        monkeypatch.setattr(sys, "prefix", str(tmp_path))
+        monkeypatch.setattr(sys, "executable", str(tmp_path / "python.exe"))
+        monkeypatch.setattr(sys, "path", list(sys.path))
+
+        entry._bootstrap_site_packages()
+        entry._bootstrap_site_packages()
+
+        target = str(tmp_path / "Lib" / "site-packages")
+        assert sys.path.count(target) == 1
 
 
 class TestBackendArgParsing:
