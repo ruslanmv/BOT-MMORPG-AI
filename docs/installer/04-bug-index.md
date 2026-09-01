@@ -185,6 +185,58 @@ those directories present.
   auto-generated). Keep everything else pip installed.
 - **See:** `05-case-studies.md` Bug #10.
 
+### `No module named 'uvicorn'` on a machine where numpy/cv2 import fine, with two `torch` trees
+
+Distinct from the "uvicorn entry point" bug above (that ships a broken
+zip). Here the shipped zip is fine — the build's **mandatory** runtime
+integrity check (`build_pipeline.ps1`, `import fastapi, uvicorn` +
+dist-info asserts) cannot pass otherwise — but the *per-user* runtime at
+`%LOCALAPPDATA%\com.bot.mmorpg.ai\runtime\py\python\` has drifted into a
+mixed state.
+
+**Distinguishing signals** (all present in issue #85):
+
+- `numpy` and `cv2` import OK, but `uvicorn` is *entirely* missing and
+  `fastapi` fails on a transitive dep (`typing_inspection`).
+- The runtime doctor's `torch_dlls` row warns **"2 torch trees on
+  sys.path"**: `...\site-packages\torch` **and**
+  `...\Lib\site-packages\torch`.
+- The sidecar's `PYTHONPATH` (in the debug bundle's Environment block)
+  lists `...\runtime\py\python\site-packages` but **not**
+  `...\runtime\py\python\Lib\site-packages`.
+
+**Root cause.** The build installs deps with `pip --target site-packages`
+(a flat `site-packages`), and the Rust supervisor puts exactly that
+directory on the sidecar's `PYTHONPATH`. But every pip-based repair —
+including the app's own **Repair PyTorch via pip** — installs into the
+interpreter's *standard* `Lib\site-packages`. Anything a repair (re)installs
+lands in a directory the sidecar never added, so a repaired `uvicorn`/
+`torch` is invisible to it even though it is on disk. That is why the
+user's repeated Repair Runtime / Repair PyTorch clicks never recovered
+the sidecar.
+
+- **File:** `backend/entry_main.py` (`_bootstrap_site_packages`).
+- **Fix:** the sidecar now appends **both** `<prefix>\site-packages` and
+  `<prefix>\Lib\site-packages` (derived from `sys.prefix`/
+  `sys.executable`) to `sys.path` at startup, so it finds its own
+  installed packages regardless of which location a repair used and
+  regardless of the supervisor-supplied `PYTHONPATH`. Guarded by
+  `test_backend_startup.py::TestSidecarSitePackagesBootstrap`.
+- **Still needed on the AV axis:** the broken `torch` in this bundle
+  (missing `torch/lib/`, `torch._strobelight`) is the separate
+  AV-quarantine problem — see the `torch.testing` AV entry above. The
+  path fix makes a *successful* pip-repair actually take effect; it does
+  not stop AV from re-quarantining torch. Add the AV exclusion first.
+- **End-user recovery (no rebuild), simplest first:**
+  1. Fully delete `%LOCALAPPDATA%\com.bot.mmorpg.ai\runtime`, then
+     relaunch — the app re-extracts a clean runtime with no stale
+     second tree.
+  2. Or reinstall the backend deps into the bundled interpreter:
+     ```powershell
+     & "$env:LOCALAPPDATA\com.bot.mmorpg.ai\runtime\py\python\python.exe" `
+       -m pip install --upgrade fastapi "uvicorn[standard]"
+     ```
+
 ### "Sidecar API not ready after 5 s"
 
 The Python sidecar didn't print `READY url=...` to stdout within 5

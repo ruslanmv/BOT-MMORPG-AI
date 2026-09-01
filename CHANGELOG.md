@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- The sidecar no longer fails with `No module named 'uvicorn'` after a
+  pip-based runtime repair. The backend now adds both
+  `<prefix>\site-packages` (the build's install target) and
+  `<prefix>\Lib\site-packages` (where `pip install` repairs land) to its
+  path, so packages reinstalled by "Repair PyTorch via pip" are actually
+  importable instead of sitting in a directory the sidecar never looked
+  at. Note: a torch broken by antivirus quarantine is a separate axis —
+  add the AV exclusion first, then repair (issue #85).
 - The sidecar starts on Python 3.9 again. One route annotation used the
   3.10+ `Dict[str, Any] | None` spelling; FastAPI evaluates route
   annotations at registration time, so `create_app()` itself raised
