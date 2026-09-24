@@ -111,6 +111,58 @@ def hr(title: str = "", width: int = 72) -> str:
     return f"{'=' * left} {title} {'=' * right}"
 
 
+def _nvidia_gpu_name() -> Optional[str]:
+    """Name of the first NVIDIA GPU per nvidia-smi, or None. Never raises."""
+    import shutil
+    import subprocess
+
+    exe = shutil.which("nvidia-smi")
+    if not exe and sys.platform == "win32":
+        cand = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32", "nvidia-smi.exe")
+        exe = cand if os.path.isfile(cand) else None
+    if not exe:
+        return None
+    try:
+        out = subprocess.run(
+            [exe, "--query-gpu=name", "--format=csv,noheader"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    except Exception:  # noqa: BLE001 -- a hint must never break training
+        return None
+    lines = [ln.strip() for ln in (out.stdout or "").splitlines() if ln.strip()]
+    return lines[0] if out.returncode == 0 and lines else None
+
+
+def cpu_training_hint(gpu_name: Optional[str], torch_version: str, torch_cuda: Optional[str]) -> str:
+    """Explain why training runs on the CPU when an NVIDIA GPU is present.
+
+    The desktop app ships a CPU-only PyTorch build, so an RTX card sat idle
+    and a run on a real dataset took many hours with no word about why
+    (issue #82, and the "training has been running for 8 hours" report).
+    """
+    if not gpu_name:
+        return ""
+    if torch_cuda is None:
+        why = (
+            f"this PyTorch build ({torch_version}) is CPU-only, so your "
+            f"{gpu_name} is not used. To train on it, open Settings -> System "
+            "Tools -> Install GPU PyTorch (NVIDIA)."
+        )
+    else:
+        why = (
+            f"PyTorch {torch_version} was built for CUDA {torch_cuda} but cannot "
+            f"reach your {gpu_name} -- update the NVIDIA driver."
+        )
+    return (
+        f"[Hint] Training on the CPU: {why} CPU training can take hours. "
+        "Every epoch that improves validation saves a <arch>_best.pth, so you "
+        "can press Stop at any time and run the bot with the best model so far."
+    )
+
+
 def fmt_seconds(seconds: float) -> str:
     if seconds < 0:
         seconds = 0
@@ -689,6 +741,12 @@ def main(argv=None) -> int:
     LOG.info(f"Artifacts dir: {out_dir.resolve()}")
     LOG.info(f"Model        : {args.model}")
     LOG.info(f"Device       : {device}")
+    if device.type == "cpu" and not args.cpu:
+        hint = cpu_training_hint(
+            _nvidia_gpu_name(), torch.__version__, getattr(torch.version, "cuda", None)
+        )
+        if hint:
+            LOG.warning(hint)
 
     model_info = get_model_info(args.model)
     is_temporal = model_info.get("temporal", False)

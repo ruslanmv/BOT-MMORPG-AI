@@ -428,6 +428,123 @@ def _scan_trained_models_fs(data_root: Path, gid: str) -> List[Dict[str, Any]]:
     return out
 
 
+def _merge_local_models(
+    discovered: List[Dict[str, Any]], scanned: List[Dict[str, Any]]
+) -> List[Dict[str, Any]]:
+    """Give every trained-model entry a real on-disk `path`.
+
+    `local_store.discover_local_models` returns `{id, name, paths: {dir}}`
+    and no top-level `path` / `model_dir` / `checkpoint`. The UI keys
+    everything off `path`, so its cards got an empty path and its model
+    picker fell back to the bare folder name. Set Active then stored
+    `model_dir="custom_farming_v1"`, and the bot preflight rejected the
+    run with "Active model directory missing on disk" right after a
+    successful training (issue #88). Worse, discovery succeeds whenever
+    the folder exists, so the filesystem scan that DOES carry those
+    fields never ran.
+
+    Discovery stays the source for profile metadata; the scan fills in
+    every field discovery lacks. Entries only one side knows about are
+    kept. Newest first, like the scan.
+    """
+    by_id = {m.get("id"): m for m in scanned}
+    out: List[Dict[str, Any]] = []
+    for entry in discovered:
+        merged = dict(entry)
+        fs = by_id.pop(entry.get("id"), None)
+        if fs is None:
+            # Discovery looked somewhere the scan did not (a customised
+            # local_models_dir): derive the fields from its own dir.
+            model_dir = (entry.get("paths") or {}).get("dir") or ""
+            if model_dir:
+                p = Path(model_dir)
+                fs = {
+                    "path": p.as_posix(),
+                    "model_dir": p.as_posix(),
+                    "checkpoint": _resolve_checkpoint_in_dir(model_dir),
+                }
+        for key, value in (fs or {}).items():
+            if merged.get(key) in (None, ""):
+                merged[key] = value
+        out.append(merged)
+    out.extend(by_id.values())
+    out.sort(key=lambda m: m.get("mtime_ms", 0) or 0, reverse=True)
+    return out
+
+
+def _resolve_model_dir(raw: str, gid: str) -> str:
+    """Map a stored model path to the folder it names on disk.
+
+    `active_model.json` can hold a bare folder name (issue #88, written
+    by UI builds that lacked a model path) or a path relative to the
+    data root (what `register_model` records). Neither resolves from the
+    Rust shell, whose working directory is not the data root, so the bot
+    preflight reported a freshly trained model as deleted. Absolute paths
+    come back unchanged; a relative one is tried against the data root,
+    then `trained_models/<game>/`, then every other game's folder (the
+    active model may belong to a different game than the one selected).
+    Returns `raw` unchanged when nothing matches, so the caller's
+    "missing on disk" message still names what was stored.
+    """
+    raw = (raw or "").strip()
+    if not raw:
+        return raw
+    p = Path(raw).expanduser()
+    if p.is_absolute():
+        return raw
+    # Stored with Windows separators; normalise so it also resolves on
+    # POSIX (tests, dev).
+    rel = Path(raw.replace("\\", "/"))
+    models_root = DATA_ROOT / "trained_models"
+    candidates = [DATA_ROOT / rel, models_root / gid / rel]
+    try:
+        candidates.extend(
+            d / rel for d in sorted(models_root.iterdir()) if d.is_dir() and d.name != gid
+        )
+    except OSError:
+        pass
+    for cand in candidates:
+        if cand.exists():
+            return cand.resolve().as_posix()
+    return raw
+
+
+def _heal_active_model(active: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """Rewrite an `active_model.json` whose model_dir does not resolve.
+
+    Users who hit issue #88 already have `model_dir="<bare name>"` on
+    disk. Resolving it here -- and persisting the result -- fixes those
+    installs on the next catalog load, without asking anyone to re-click
+    Set Active. A path that resolves nowhere is left alone.
+    """
+    if not active or not isinstance(active, dict):
+        return active
+    stored = str(active.get("model_dir") or "").strip()
+    if not stored:
+        return active
+    gid = _normalize_game_id(active.get("game"))
+    resolved = _resolve_model_dir(stored, gid)
+    if resolved == stored:
+        return active
+    healed = dict(active)
+    healed["model_dir"] = resolved
+    if not healed.get("model_file") or not Path(str(healed["model_file"])).is_file():
+        model_file = _resolve_checkpoint_in_dir(resolved)
+        if model_file:
+            healed["model_file"] = model_file
+    if mh_set_active_model is not None:
+        try:
+            mh_set_active_model(
+                gid,
+                str(healed.get("model_id") or "local"),
+                resolved,
+                str(healed.get("model_file") or ""),
+            )
+        except Exception:  # noqa: BLE001 -- healing is best-effort
+            pass
+    return healed
+
+
 # ----------------------------
 # FastAPI server
 # ----------------------------
@@ -749,20 +866,25 @@ def create_app(token: str):
                 active = mh_get_active_model() if mh_get_active_model else None
             except Exception:
                 active = None
+            try:
+                active = _heal_active_model(active)
+            except Exception:
+                pass
 
-        # Local trained models: prefer your discover function, fallback to filesystem scan
-        local_models = []
+        # Local trained models: discovery supplies profile metadata, the
+        # filesystem scan supplies the path/checkpoint fields the UI needs
+        # (issue #88). Either may be empty on its own.
+        discovered = []
         if mh_discover_local_models and mh_load_settings:
             try:
                 s = mh_load_settings()
                 # Ensure local_models_dir resolves under DATA_ROOT
                 # If settings points to "trained_models", this becomes DATA_ROOT/trained_models/<gid>
-                local_models = mh_discover_local_models((DATA_ROOT / s.local_models_dir), gid) or []
+                discovered = mh_discover_local_models((DATA_ROOT / s.local_models_dir), gid) or []
             except Exception:
-                local_models = []
+                discovered = []
 
-        if not local_models:
-            local_models = _scan_trained_models_fs(DATA_ROOT, gid)
+        local_models = _merge_local_models(discovered, _scan_trained_models_fs(DATA_ROOT, gid))
 
         # If registry datasets empty, fallback to filesystem (so recording appears immediately)
         if not datasets:
@@ -794,6 +916,12 @@ def create_app(token: str):
         model_file = (payload.get("model_file") or "").strip()
         if not model_id or not path:
             return {"ok": False, "error": "model_id and path are required"}
+
+        # Store an absolute path. A bare model name or a data-root-relative
+        # path only resolves from the sidecar's working directory, and the
+        # bot preflight runs in the Rust shell, so it reported a freshly
+        # trained model as "missing on disk" (issue #88).
+        path = _resolve_model_dir(path, gid)
 
         # If the UI sent only a directory, resolve a checkpoint here so
         # `active_model.json` carries the file path going forward and

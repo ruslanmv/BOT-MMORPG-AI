@@ -37,7 +37,7 @@ Exit codes
 Output schema
 -------------
   {
-    "doctor_version": "1.2.0",
+    "doctor_version": "1.3.0",
     "verdict": "ok" | "warning" | "error",
     "elapsed_ms": int,
     "platform": {os, python_version, executable, prefix},
@@ -74,7 +74,7 @@ import time
 from dataclasses import asdict, dataclass, field
 from typing import Callable, List, Optional
 
-DOCTOR_VERSION = "1.2.0"
+DOCTOR_VERSION = "1.3.0"
 
 
 # --------------------------------------------------------------------------
@@ -276,6 +276,81 @@ def _torch_native_payload_context(torch_root: str) -> str:
     return frag
 
 
+def _torch_native_loaded() -> bool:
+    """True when torch's native extension is already loaded in THIS process.
+
+    `torch_intact` runs just before `torch_dlls` and imports torch. If
+    `torch._C` made it into sys.modules, Windows resolved every DLL it
+    depends on -- so a file "missing" from torch/lib/ is not missing from
+    anything that matters (issue #87: the libomp140 warning sat next to a
+    passing torch_intact). Checking sys.modules keeps this check's rule
+    of never importing torch itself.
+    """
+    return "torch._C" in sys.modules
+
+
+def _pe_imported_dlls(path: str) -> Optional[List[str]]:
+    """Lower-cased DLL names a PE file imports (regular + delay-load).
+
+    Returns None when the file cannot be read or parsed -- callers treat
+    that as "unknown", never as "imports nothing". Stdlib-only, so it
+    works when torch itself will not import.
+    """
+    import struct
+
+    try:
+        with open(path, "rb") as fh:
+            data = fh.read()
+    except OSError:
+        return None
+    try:
+        if data[:2] != b"MZ":
+            return None
+        pe = struct.unpack_from("<I", data, 0x3C)[0]
+        if data[pe : pe + 4] != b"PE\0\0":
+            return None
+        n_sections = struct.unpack_from("<H", data, pe + 6)[0]
+        opt_size = struct.unpack_from("<H", data, pe + 20)[0]
+        opt = pe + 24
+        magic = struct.unpack_from("<H", data, opt)[0]
+        data_dirs = opt + (112 if magic == 0x20B else 96)
+        import_rva = struct.unpack_from("<I", data, data_dirs + 1 * 8)[0]
+        delay_rva = struct.unpack_from("<I", data, data_dirs + 13 * 8)[0]
+        sections = [
+            struct.unpack_from("<IIII", data, opt + opt_size + i * 40 + 8)
+            for i in range(n_sections)
+        ]
+
+        def to_offset(rva: int) -> Optional[int]:
+            for vsize, vaddr, raw_size, raw_ptr in sections:
+                if vaddr <= rva < vaddr + max(vsize, raw_size):
+                    return rva - vaddr + raw_ptr
+            return None
+
+        def read_name(rva: int) -> Optional[str]:
+            off = to_offset(rva)
+            if off is None:
+                return None
+            end = data.index(b"\0", off)
+            return data[off:end].decode("ascii", "replace").lower()
+
+        names: List[str] = []
+        # (directory rva, descriptor size, offset of the name rva)
+        for table_rva, size, name_at in ((import_rva, 20, 12), (delay_rva, 32, 4)):
+            off = to_offset(table_rva) if table_rva else None
+            while off is not None and off + size <= len(data):
+                name_rva = struct.unpack_from("<I", data, off + name_at)[0]
+                if name_rva == 0:
+                    break
+                name = read_name(name_rva)
+                if name and name not in names:
+                    names.append(name)
+                off += size
+        return names
+    except (struct.error, ValueError, IndexError):
+        return None
+
+
 def _torch_install_roots() -> List[str]:
     """Every sys.path entry that contains a `torch` package directory.
 
@@ -322,10 +397,17 @@ def _check_torch_dlls() -> CheckResult:
     roots = _torch_install_roots()
     multi = ""
     if len(roots) > 1:
+        # Name which copy is live: the first tree on sys.path wins, the
+        # rest are never imported. A plain `pip install` repair used to
+        # write to Lib\site-packages behind the bundled tree (issue #87),
+        # so it changed nothing and left this second copy behind.
+        shadowed = [r for r in roots if os.path.normcase(r) != os.path.normcase(torch_root)]
         multi = (
             f" WARNING: {len(roots)} torch trees on sys.path ({'; '.join(roots)}) "
-            "-- a repair may rewrite one while the interpreter imports the "
-            "other. Remove the stale copy."
+            f"-- torch is imported from {torch_root}; "
+            f"{'; '.join(shadowed)} is a shadowed copy nothing loads. Run "
+            "[Repair PyTorch via pip]: it installs a fresh torch and retires "
+            "the other copy, leaving a single tree."
         )
 
     lib_dir = _torch_lib_dir(torch_root)
@@ -351,6 +433,22 @@ def _check_torch_dlls() -> CheckResult:
         )
 
     if sys.platform == "win32" and _TORCH_EXTERNAL_DLL not in dlls:
+        # Only a problem if something needs it. Newer torch builds do not
+        # link fbgemm.dll against libomp140 at all, and a torch whose
+        # native extension already loaded has, by definition, every DLL
+        # it needs (issue #87).
+        imports = _pe_imported_dlls(os.path.join(lib_dir, "fbgemm.dll"))
+        not_needed = _torch_native_loaded() or (
+            imports is not None and _TORCH_EXTERNAL_DLL not in imports
+        )
+        if not_needed:
+            return CheckResult(
+                "torch_dlls",
+                "warn" if multi else "ok",
+                f"{len(dlls)} native librar(ies) present in {lib_dir}. "
+                f"{_TORCH_EXTERNAL_DLL} is not bundled, and this torch build "
+                "does not need it." + multi,
+            )
         return CheckResult(
             "torch_dlls",
             "warn",

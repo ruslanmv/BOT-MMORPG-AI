@@ -7,7 +7,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **[GAMER_GUIDE.md](GAMER_GUIDE.md)**: a short, picture-first guide for
+  players (screenshots in `docs/images/guide/`). The README's gamer
+  quick start now uses the app's buttons instead of command lines.
+- **Install GPU PyTorch (NVIDIA)** in Settings -> System Tools. The app
+  ships the CPU build of PyTorch, so an NVIDIA card sat idle and training
+  took hours (issue #82). The button installs the CUDA build of the same
+  torch/torchvision version from download.pytorch.org (about 3 GB; only
+  the NVIDIA driver is needed, no CUDA Toolkit). It picks the CUDA builds
+  the installed driver supports, tests each on the card, and retires the
+  bundled CPU copy. **Check GPU** shows what PyTorch can use.
+  **Repair PyTorch (pip)** goes back to the CPU build. Both refuse to run
+  while training, recording or the bot is active.
+
 ### Fixed
+- Training can be stopped. While a run is in progress, the Train button
+  now reads **Stop training**. Before, it was a disabled "Training..."
+  with no way to stop, so a slow CPU run could only be waited out.
+  Stopping keeps the best model saved so far.
+- The Train tab returns to idle when a job ends. The UI waited for a
+  `process_finished` event that nothing sent once jobs moved to the
+  sidecar, so the button stayed on "Training..." after training finished.
+- Long model paths no longer overflow their card in ModelHub.
+- The screen preview shows the screen again instead of a broken-image
+  icon. Capture worked, but the app's Content Security Policy had no
+  `img-src`, so the WebView refused every captured frame. A frame that
+  still cannot be shown is now reported in the log.
+- Run Bot works right after training. Set Active used to store only the
+  model's folder name (`custom_farming_v1`), and the preflight rejected
+  it as "Active model directory missing on disk". Trained models now
+  carry their full folder path, Set Active stores an absolute path, and
+  an already-broken active model is repaired on the next catalog load
+  (issue #88).
+- Start Bot no longer kills a running training job. The bot preflight
+  now explains that training is still running. Stopping a long run that
+  already saved a checkpoint offers that model for Set Active, so hours
+  of training are not lost. When an NVIDIA GPU is present, the trainer
+  says it is running on the CPU and why.
+- The bot now replays mouse clicks for models trained with mouse
+  recording, so click-to-move games get input (`--no-mouse` to disable;
+  issue #88).
+- The runtime doctor no longer warns about a missing
+  `libomp140.x86_64.dll` when torch loads fine, and "Repair PyTorch via
+  pip" now retires the bundled torch it used to leave shadowing the
+  repaired copy, so the "2 torch trees" warning goes away (issue #87).
 - The sidecar no longer fails with `No module named 'uvicorn'` after a
   pip-based runtime repair. The backend now adds both
   `<prefix>\site-packages` (the build's install target) and

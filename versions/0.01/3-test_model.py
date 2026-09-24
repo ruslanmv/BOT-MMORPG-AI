@@ -84,6 +84,16 @@ try:
 except ImportError:
     MODELS_AVAILABLE = False
 
+# Mouse output -- replays clicks for models trained with mouse recording
+try:
+    from pynput.mouse import Button as _MouseButton
+    from pynput.mouse import Controller as _MouseController
+    MOUSE_OUTPUT_AVAILABLE = True
+except Exception:  # noqa: BLE001 -- ImportError, or no display on Linux
+    _MouseButton = None
+    _MouseController = None
+    MOUSE_OUTPUT_AVAILABLE = False
+
 # Platform-specific imports
 IS_WINDOWS = platform.system() == 'Windows'
 if IS_WINDOWS:
@@ -531,6 +541,94 @@ class InferenceEngine:
                 self.motion_log.popleft()
 
 
+class MouseReplayer:
+    """Replay the mouse clicks a mouse-trained model predicts.
+
+    Recording with the mouse on appends [x, y, dx, dy, vx, vy, lmb, rmb,
+    mmb, scroll] (or the legacy [x, y, lmb, rmb, mmb, scroll]) to each
+    sample, with x/y normalised to the capture region. This script used
+    to act on keyboard and gamepad slots only, so a model of a
+    click-to-move MMO computed its clicks and dropped them -- "the bot
+    does nothing" (issue #88).
+
+    A button is pressed when its predicted probability crosses the
+    threshold, after moving the cursor to the predicted (x, y), and
+    released when it falls back: one down/up per click, not one press
+    per frame. The cursor is otherwise left alone, so the bot never
+    fights the player for it. Deltas are not replayed: they were recorded
+    in [-1, 1] and a sigmoid head cannot express the negative half.
+    """
+
+    def __init__(self, region, controller=None, buttons=None, threshold: float = 0.5):
+        left, top, right, bottom = region
+        self.left, self.top = int(left), int(top)
+        self.width = max(1, int(right) - self.left)
+        self.height = max(1, int(bottom) - self.top)
+        self.ctrl = controller
+        self.buttons = buttons or {}
+        self.threshold = threshold
+        self.held = {"left": False, "right": False}
+
+    @staticmethod
+    def parse(predictions: np.ndarray):
+        """(x, y, lmb, rmb) from a prediction vector, or None without mouse slots."""
+        m = np.asarray(predictions)[29:]
+        if len(m) >= 10:
+            return float(m[0]), float(m[1]), float(m[6]), float(m[7])
+        if len(m) >= 6:
+            return float(m[0]), float(m[1]), float(m[2]), float(m[3])
+        return None
+
+    def target(self, x: float, y: float) -> Tuple[int, int]:
+        x = min(1.0, max(0.0, x))
+        y = min(1.0, max(0.0, y))
+        return (
+            self.left + int(round(x * (self.width - 1))),
+            self.top + int(round(y * (self.height - 1))),
+        )
+
+    def step(self, predictions: np.ndarray) -> Optional[str]:
+        """Apply one frame of predictions. Returns a log label or None."""
+        parsed = self.parse(predictions)
+        if parsed is None or self.ctrl is None:
+            return None
+        x, y, lmb, rmb = parsed
+        want = {"left": lmb >= self.threshold, "right": rmb >= self.threshold}
+        label = None
+        for name in ("left", "right"):
+            if want[name] and not self.held[name]:
+                pos = self.target(x, y)
+                self.ctrl.position = pos
+                self.ctrl.press(self.buttons[name])
+                self.held[name] = True
+                label = f"{name}-click @ {pos[0]},{pos[1]}"
+            elif self.held[name] and not want[name]:
+                self.ctrl.release(self.buttons[name])
+                self.held[name] = False
+        return label
+
+    def release_all(self) -> None:
+        for name, is_held in self.held.items():
+            if is_held and self.ctrl is not None:
+                try:
+                    self.ctrl.release(self.buttons[name])
+                except Exception:  # noqa: BLE001 -- cleanup must not raise
+                    pass
+            self.held[name] = False
+
+
+def capture_region_from_env(default):
+    """The recorder's BOTMMO_CAPTURE_REGION ("left,top,right,bottom"), else default."""
+    raw = os.getenv("BOTMMO_CAPTURE_REGION", "").strip()
+    try:
+        parts = [int(float(p)) for p in raw.replace(" ", "").split(",")]
+        if len(parts) == 4 and parts[2] > parts[0] and parts[3] > parts[1]:
+            return tuple(parts)
+    except ValueError:
+        pass
+    return default
+
+
 # =============================================================================
 # Main Loop
 # =============================================================================
@@ -552,6 +650,11 @@ def main(argv=None) -> int:
 
     parser.add_argument("--model", required=True, help="Path to model checkpoint (.pth)")
     parser.add_argument("--no-gamepad", action="store_true", help="Disable gamepad output")
+    parser.add_argument(
+        "--no-mouse",
+        action="store_true",
+        help="Do not replay mouse clicks, even for a model trained with mouse recording",
+    )
     parser.add_argument("--cpu", action="store_true", help="Force CPU inference")
     parser.add_argument("--width", type=int, default=GAME_WIDTH, help="Game window width")
     parser.add_argument("--height", type=int, default=GAME_HEIGHT, help="Game window height")
@@ -592,6 +695,23 @@ def main(argv=None) -> int:
     except Exception as e:
         print(f"[Error] Failed to load model: {e}")
         return 1
+
+    # Mouse replay for models trained with mouse recording (issue #88).
+    mouse = None
+    if engine.has_mouse_output and not args.no_mouse:
+        if MOUSE_OUTPUT_AVAILABLE:
+            region = capture_region_from_env((0, 40, args.width, args.height + 40))
+            mouse = MouseReplayer(
+                region,
+                controller=_MouseController(),
+                buttons={"left": _MouseButton.left, "right": _MouseButton.right},
+            )
+            print(f"Mouse replay: ON (clicks mapped to capture region {region})")
+        else:
+            print(
+                "[Warning] This model predicts mouse clicks, but pynput is not "
+                "installed, so only keyboard/gamepad actions will run."
+            )
 
     # Countdown
     print("\nStarting in...")
@@ -642,9 +762,12 @@ def main(argv=None) -> int:
 
                 # Execute action
                 engine.execute_action(action_idx, action_val)
+                mouse_label = mouse.step(predictions) if mouse is not None else None
 
                 # Get action name
                 action_name = ACTION_NAMES[action_idx] if action_idx < len(ACTION_NAMES) else f"action_{action_idx}"
+                if mouse_label:
+                    action_name = f"{action_name} + {mouse_label}"
 
                 # Check if stuck
                 if engine.check_stuck(delta_count):
@@ -678,6 +801,8 @@ def main(argv=None) -> int:
                     else:
                         paused = True
                         release_all_keys()
+                        if mouse is not None:
+                            mouse.release_all()
                         print("PAUSED (press T to resume)")
                         time.sleep(0.5)
 
@@ -687,6 +812,8 @@ def main(argv=None) -> int:
     finally:
         # Clean up
         release_all_keys()
+        if mouse is not None:
+            mouse.release_all()
         if VJOY_AVAILABLE:
             ultimate_release()
         print("\nInference stopped.")
