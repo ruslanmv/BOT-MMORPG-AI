@@ -141,12 +141,16 @@ def test_catalog_heals_an_existing_bare_name_active_model(sidecar, tmp_path):
     `active.model_dir` from this response."""
     model_dir = _trained_model(tmp_path, "custom", "custom_farming_v1")
     (tmp_path / "active_model.json").write_text(
-        json.dumps({"game": "custom", "model_id": "local", "model_dir": "custom_farming_v1"}),
+        json.dumps(
+            {"game": "custom", "model_id": "local", "model_dir": "custom_farming_v1"}
+        ),
         encoding="utf-8",
     )
     client, headers = _client(sidecar)
 
-    active = client.get("/modelhub/catalog?game_id=custom", headers=headers).json()["active"]
+    active = client.get("/modelhub/catalog?game_id=custom", headers=headers).json()[
+        "active"
+    ]
 
     assert active["model_dir"] == model_dir.resolve().as_posix()
     assert active["model_file"].endswith("efficientnet_lstm_best.pth")
@@ -159,27 +163,37 @@ def test_catalog_heals_active_model_of_another_game(sidecar, tmp_path):
     """active_model.json is global; the selected game may differ."""
     model_dir = _trained_model(tmp_path, "eden_eternal", "eden_quests_v1")
     (tmp_path / "active_model.json").write_text(
-        json.dumps({"game": "custom", "model_id": "local", "model_dir": "eden_quests_v1"}),
+        json.dumps(
+            {"game": "custom", "model_id": "local", "model_dir": "eden_quests_v1"}
+        ),
         encoding="utf-8",
     )
     client, headers = _client(sidecar)
 
-    active = client.get("/modelhub/catalog?game_id=custom", headers=headers).json()["active"]
+    active = client.get("/modelhub/catalog?game_id=custom", headers=headers).json()[
+        "active"
+    ]
 
     assert active["model_dir"] == model_dir.resolve().as_posix()
 
 
 @requires_fastapi
-def test_unresolvable_active_model_is_left_for_the_preflight_to_report(sidecar, tmp_path):
+def test_unresolvable_active_model_is_left_for_the_preflight_to_report(
+    sidecar, tmp_path
+):
     """A model that really is gone keeps its stored value, so the
     "missing on disk" message still names what the user activated."""
     (tmp_path / "active_model.json").write_text(
-        json.dumps({"game": "custom", "model_id": "local", "model_dir": "deleted_model"}),
+        json.dumps(
+            {"game": "custom", "model_id": "local", "model_dir": "deleted_model"}
+        ),
         encoding="utf-8",
     )
     client, headers = _client(sidecar)
 
-    active = client.get("/modelhub/catalog?game_id=custom", headers=headers).json()["active"]
+    active = client.get("/modelhub/catalog?game_id=custom", headers=headers).json()[
+        "active"
+    ]
 
     assert active["model_dir"] == "deleted_model"
 
@@ -240,7 +254,9 @@ def _csp_directives() -> dict:
 
 def test_csp_allows_data_url_preview_frames():
     directives = _csp_directives()
-    assert "img-src" in directives, "without img-src, default-src 'self' blocks data: images"
+    assert "img-src" in directives, (
+        "without img-src, default-src 'self' blocks data: images"
+    )
     assert "data:" in directives["img-src"]
     assert "'self'" in directives["img-src"]
 
@@ -252,7 +268,8 @@ def test_preview_image_failure_is_reported_not_silent():
 
 
 @pytest.mark.skipif(
-    importlib.util.find_spec("cv2") is None or importlib.util.find_spec("numpy") is None,
+    importlib.util.find_spec("cv2") is None
+    or importlib.util.find_spec("numpy") is None,
     reason="opencv + numpy required",
 )
 def test_grab_screen_base64_is_a_decodable_jpeg(monkeypatch):
@@ -283,7 +300,7 @@ def test_bot_preflight_refuses_to_cancel_a_running_training_job():
     """start_bot -> submit_sidecar_job cancels the running job, so
     clicking Start Bot mid-training silently killed the training run."""
     rs = MAIN_RS.read_text(encoding="utf-8")
-    bot_branch = rs[rs.index('"bot" => {'):]
+    bot_branch = rs[rs.index('"bot" => {') :]
     bot_branch = bot_branch[: bot_branch.index("other => {")]
     assert "running_sidecar_job_kind(&state.inner).await" in bot_branch
     assert "Training is still running" in bot_branch
@@ -301,7 +318,10 @@ def test_stopped_training_with_a_checkpoint_is_finalized_as_partial():
 
 
 def _trainer():
-    if importlib.util.find_spec("numpy") is None or importlib.util.find_spec("cv2") is None:
+    if (
+        importlib.util.find_spec("numpy") is None
+        or importlib.util.find_spec("cv2") is None
+    ):
         pytest.skip("numpy + opencv required")
     spec = importlib.util.spec_from_file_location(
         "train_model_i88", ROOT / "versions" / "0.01" / "2-train_model.py"
@@ -312,14 +332,18 @@ def _trainer():
 
 
 def test_cpu_training_hint_names_the_cpu_only_build():
-    hint = _trainer().cpu_training_hint("NVIDIA GeForce RTX 5070 Ti", "2.13.0+cpu", None)
+    hint = _trainer().cpu_training_hint(
+        "NVIDIA GeForce RTX 5070 Ti", "2.13.0+cpu", None
+    )
     assert "CPU-only" in hint
     assert "RTX 5070 Ti" in hint
     assert "Stop" in hint and "_best.pth" in hint
 
 
 def test_cpu_training_hint_blames_the_driver_for_a_cuda_build():
-    hint = _trainer().cpu_training_hint("NVIDIA GeForce RTX 3060", "2.5.0+cu121", "12.1")
+    hint = _trainer().cpu_training_hint(
+        "NVIDIA GeForce RTX 3060", "2.5.0+cu121", "12.1"
+    )
     assert "driver" in hint
 
 
@@ -359,7 +383,7 @@ def _pe_with_imports(path: pathlib.Path, dlls, delay_dlls=()) -> None:
     for rva in name_rvas[: len(dlls)]:
         body += struct.pack("<IIIII", 0, 0, 0, rva, 0)
     body += b"\0" * 20
-    for rva in name_rvas[len(dlls):]:
+    for rva in name_rvas[len(dlls) :]:
         body += struct.pack("<IIIIIIII", 1, rva, 0, 0, 0, 0, 0, 0)
     if delay_dlls:
         body += b"\0" * 32
@@ -374,7 +398,9 @@ def _pe_with_imports(path: pathlib.Path, dlls, delay_dlls=()) -> None:
     struct.pack_into("<II", opt, 112 + 1 * 8, va, n_desc * 20)
     if delay_dlls:
         struct.pack_into("<II", opt, 112 + 13 * 8, va + delay_off, n_delay * 32)
-    section = struct.pack("<8sIIIIIIHHI", b".idata", len(body), va, len(body), raw_ptr, 0, 0, 0, 0, 0)
+    section = struct.pack(
+        "<8sIIIIIIHHI", b".idata", len(body), va, len(body), raw_ptr, 0, 0, 0, 0, 0
+    )
     head = bytes(dos) + b"PE\0\0" + coff + bytes(opt) + section
     path.write_bytes(head + b"\0" * (raw_ptr - len(head)) + bytes(body))
 
@@ -392,7 +418,9 @@ def _torch_lib(tmp_path, *, fbgemm_imports=None):
 
 def test_pe_reader_lists_regular_and_delay_imports(doctor, tmp_path):
     dll = tmp_path / "fbgemm.dll"
-    _pe_with_imports(dll, ["KERNEL32.dll", "libomp140.x86_64.dll"], delay_dlls=["asmjit.dll"])
+    _pe_with_imports(
+        dll, ["KERNEL32.dll", "libomp140.x86_64.dll"], delay_dlls=["asmjit.dll"]
+    )
     assert doctor._pe_imported_dlls(str(dll)) == [
         "kernel32.dll",
         "libomp140.x86_64.dll",
@@ -425,14 +453,18 @@ def test_no_libomp_warning_when_torch_already_loaded(doctor, monkeypatch, tmp_pa
     assert "does not need it" in result.detail
 
 
-def test_no_libomp_warning_when_fbgemm_does_not_import_it(doctor, monkeypatch, tmp_path):
+def test_no_libomp_warning_when_fbgemm_does_not_import_it(
+    doctor, monkeypatch, tmp_path
+):
     root = _torch_lib(tmp_path, fbgemm_imports=["KERNEL32.dll", "c10.dll"])
     _as_windows(doctor, monkeypatch, root)
 
     assert doctor._check_torch_dlls().status == "ok"
 
 
-def test_libomp_warning_kept_when_fbgemm_needs_it_and_torch_failed(doctor, monkeypatch, tmp_path):
+def test_libomp_warning_kept_when_fbgemm_needs_it_and_torch_failed(
+    doctor, monkeypatch, tmp_path
+):
     """The real #79 failure must still be diagnosed."""
     root = _torch_lib(tmp_path, fbgemm_imports=["libomp140.x86_64.dll"])
     _as_windows(doctor, monkeypatch, root)
@@ -448,7 +480,9 @@ def test_split_install_names_the_live_tree_and_the_fix(doctor, monkeypatch, tmp_
     shadow = tmp_path / "Lib" / "site-packages" / "torch"
     shadow.mkdir(parents=True)
     _as_windows(doctor, monkeypatch, root, native_loaded=True)
-    monkeypatch.setattr(doctor, "_torch_install_roots", lambda: [str(root), str(shadow)])
+    monkeypatch.setattr(
+        doctor, "_torch_install_roots", lambda: [str(root), str(shadow)]
+    )
 
     result = doctor._check_torch_dlls()
 
@@ -461,11 +495,13 @@ def test_split_install_names_the_live_tree_and_the_fix(doctor, monkeypatch, tmp_
 def test_pip_repair_retires_the_shadowing_bundled_torch():
     rs = MAIN_RS.read_text(encoding="utf-8")
     assert "fn retire_shadowing_torch(py_dir: &Path)" in rs
-    repair = rs[rs.index("async fn repair_pytorch_via_pip"):]
+    repair = rs[rs.index("async fn repair_pytorch_via_pip") :]
     repair = repair[: repair.index("\nfn shutdown_all")]
     assert "retire_shadowing_torch(py_dir)" in repair
     # Retire only AFTER every pip run succeeded (early returns come first).
-    assert repair.index("return Err(msg);") < repair.index("retire_shadowing_torch(py_dir)")
+    assert repair.index("return Err(msg);") < repair.index(
+        "retire_shadowing_torch(py_dir)"
+    )
 
 
 # =====================================================================
@@ -495,12 +531,17 @@ class _FakeMouse:
 
 
 def _bot():
-    if importlib.util.find_spec("numpy") is None or importlib.util.find_spec("cv2") is None:
+    if (
+        importlib.util.find_spec("numpy") is None
+        or importlib.util.find_spec("cv2") is None
+    ):
         pytest.skip("numpy + opencv required")
     versions = str(ROOT / "versions" / "0.01")
     if versions not in sys.path:
         sys.path.insert(0, versions)
-    spec = importlib.util.spec_from_file_location("test_model_i88", ROOT / "versions" / "0.01" / "3-test_model.py")
+    spec = importlib.util.spec_from_file_location(
+        "test_model_i88", ROOT / "versions" / "0.01" / "3-test_model.py"
+    )
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
@@ -517,11 +558,13 @@ def _preds(x, y, lmb, rmb=0.0):
 def test_mouse_replayer_clicks_once_at_the_predicted_position():
     bot = _bot()
     fake = _FakeMouse()
-    rep = bot.MouseReplayer((0, 40, 1920, 1120), controller=fake, buttons={"left": "L", "right": "R"})
+    rep = bot.MouseReplayer(
+        (0, 40, 1920, 1120), controller=fake, buttons={"left": "L", "right": "R"}
+    )
 
     label = rep.step(_preds(0.5, 0.25, 0.9))
     rep.step(_preds(0.5, 0.25, 0.95))  # still held: no second press
-    rep.step(_preds(0.5, 0.25, 0.1))   # released
+    rep.step(_preds(0.5, 0.25, 0.1))  # released
 
     assert fake.events == [("move", (960, 310)), ("press", "L"), ("release", "L")]
     assert label.startswith("left-click @ 960,310")
@@ -532,7 +575,9 @@ def test_mouse_replayer_ignores_models_without_mouse_output():
 
     bot = _bot()
     fake = _FakeMouse()
-    rep = bot.MouseReplayer((0, 0, 100, 100), controller=fake, buttons={"left": "L", "right": "R"})
+    rep = bot.MouseReplayer(
+        (0, 0, 100, 100), controller=fake, buttons={"left": "L", "right": "R"}
+    )
     assert rep.step(np.ones(29)) is None
     assert fake.events == []
 
@@ -543,13 +588,20 @@ def test_mouse_replayer_reads_the_legacy_six_value_layout():
     bot = _bot()
     p = np.zeros(35)
     p[29:35] = [0.1, 0.2, 0.0, 0.8, 0.0, 0.0]  # x, y, lmb, rmb, mmb, scroll
-    assert bot.MouseReplayer.parse(p) == (pytest.approx(0.1), pytest.approx(0.2), 0.0, pytest.approx(0.8))
+    assert bot.MouseReplayer.parse(p) == (
+        pytest.approx(0.1),
+        pytest.approx(0.2),
+        0.0,
+        pytest.approx(0.8),
+    )
 
 
 def test_release_all_lets_go_of_held_buttons():
     bot = _bot()
     fake = _FakeMouse()
-    rep = bot.MouseReplayer((0, 0, 100, 100), controller=fake, buttons={"left": "L", "right": "R"})
+    rep = bot.MouseReplayer(
+        (0, 0, 100, 100), controller=fake, buttons={"left": "L", "right": "R"}
+    )
     rep.step(_preds(0.5, 0.5, 0.0, 0.9))
     rep.release_all()
     assert fake.events[-1] == ("release", "R")
@@ -570,13 +622,13 @@ def test_capture_region_env_matches_the_recorder(monkeypatch):
 
 
 def _rust_fn(rs: str, signature: str) -> str:
-    body = rs[rs.index(signature):]
+    body = rs[rs.index(signature) :]
     return body[: body.index("\n}\n")]
 
 
 def test_gpu_install_command_is_registered_and_guarded():
     rs = MAIN_RS.read_text(encoding="utf-8")
-    handler = rs[rs.index("tauri::generate_handler!["):]
+    handler = rs[rs.index("tauri::generate_handler![") :]
     assert "install_gpu_pytorch," in handler and "gpu_status," in handler
     body = _rust_fn(rs, "async fn install_gpu_pytorch(")
     # Never rewrite torch under a running training/recording/bot job.
@@ -593,7 +645,7 @@ def test_gpu_install_command_is_registered_and_guarded():
 
 def test_cuda_indexes_cover_rtx_50_and_older_cards():
     rs = MAIN_RS.read_text(encoding="utf-8")
-    table = rs[rs.index("const CUDA_INDEXES"):]
+    table = rs[rs.index("const CUDA_INDEXES") :]
     table = table[: table.index("];")]
     # Blackwell needs CUDA 12.8+; pre-Turing cards need a CUDA 12.x build.
     assert '("cu130", 580)' in table and '("cu128", 570)' in table
@@ -608,9 +660,11 @@ def test_gpu_probe_script_runs_and_reports_json():
 
     rs = MAIN_RS.read_text(encoding="utf-8")
     code = re.search(r'const GPU_PROBE_PY: &str = r#"(.*?)"#;', rs, re.S).group(1)
-    out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=120).stdout
+    out = subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, text=True, timeout=120
+    ).stdout
     line = next(ln for ln in out.splitlines() if ln.startswith("GPUPROBE "))
-    report = json.loads(line[len("GPUPROBE "):])
+    report = json.loads(line[len("GPUPROBE ") :])
     assert "torch" in report or "error" in report
 
 
@@ -622,7 +676,9 @@ def test_system_tools_offers_gpu_install():
 
 
 def test_cpu_training_hint_points_to_the_gpu_install():
-    hint = _trainer().cpu_training_hint("NVIDIA GeForce RTX 5070 Ti", "2.13.0+cpu", None)
+    hint = _trainer().cpu_training_hint(
+        "NVIDIA GeForce RTX 5070 Ti", "2.13.0+cpu", None
+    )
     assert "Install GPU PyTorch (NVIDIA)" in hint
 
 
@@ -633,11 +689,13 @@ def test_cpu_training_hint_points_to_the_gpu_install():
 
 def test_train_button_becomes_stop_while_running():
     js = UI_JS.read_text(encoding="utf-8")
-    start = js[js.index("window.startTraining = async function"):]
-    head = start[: start.index("logToTerminal(\"-------------------------------------------\"")]
+    start = js[js.index("window.startTraining = async function") :]
+    head = start[
+        : start.index('logToTerminal("-------------------------------------------"')
+    ]
     assert 'btn.classList.contains("is-running")' in head
     assert 'invoke("stop_process")' in head
-    running = js[js.index("function _setTrainBadgeRunning()"):]
+    running = js[js.index("function _setTrainBadgeRunning()") :]
     running = running[: running.index("\n}\n")]
     assert "btn.disabled = false;" in running
     assert '"Stop training"' in running
@@ -648,7 +706,7 @@ def test_job_end_emits_process_finished():
     emitted it after jobs moved to the sidecar -- the Train button sat on
     "Training..." forever."""
     rs = MAIN_RS.read_text(encoding="utf-8")
-    worker = rs[rs.index("fn spawn_log_bridge_worker("):]
+    worker = rs[rs.index("fn spawn_log_bridge_worker(") :]
     worker = worker[: worker.index("\nfn stop_process_inner")]
     assert '"process_finished"' in worker
     assert "if !superseded" in worker
