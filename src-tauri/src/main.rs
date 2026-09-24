@@ -3029,13 +3029,24 @@ fn spawn_log_bridge_worker(
                     // Auto-select = YES, auto-activate = NO -- the JS
                     // listener only refreshes + highlights; the user must
                     // still click "Set Active".
-                    if status == "completed" {
-                        if let Some(meta) = training_meta.as_ref() {
+                    //
+                    // A STOPPED run is finalized too when it already saved
+                    // a checkpoint: every epoch that improves validation
+                    // writes <arch>_best.pth, so a user who stops a
+                    // multi-hour CPU run still has a model to play with.
+                    // Before, nothing told them so and the Run tab stayed
+                    // on "Choose Model First".
+                    if let Some(meta) = training_meta.as_ref() {
+                        let checkpoint = resolve_checkpoint_path(None, Some(meta.out_dir.as_str())).ok();
+                        let partial = status == "cancelled";
+                        if status == "completed" || (partial && checkpoint.is_some()) {
                             let payload = json!({
                                 "game_id": meta.game_id,
                                 "model_name": meta.model_name,
                                 "model_dir": meta.out_dir,
                                 "job_id": job_id,
+                                "partial": partial,
+                                "checkpoint": checkpoint,
                             });
                             let _ = window.emit("training_finalized", payload);
                         }
@@ -3044,9 +3055,24 @@ fn spawn_log_bridge_worker(
                     // Clear the slot only if the job we owned is still
                     // the one stored. A user could theoretically have
                     // started a fresh job while we were polling.
-                    let mut slot = inner.current_sidecar_job.lock().unwrap();
-                    if slot.as_deref() == Some(job_id.as_str()) {
-                        *slot = None;
+                    let superseded = {
+                        let mut slot = inner.current_sidecar_job.lock().unwrap();
+                        if slot.as_deref() == Some(job_id.as_str()) {
+                            *slot = None;
+                        }
+                        slot.is_some()
+                    };
+                    // The UI resets its Train / Run / Record buttons on
+                    // `process_finished`, but nothing emitted it once jobs
+                    // moved to the sidecar, so the Train button stayed on
+                    // "Training..." forever after a run finished. Skip it
+                    // when a newer job already took the slot, so that job's
+                    // UI is not reset under it.
+                    if !superseded {
+                        let _ = window.emit(
+                            "process_finished",
+                            json!({ "job_id": job_id, "status": status, "exit_code": exit_code }),
+                        );
                     }
                     break;
                 }
@@ -3369,6 +3395,66 @@ async fn repair_runtime(
     }
 }
 
+/// After a successful pip repair, retire the bundled torch tree that
+/// shadows the freshly installed one (issue #87).
+///
+/// The build installs torch into `<python>\site-packages`, which the
+/// `_pth` file puts ahead of `<python>\Lib\site-packages` -- where a plain
+/// `pip install` lands. So the repair's torch was never imported, and
+/// every repair left a second tree behind for the doctor to warn about.
+///
+/// The bundled copy is renamed into a sibling folder rather than
+/// deleted in place: a rename of a directory holding a DLL some process
+/// has loaded fails as a whole on Windows, so the worst case is "nothing
+/// changed", never a half-deleted torch. If any rename fails, the ones
+/// already done are moved back. Returns the names retired.
+fn retire_shadowing_torch(py_dir: &Path) -> Result<Vec<String>, String> {
+    let bundled = py_dir.join("site-packages");
+    let repaired = py_dir.join("Lib").join("site-packages");
+    if !bundled.join("torch").is_dir() || !repaired.join("torch").is_dir() {
+        return Ok(Vec::new());
+    }
+    let parked = py_dir.join(format!("shadowed-torch-{}", unix_now_ms()));
+    std::fs::create_dir_all(&parked)
+        .map_err(|e| format!("cannot create {}: {}", parked.display(), e))?;
+
+    let mut names: Vec<String> = std::fs::read_dir(&bundled)
+        .map_err(|e| format!("cannot read {}: {}", bundled.display(), e))?
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().to_string())
+        .filter(|name| {
+            let lower = name.to_lowercase();
+            let is_pkg = matches!(lower.as_str(), "torch" | "torchvision" | "functorch" | "torchgen");
+            let is_meta = (lower.starts_with("torch-") || lower.starts_with("torchvision-"))
+                && lower.ends_with(".dist-info");
+            // Only retire a package the repair actually provides.
+            (is_pkg && repaired.join(name).exists()) || is_meta
+        })
+        .collect();
+    // torch first: if it cannot move (a loaded DLL), nothing else moves.
+    names.sort_by_key(|n| n.to_lowercase() != "torch");
+
+    let mut moved: Vec<String> = Vec::new();
+    for name in &names {
+        if let Err(e) = std::fs::rename(bundled.join(name), parked.join(name)) {
+            for done in moved.iter().rev() {
+                let _ = std::fs::rename(parked.join(done), bundled.join(done));
+            }
+            let _ = std::fs::remove_dir_all(&parked);
+            return Err(format!(
+                "could not move {} out of {} ({}). Close anything using the app's Python (stop training/recording, or restart the app) and run the repair again.",
+                name,
+                bundled.display(),
+                e
+            ));
+        }
+        moved.push(name.clone());
+    }
+    // Best effort: a leftover parked folder is off sys.path and harmless.
+    let _ = std::fs::remove_dir_all(&parked);
+    Ok(moved)
+}
+
 /// Tauri command: deepest-recovery option for the bug-#9-style failure
 /// where torch/testing or numpy/testing is missing on disk despite
 /// torch/numpy themselves being importable. Downloads fresh wheels
@@ -3391,9 +3477,11 @@ async fn repair_runtime(
 /// to terminal_update so the operator sees progress.
 #[tauri::command]
 async fn repair_pytorch_via_pip(
+    state: tauri::State<'_, AppState>,
     app: AppHandle,
     window: Window,
 ) -> Result<String, String> {
+    ensure_no_sidecar_job(&state.inner).await?;
     let py = managed_embedded_python_dir(&app)
         .join(if is_windows() { "python.exe" } else { "bin/python3" });
     if !py.exists() {
@@ -3507,11 +3595,355 @@ async fn repair_pytorch_via_pip(
         );
     }
 
+    // pip wrote to Lib\site-packages; make that the torch Python imports.
+    if let Some(py_dir) = py.parent() {
+        match retire_shadowing_torch(py_dir) {
+            Ok(moved) if !moved.is_empty() => {
+                let _ = window.emit::<String>(
+                    "terminal_update",
+                    format!(
+                        "[System] Retired the older bundled torch ({}) so the repaired copy is the one loaded.",
+                        moved.join(", ")
+                    ),
+                );
+            }
+            Ok(_) => {}
+            Err(e) => {
+                let _ = window.emit::<String>("terminal_update", format!("[Warning] {}", e));
+            }
+        }
+    }
+
     let _ = window.emit::<String>(
         "terminal_update",
         "[System] Repair PyTorch via pip: COMPLETE. Re-run the doctor to verify.".to_string(),
     );
     Ok("torch + torchvision + numpy reinstalled. Re-run the doctor to verify.".to_string())
+}
+
+// ---------------------------------------------------------------------
+// GPU PyTorch (NVIDIA CUDA)
+// ---------------------------------------------------------------------
+//
+// The bundled runtime ships the CPU build of PyTorch, so an NVIDIA card
+// sat idle and training on a real dataset took hours (issue #82, the
+// "training has been running for 8 hours" report). `install_gpu_pytorch`
+// swaps in the CUDA build of the SAME torch/torchvision version from
+// PyTorch's CUDA index. The Windows CUDA wheels carry their own CUDA
+// runtime, so the user needs a recent NVIDIA driver and nothing else --
+// no CUDA Toolkit. Same version means the same dependency set, so
+// `--no-deps` cannot leave a mismatched sympy/networkx/... behind.
+
+/// PyTorch CUDA indexes to try, with the minimum NVIDIA driver (major
+/// version) each needs. Newest first: RTX 50 (Blackwell) needs CUDA
+/// 12.8+, while CUDA 13 dropped cards older than Turing, so no single
+/// index fits every GPU -- each install is verified on the GPU and the
+/// next one is tried if it cannot run there. Not every index carries
+/// every torch version (e.g. no cu128 Windows build of torch 2.13), and
+/// a missing version simply fails pip and moves on.
+const CUDA_INDEXES: &[(&str, u32)] = &[
+    ("cu130", 580),
+    ("cu128", 570),
+    ("cu126", 560),
+    ("cu124", 551),
+    ("cu121", 531),
+];
+
+/// Indexes the installed driver can run, in preference order.
+fn cuda_indexes_for_driver(driver: &str) -> Vec<&'static str> {
+    let major: u32 = driver
+        .trim()
+        .split('.')
+        .next()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
+    CUDA_INDEXES
+        .iter()
+        // Unknown driver version: try everything, the GPU test decides.
+        .filter(|(_, min)| major == 0 || major >= *min)
+        .map(|(idx, _)| *idx)
+        .collect()
+}
+
+/// "2.13.0+cpu" -> "2.13.0". pip needs the public version to pick the
+/// CUDA flavour of the same release.
+fn public_version(v: &str) -> &str {
+    v.trim().split('+').next().unwrap_or("").trim()
+}
+
+/// The text after `<tag> ` on the first stdout line that starts with it.
+/// Probe scripts print one tagged JSON line so warnings on stdout
+/// cannot break the parse.
+fn tagged_line<'a>(stdout: &'a str, tag: &str) -> Option<&'a str> {
+    let prefix = format!("{} ", tag);
+    stdout
+        .lines()
+        .find_map(|l| l.trim().strip_prefix(prefix.as_str()))
+}
+
+/// (GPU name, driver version) of the first NVIDIA GPU, via nvidia-smi,
+/// which the NVIDIA driver installs. None when there is no NVIDIA GPU
+/// or driver.
+fn nvidia_gpu_info() -> Option<(String, String)> {
+    let mut candidates: Vec<PathBuf> = vec![PathBuf::from("nvidia-smi")];
+    if is_windows() {
+        let root = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".to_string());
+        candidates.push(Path::new(&root).join("System32").join("nvidia-smi.exe"));
+    }
+    for exe in candidates {
+        let mut cmd = Command::new(&exe);
+        cmd.args(["--query-gpu=name,driver_version", "--format=csv,noheader"]);
+        #[cfg(target_os = "windows")]
+        {
+            use std::os::windows::process::CommandExt;
+            cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+        }
+        if let Ok(out) = cmd.output() {
+            if !out.status.success() {
+                continue;
+            }
+            let text = String::from_utf8_lossy(&out.stdout);
+            if let Some(line) = text.lines().map(str::trim).find(|l| !l.is_empty()) {
+                let mut parts = line.splitn(2, ',');
+                let name = parts.next().unwrap_or("").trim().to_string();
+                let driver = parts.next().unwrap_or("").trim().to_string();
+                if !name.is_empty() {
+                    return Some((name, driver));
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Run the embedded Python with `args`, forward the tail of its output to
+/// the terminal, and return stdout. Err carries a one-line summary.
+fn run_embedded_python(py: &Path, args: &[&str], label: &str, window: &Window) -> Result<String, String> {
+    let mut cmd = Command::new(py);
+    apply_stable_python_env(&mut cmd);
+    cmd.args(args);
+    cmd.stdout(Stdio::piped());
+    cmd.stderr(Stdio::piped());
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    }
+    let output = cmd
+        .output()
+        .map_err(|e| format!("Failed to start Python for {}: {}", label, e))?;
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    for line in stdout.lines().rev().take(15).collect::<Vec<_>>().into_iter().rev() {
+        let _ = window.emit::<String>("terminal_update", format!("({}) {}", label, line));
+    }
+    if !output.status.success() {
+        for line in stderr.lines().rev().take(10).collect::<Vec<_>>().into_iter().rev() {
+            let _ = window.emit::<String>("terminal_update", format!("({} stderr) {}", label, line));
+        }
+        return Err(format!(
+            "{} failed with exit {}",
+            label,
+            output.status.code().map(|c| c.to_string()).unwrap_or_else(|| "?".to_string())
+        ));
+    }
+    Ok(stdout)
+}
+
+/// Refuse to rewrite torch while a job that imports it is running: the
+/// running process holds torch's DLLs open, and pip would fail half-way
+/// through replacing them.
+async fn ensure_no_sidecar_job(inner: &Arc<AppStateInner>) -> Result<(), String> {
+    if let Some(kind) = running_sidecar_job_kind(inner).await {
+        return Err(format!(
+            "A {} job is still running and has PyTorch loaded. Stop it (or wait for it to finish), then try again.",
+            match kind.as_str() {
+                "train" => "training",
+                "collect" => "recording",
+                "inference" => "bot",
+                other => other,
+            }
+        ));
+    }
+    Ok(())
+}
+
+const GPU_PROBE_PY: &str = r#"
+import json
+r = {}
+try:
+    import torch
+    r["torch"] = torch.__version__
+    r["cuda_build"] = getattr(torch.version, "cuda", None)
+    r["cuda_available"] = bool(torch.cuda.is_available())
+    if r["cuda_available"]:
+        r["device"] = torch.cuda.get_device_name(0)
+        x = torch.ones(64, 64, device="cuda")
+        r["compute_ok"] = float((x @ x).sum().item()) == 64.0 ** 3
+except BaseException as e:
+    r["error"] = "%s: %s" % (type(e).__name__, e)
+print("GPUPROBE " + json.dumps(r))
+"#;
+
+const TORCH_VERSIONS_PY: &str = r#"
+import json
+import importlib.metadata as m
+out = {}
+for name in ("torch", "torchvision"):
+    try:
+        out[name] = m.version(name)
+    except Exception:
+        out[name] = None
+print("VERSIONS " + json.dumps(out))
+"#;
+
+/// Tauri command: what PyTorch can use right now. Drives the GPU
+/// section of Settings -> System Tools.
+#[tauri::command]
+async fn gpu_status(app: AppHandle, window: Window) -> Result<Value, String> {
+    let py = managed_embedded_python_dir(&app)
+        .join(if is_windows() { "python.exe" } else { "bin/python3" });
+    let gpu = nvidia_gpu_info();
+    let probe = if py.exists() {
+        run_embedded_python(&py, &["-c", GPU_PROBE_PY], "gpu probe", &window)
+            .ok()
+            .and_then(|out| tagged_line(&out, "GPUPROBE").map(|s| s.to_string()))
+            .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+            .unwrap_or(Value::Null)
+    } else {
+        Value::Null
+    };
+    Ok(json!({
+        "nvidia_gpu": gpu.as_ref().map(|g| g.0.clone()),
+        "driver": gpu.as_ref().map(|g| g.1.clone()),
+        "torch": probe,
+    }))
+}
+
+/// Tauri command: install the CUDA build of the bundled torch version.
+#[tauri::command]
+async fn install_gpu_pytorch(
+    state: tauri::State<'_, AppState>,
+    app: AppHandle,
+    window: Window,
+) -> Result<String, String> {
+    ensure_no_sidecar_job(&state.inner).await?;
+    let py = managed_embedded_python_dir(&app)
+        .join(if is_windows() { "python.exe" } else { "bin/python3" });
+    if !py.exists() {
+        return Err(format!(
+            "Bundled python.exe not found at {}. Run Repair Runtime first.",
+            py.display()
+        ));
+    }
+    let (gpu, driver) = nvidia_gpu_info().ok_or_else(|| {
+        "No NVIDIA GPU found (nvidia-smi is not available). GPU PyTorch needs an NVIDIA card with its driver installed; AMD and Intel GPUs are not supported, and training will keep using the CPU.".to_string()
+    })?;
+    let say = |msg: String| {
+        let _ = window.emit::<String>("terminal_update", msg);
+    };
+    say(format!("[System] GPU PyTorch: found {} (driver {}).", gpu, driver));
+
+    let versions_out = run_embedded_python(&py, &["-c", TORCH_VERSIONS_PY], "versions", &window)?;
+    let versions: Value = tagged_line(&versions_out, "VERSIONS")
+        .and_then(|s| serde_json::from_str(s).ok())
+        .ok_or_else(|| "Could not read the installed PyTorch version.".to_string())?;
+    let torch_v = versions
+        .get("torch")
+        .and_then(|v| v.as_str())
+        .map(|v| public_version(v).to_string())
+        .ok_or_else(|| "PyTorch is not installed. Run Repair PyTorch (pip) first.".to_string())?;
+    let vision_v = versions
+        .get("torchvision")
+        .and_then(|v| v.as_str())
+        .map(|v| public_version(v).to_string());
+
+    let mut specs = vec![format!("torch=={}", torch_v)];
+    if let Some(v) = &vision_v {
+        specs.push(format!("torchvision=={}", v));
+    }
+    say(format!(
+        "[System] GPU PyTorch: downloading the CUDA build of {} (about 3 GB; this can take a while)...",
+        specs.join(" + ")
+    ));
+
+    let candidates = cuda_indexes_for_driver(&driver);
+    if candidates.is_empty() {
+        return Err(format!(
+            "NVIDIA driver {} is too old for any current PyTorch CUDA build. Update it from nvidia.com (version {} or newer), restart the app, and try again.",
+            driver,
+            CUDA_INDEXES.iter().map(|(_, m)| *m).min().unwrap_or(531)
+        ));
+    }
+
+    let mut installed_any: Option<&str> = None;
+    let mut last_problem = String::new();
+    for idx in candidates {
+        let url = format!("https://download.pytorch.org/whl/{}", idx);
+        let mut args: Vec<&str> = vec![
+            "-m", "pip", "install", "--upgrade", "--force-reinstall", "--no-deps",
+            "--index-url", url.as_str(),
+        ];
+        args.extend(specs.iter().map(|s| s.as_str()));
+        say(format!("[System] pip install from {} ...", idx));
+        if let Err(e) = run_embedded_python(&py, &args, "pip", &window) {
+            // Usually "no such version on this index": try the next one.
+            say(format!("[System] {}: {} -- trying the next CUDA build.", idx, e));
+            last_problem = e;
+            continue;
+        }
+        installed_any = Some(idx);
+
+        // pip wrote to Lib\site-packages; retire the bundled CPU copy that
+        // would otherwise keep shadowing it (see retire_shadowing_torch).
+        // A no-op once it has been retired.
+        if let Some(py_dir) = py.parent() {
+            retire_shadowing_torch(py_dir).map_err(|e| {
+                format!(
+                    "The CUDA build downloaded, but the CPU build is still the one loaded: {}",
+                    e
+                )
+            })?;
+        }
+
+        let probe: Value = run_embedded_python(&py, &["-c", GPU_PROBE_PY], "gpu probe", &window)
+            .ok()
+            .and_then(|out| tagged_line(&out, "GPUPROBE").and_then(|s| serde_json::from_str(s).ok()))
+            .unwrap_or(Value::Null);
+        let ok = probe.get("cuda_available").and_then(|v| v.as_bool()).unwrap_or(false)
+            && probe.get("compute_ok").and_then(|v| v.as_bool()).unwrap_or(false);
+        if ok {
+            let msg = format!(
+                "GPU PyTorch ({}) is ready: training and the bot will use the {}.",
+                idx, gpu
+            );
+            say(format!("[System] {}", msg));
+            return Ok(msg);
+        }
+        last_problem = probe
+            .get("error")
+            .and_then(|v| v.as_str())
+            .unwrap_or("torch.cuda.is_available() is False")
+            .to_string();
+        say(format!(
+            "[System] {} installed but cannot run on the {} ({}) -- trying the next CUDA build.",
+            idx, gpu, last_problem
+        ));
+    }
+
+    Err(match installed_any {
+        // A CUDA build that cannot reach the GPU still runs on the CPU,
+        // so nothing is broken -- it just is not faster yet.
+        Some(_) => format!(
+            "PyTorch's CUDA builds installed but none could use the {} ({}). Update the NVIDIA driver (current: {}) from nvidia.com, restart the app, and click Install GPU PyTorch again. Training keeps working on the CPU meanwhile.",
+            gpu, last_problem, driver
+        ),
+        None => format!(
+            "No CUDA build of {} could be installed from PyTorch's servers ({}). Check your internet connection and free disk space (about 5 GB), then try again.",
+            specs.join(" + "),
+            last_problem
+        ),
+    })
 }
 
 fn shutdown_all(app: &AppHandle, window: Option<&Window>) {
@@ -4874,6 +5306,30 @@ async fn install_health(
 // "Backend sidecar not responding" reason -- by design, since none
 // of the three actions can succeed if /jobs is unreachable.
 
+/// Kind ("train", "collect", "inference", ...) of the sidecar job this
+/// shell is tracking, if that job has not reached a terminal status.
+/// None when no job is tracked, it already finished, or the sidecar
+/// cannot say -- the last case is left to the /health reason.
+async fn running_sidecar_job_kind(inner: &Arc<AppStateInner>) -> Option<String> {
+    let job_id = inner
+        .current_sidecar_job
+        .lock()
+        .ok()
+        .and_then(|g| g.clone())?;
+    let body = api_get_with(inner, &format!("/jobs/{}", job_id)).await.ok()?;
+    let job = body.get("job")?;
+    let status = job.get("status").and_then(|v| v.as_str()).unwrap_or("running");
+    if matches!(status, "completed" | "failed" | "cancelled") {
+        return None;
+    }
+    Some(
+        job.get("kind")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown")
+            .to_string(),
+    )
+}
+
 #[tauri::command]
 async fn preflight_action(
     state: tauri::State<'_, AppState>,
@@ -5028,6 +5484,18 @@ async fn preflight_action(
             }
         }
         "bot" => {
+            // start_bot goes through submit_sidecar_job, which cancels
+            // whatever job is running to make room. Clicking Start Bot
+            // mid-training therefore killed the training run without a
+            // word. Say what is running and how to get a model out of it.
+            if let Some(kind) = running_sidecar_job_kind(&state.inner).await {
+                reasons.push(match kind.as_str() {
+                    "train" => "Training is still running, and starting the bot would cancel it. Wait for it to finish, or click Stop in the Train tab: every epoch that improved on validation already saved a checkpoint, and the stopped model shows up in the Models tab ready for 'Set Active'.".to_string(),
+                    "collect" => "A recording is still running. Stop it in the Teach tab first so the dataset is saved, then start the bot.".to_string(),
+                    "inference" => "The bot is already running. Stop it before starting it again.".to_string(),
+                    other => format!("Another job ({}) is still running. Stop it or wait for it to finish before starting the bot.", other),
+                });
+            }
             // start_bot requires --model. Resolve it here so the user
             // gets the same clear error at click time as they would
             // get from start_bot's body. We call /modelhub/catalog
@@ -6686,6 +7154,8 @@ fn main() {
             add_av_exclusion,
             repair_runtime,
             repair_pytorch_via_pip,
+            gpu_status,
+            install_gpu_pytorch,
             support_report,
             check_for_update,
             app_info,

@@ -933,8 +933,15 @@ function isArchitectureTemplatePath(p) {
 function labelForLocalModel(m) {
   return m.name || m.id || m.path || "local";
 }
+// Issue #88: the folder path, never the bare id. Discovery entries carry
+// their folder under `paths.dir`; falling back to `m.id` stored
+// model_dir="custom_farming_v1" and the bot preflight then reported the
+// just-trained model as "missing on disk".
+function localModelPath(m) {
+  return (m && (m.path || m.model_dir || (m.paths && m.paths.dir))) || "";
+}
 function valueForLocalModel(m) {
-  return m.path || m.id || "";
+  return localModelPath(m) || m.id || "";
 }
 
 async function refreshModelhubAvailability() {
@@ -1115,7 +1122,7 @@ function _buildUnifiedModelList() {
     kind: "local",
     id: m.id || m.path || m.name || "",
     name: m.name || m.id || "Trained Model",
-    path: m.path || m.model_dir || "",
+    path: localModelPath(m),
     arch: m.arch || m.architecture || "",
     accuracy: m.accuracy != null ? m.accuracy : (m.metrics?.accuracy ?? null),
     resolution: m.resolution || m.input_resolution || "",
@@ -1459,7 +1466,7 @@ async function setActiveModelFromUI() {
     model_id = "local";
     path = selectedLocalModelPath;
     const found = (currentCatalog.local_models || []).find(
-      (m) => (m.path || m.model_dir) === selectedLocalModelPath
+      (m) => localModelPath(m) === selectedLocalModelPath
     );
     if (found && found.checkpoint) model_file = found.checkpoint;
   } else if (selectedBuiltinModelPath) {
@@ -1734,6 +1741,23 @@ window.startTraining = async function () {
   const progressBar = document.getElementById("progress-bar");
   const pctDisplay = document.getElementById("train-pct");
   const btn = document.getElementById("btnStartTraining");
+
+  // While training runs this button is "Stop training". There was no
+  // way to stop a run from the UI before, so a slow CPU run could only
+  // be waited out. Stopping keeps every checkpoint already saved; the
+  // log bridge then offers the best one for Set Active.
+  if (btn && btn.classList.contains("is-running")) {
+    if (!confirm("Stop training now?\n\nThe best model saved so far is kept and can be used right away.")) return;
+    btn.disabled = true;
+    try {
+      const res = await invoke("stop_process");
+      logToTerminal(`Training stopped by user. ${res}`, "info");
+    } catch (e) {
+      logToTerminal(`Failed to stop training: ${e}`, "error");
+      btn.disabled = false;
+    }
+    return;
+  }
 
   try {
     logToTerminal("-------------------------------------------", "info");
@@ -2117,14 +2141,29 @@ async function wireBackendEvents() {
     const modelDir = String(meta.model_dir || "").trim();
     const modelName = String(meta.model_name || "").trim();
     const gid = String(meta.game_id || selectedGameId || DEFAULT_GAME_ID).trim();
+    // A stopped run that already saved a checkpoint (best epoch so far)
+    // is still a runnable model -- say so instead of leaving the user
+    // to guess whether hours of training were thrown away.
+    const partial = meta.partial === true;
     if (!modelDir) return;
 
     _lastTrainedPath = modelDir;
-    logToTerminal(`Training complete -> ${modelDir}`, "success");
-    window.notifySuccess?.(
-      "Training complete",
-      `${modelName || "New model"} is ready in ModelHub.`
-    );
+    if (partial) {
+      logToTerminal(
+        `Training stopped early -> ${modelDir}\n  ↳ keeping the best checkpoint saved so far: ${meta.checkpoint || "(best/newest .pth)"}`,
+        "success"
+      );
+      window.notifySuccess?.(
+        "Training stopped",
+        `${modelName || "New model"} kept its best checkpoint so far and can run now. Train longer later for better results.`
+      );
+    } else {
+      logToTerminal(`Training complete -> ${modelDir}`, "success");
+      window.notifySuccess?.(
+        "Training complete",
+        `${modelName || "New model"} is ready in ModelHub.`
+      );
+    }
 
     // Refresh catalog so the new model appears in the gallery.
     try {
@@ -2142,7 +2181,11 @@ async function wireBackendEvents() {
     const setBtn = document.getElementById("mh-jt-set-active");
     const dismissBtn = document.getElementById("mh-jt-dismiss");
     if (banner) banner.hidden = false;
-    if (sub) sub.textContent = `${modelName || "New Model"} is ready. Set it active to run the bot.`;
+    if (sub) {
+      sub.textContent = partial
+        ? `${modelName || "New Model"} (stopped early, best checkpoint so far) is ready. Set it active to run the bot.`
+        : `${modelName || "New Model"} is ready. Set it active to run the bot.`;
+    }
     if (setBtn) {
       setBtn.onclick = async () => {
         // Mirror the latest-card selection into the hidden state shims.
@@ -3105,6 +3148,21 @@ async function updatePreviewImageTauri(tab, monitorId) {
     const result = await invoke("get_screen_preview", { monitor_id: monitorId });
     if (result && result.ok && result.image) {
       if (imgEl) {
+        // A frame the WebView refuses to render (the app CSP blocked
+        // data: images until img-src allowed them) used to leave a
+        // broken-image icon and nothing in the log. Put the placeholder
+        // back and say why, once per distinct message.
+        imgEl.onerror = () => {
+          imgEl.style.display = "none";
+          if (placeholder) placeholder.style.display = "";
+          if (container) container.classList.remove("is-live");
+          const msg = "Screen preview: a frame was captured but could not be displayed. " +
+            "Update to the latest release; if it persists, run Settings -> System Tools -> Run Diagnosis.";
+          if (msg !== _lastPreviewError) {
+            _lastPreviewError = msg;
+            logToTerminal(msg, "error");
+          }
+        };
         imgEl.src = "data:image/jpeg;base64," + result.image;
         imgEl.style.display = "block";
       }
@@ -3531,9 +3589,12 @@ function _setTrainBadgeRunning() {
   }
   if (btn) {
     btn.classList.add("is-running");
-    btn.disabled = true;
+    // Clickable: startTraining turns a click into Stop while running.
+    btn.disabled = false;
     const labelSpan = btn.querySelector(".train-start-label");
-    if (labelSpan) labelSpan.textContent = "Training...";
+    if (labelSpan) labelSpan.textContent = "Stop training";
+    const iconSpan = btn.querySelector(".train-start-icon");
+    if (iconSpan) iconSpan.textContent = "■";
   }
   if (statEl) {
     statEl.classList.remove("is-blocked", "is-ready");
@@ -3552,6 +3613,8 @@ function _setTrainBadgeIdle() {
     btn.classList.remove("is-running");
     const labelSpan = btn.querySelector(".train-start-label");
     if (labelSpan) labelSpan.textContent = "Start training";
+    const iconSpan = btn.querySelector(".train-start-icon");
+    if (iconSpan) iconSpan.textContent = "🧠";
   }
   _refreshTrainGate();
 }

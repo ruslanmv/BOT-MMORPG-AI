@@ -13,7 +13,7 @@
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.0%2B-ee4c2c.svg)](https://pytorch.org/)
 [![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
 
-[Features](#-why-gamers-love-bot-mmorpg-ai) • [Quick Start](#-quick-start-for-gamers) • [See It In Action](#-see-it-in-action) • [Setup Guide](USAGE.md) • [Support](#-community--support)
+[🎮 Gamer Guide](GAMER_GUIDE.md) • [Features](#-why-gamers-love-bot-mmorpg-ai) • [Quick Start](#-quick-start-for-gamers) • [See It In Action](#-see-it-in-action) • [Setup Guide](USAGE.md) • [Support](#-community--support)
 
 </div>
 
@@ -107,18 +107,28 @@ Navigate from **Mondstadt** to **Thousand Wind Temple** automatically:
 
 ## 🎮 Quick Start for Gamers
 
-> **Windows 10/11 required.** Linux and macOS are not currently supported for gameplay (training, inference, and input simulation depend on Windows APIs).
+**Play 15 minutes. The AI learns. Then it plays for you.** No coding. 👇
 
-**Don't worry - you don't need to be a programmer!** We've made this super simple.
+| | | |
+|---|---|---|
+| 1️⃣ | **Install** | Grab the `.exe` from **[Releases](https://github.com/ruslanmv/BOT-MMORPG-AI/releases)** and run it |
+| 2️⃣ | **Teach (Record)** | **Start recording** → play 10–15 min → stop |
+| 3️⃣ | **Train Brain** | **Start training** → grab a snack 🍕 (or **Stop training** anytime, the best brain is kept) |
+| 4️⃣ | **ModelHub → Run Bot** | **Set Active** → **START BOT** 🚀 |
 
-### Option A: Download the Installer (Easiest)
+<p align="center">
+  <img src="docs/images/guide/1-teach.png" width="49%" alt="Teach: record your gameplay"/>
+  <img src="docs/images/guide/4-run.png" width="49%" alt="Run Bot: one click to play"/>
+</p>
 
-Go to the **[Releases](https://github.com/ruslanmv/BOT-MMORPG-AI/releases)** page and download the latest `.exe` installer. Run it with administrator privileges and follow the wizard. No command line needed!
+⚡ **NVIDIA card?** Settings → System Tools → **Install GPU PyTorch** for way faster training.
 
-![](assets/2026-04-28-23-17-49.png)
+👉 **[The full 2-minute Gamer Guide (with pictures)](GAMER_GUIDE.md)**
 
+> Windows 10/11 only.
 
-### Option B: Install from Source
+<details>
+<summary><b>👨‍💻 For developers: install from source</b></summary>
 
 **Prerequisites:** Python 3.10+, Git. For the desktop UI you also need [Rust](https://rustup.rs/) (run `rustup` installer).
 
@@ -147,52 +157,15 @@ cd BOT-MMORPG-AI
 pip install -e .
 ```
 
-> **Windows note:** `make` is not available by default on Windows. Use the `pip`/`python` commands shown below instead of `make` targets.
+> **Windows note:** `make` is not available by default on Windows. Use `pip` and `python` directly instead of `make` targets.
 </details>
 
 **That's it!** The bot is now installed.
 
 > **Note:** `make install` (Linux/macOS) or `pip install -e .` (Windows) installs core dependencies. A virtual environment (`.venv/`) is created automatically - you do NOT need to activate it manually.
 
-### Step 2️⃣: Teach The Bot
-
-1. Open your game (Genshin Impact recommended)
-2. Set your game resolution to **1920x1080** fullscreen (the bot automatically resizes frames internally for training)
-3. Run data collection:
-   - **Linux/macOS:** `make collect-data`
-   - **Windows:** `python src/bot_mmorpg/scripts/collect_data.py --mouse`
-4. Play normally for 10-15 minutes
-5. The bot is now learning!
-
-> **Mouse recording:** Add the `--mouse` flag to capture mouse movements and clicks alongside keyboard/gamepad input.
-
-### Step 3️⃣: Train Your AI
-
-```bash
-# Linux/macOS
-make train-model
-
-# Windows PowerShell
-python src/bot_mmorpg/scripts/train_model.py --data datasets --model efficientnet_lstm
-```
-
-Grab a coffee ☕ - training takes 30-60 minutes depending on your GPU.
-
-> **GPU out of memory?** The training script auto-detects your VRAM and adjusts batch size. You can also use `--amp` for mixed precision (halves VRAM) or `--batch-size 8` to force a smaller batch.
-
-### Step 4️⃣: Let It Play!
-
-```bash
-# Linux/macOS
-make test-model
-
-# Windows PowerShell
-python src/bot_mmorpg/scripts/test_model.py
-```
-
-**Boom!** Your AI is now playing for you! 🎉
-
-📖 **Need more help?** Check out our [detailed setup guide for gamers](USAGE.md)!
+Then use `collect_data.py`, `train_model.py` and `test_model.py` in `src/bot_mmorpg/scripts/`. See [USAGE.md](USAGE.md).
+</details>
 
 ---
 
