@@ -395,6 +395,97 @@ than CPU for lack of mixed precision.
   keeps a hand-picked batch size.
 - **Issue:** #27.
 
+### Preview shows a broken-image icon instead of the screen
+
+The capture worked, but the app's CSP (`src-tauri/tauri.conf.json`) had
+no `img-src`, so `default-src 'self'` applied and the WebView refused
+every `data:image/jpeg;base64,...` frame the preview sets.
+
+- **File:** `src-tauri/tauri.conf.json` (`security.csp`),
+  `tauri-ui/main.js` (`updatePreviewImageTauri`)
+- **Fix:** `img-src 'self' data: blob:`. A frame that still fails to
+  render now puts the placeholder back and logs why instead of leaving
+  the broken icon.
+- **Issue:** #88 (comment), Teach-tab preview report.
+
+### Run Bot right after training: `Active model directory missing on disk: <model name>`
+
+`discover_local_models` reports a model's folder only under `paths.dir`,
+so the catalog's trained-model entries had no `path`; the UI fell back
+to the bare folder name and Set Active stored
+`model_dir="custom_farming_v1"`. The Rust preflight checks that relative
+to its own working directory, not the data root. The filesystem scan
+that does carry `path` never ran, because discovery succeeds whenever
+the folder exists.
+
+- **File:** `modelhub/tauri.py` (`_merge_local_models`,
+  `_resolve_model_dir`, `_heal_active_model`), `tauri-ui/main.js`
+  (`localModelPath`)
+- **Fix:** merge the scan's `path` / `model_dir` / `checkpoint` into
+  every discovered entry; resolve bare or data-root-relative paths to an
+  absolute folder on Set Active; rewrite an existing broken
+  `active_model.json` on the next catalog load, so affected installs
+  recover without re-activating.
+- **Issue:** #88.
+
+### Start Bot during a long training run / "trained for hours, can't run"
+
+`start_bot` goes through `submit_sidecar_job`, which cancels the running
+job, so Start Bot mid-training killed the run silently. A stopped run
+was never offered as a model even though every improving epoch had
+saved `<arch>_best.pth`. The shipped runtime's PyTorch is CPU-only, so
+an NVIDIA GPU sits idle and training takes hours.
+
+- **File:** `src-tauri/src/main.rs` (`preflight_action` "bot",
+  `running_sidecar_job_kind`, `spawn_log_bridge_worker`),
+  `tauri-ui/main.js` (`training_finalized`),
+  `versions/0.01/2-train_model.py` (`cpu_training_hint`)
+- **Fix:** the bot preflight refuses while a training or recording job
+  runs and says how to get a model out of it; stopping a run that
+  already saved a checkpoint emits `training_finalized` with
+  `partial: true`, so the model is offered for Set Active; the trainer
+  explains CPU training when an NVIDIA GPU is present.
+- **GPU:** Settings -> System Tools -> **Install GPU PyTorch (NVIDIA)**
+  (`install_gpu_pytorch` in `src-tauri/src/main.rs`) installs the CUDA
+  build of the bundled torch version. It tries `cu130` -> `cu128` ->
+  `cu126` -> ..., skipping builds the driver is too old for, and keeps
+  the first one that passes a matmul on the card. No single index fits
+  every GPU: RTX 50 needs CUDA 12.8+, CUDA 13 dropped pre-Turing cards,
+  and some indexes lack a given torch version (no `cu128` Windows build
+  of torch 2.13).
+
+### Bot "does nothing" with a model trained with mouse recording
+
+`versions/0.01/3-test_model.py` acted on keyboard (0-8) and gamepad
+(9-28) slots only; the 10 mouse values were predicted and dropped, so a
+click-to-move game saw no input.
+
+- **File:** `versions/0.01/3-test_model.py` (`MouseReplayer`)
+- **Fix:** move to the predicted (x, y) in the capture region and press
+  or release left/right only when the predicted state changes. Deltas
+  are not replayed (a sigmoid head cannot express the negative half of
+  the recorded range). `--no-mouse` turns it off.
+- **Issue:** #88 (comment).
+
+### `torch_dlls` warns about `libomp140.x86_64.dll` / "2 torch trees" on a working install
+
+The libomp check fired whenever the file was absent from `torch/lib`,
+even when `torch_intact` had just imported torch (so every DLL it needs
+resolved). The duplicate tree came from "Repair PyTorch via pip": a
+plain `pip install` writes to `Lib\site-packages`, behind the bundled
+`<python>\site-packages` on `sys.path`, so the repair was never imported
+and left a second copy behind.
+
+- **File:** `scripts/runtime_doctor.py` (`_torch_native_loaded`,
+  `_pe_imported_dlls`, `_check_torch_dlls`), `src-tauri/src/main.rs`
+  (`retire_shadowing_torch`, `repair_pytorch_via_pip`)
+- **Fix:** warn only if torch's native code did not load and
+  `fbgemm.dll`'s import table (read from the PE header, without importing
+  torch) names libomp140; name the live and shadowed trees. After every
+  pip run succeeds, the repair renames the bundled torch/torchvision out
+  of the way (rolling back if any rename fails), leaving one tree.
+- **Issue:** #87.
+
 ## UI-layer symptoms (frontend can't reach the backend)
 
 ### Notification "Dismiss" / "×" / "Later" buttons appear inert

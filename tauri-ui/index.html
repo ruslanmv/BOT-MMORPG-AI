@@ -1688,6 +1688,8 @@
     }
     .mh-model-arch {
       color: var(--text-dim); font-size: 12px; margin-bottom: 10px;
+      /* Full Windows paths have no spaces to break on and ran out of the card. */
+      overflow-wrap: anywhere;
     }
     .mh-model-stats {
       display: flex; flex-wrap: wrap; gap: 6px 14px;
@@ -3207,6 +3209,22 @@
                 <button type="button" id="btn-copy-logs" class="btn-toolbar btn-toolbar--ghost">Copy recent logs</button>
               </div>
 
+              <!-- GPU ACCELERATION ================================
+                   The bundled PyTorch is the CPU build. On an NVIDIA
+                   card this swaps in the CUDA build of the same version
+                   (issue #82): no CUDA Toolkit needed, just the driver. -->
+              <h3 style="font-weight: 500; margin: 22px 0 4px;">GPU acceleration</h3>
+              <p style="font-size: 12px; color: var(--text-dim); margin: 0 0 10px;">
+                Train and run on an NVIDIA graphics card instead of the CPU. One-time download of about 3 GB.
+              </p>
+              <div id="gpu-status" style="margin-bottom: 10px; font-size: 12px; color: var(--text-dim);">
+                Click <strong>Check GPU</strong> to see what PyTorch can use.
+              </div>
+              <div class="toolbar-row">
+                <button type="button" id="btn-install-gpu-pytorch" class="btn-toolbar btn-toolbar--primary">⚡ Install GPU PyTorch (NVIDIA)</button>
+                <button type="button" id="btn-check-gpu" class="btn-toolbar btn-toolbar--ghost">Check GPU</button>
+              </div>
+
               <!-- 2. DEBUG BUNDLE ================================
                    Phase 4 + 10 + 11: the canonical "everything a
                    maintainer needs to debug a startup failure or
@@ -4102,6 +4120,61 @@
           );
         } catch (e) {
           window.notifyError?.('Repair PyTorch failed', String(e));
+        }
+      });
+
+      // GPU acceleration (Settings -> System Tools). gpu_status reports
+      // the NVIDIA card (via nvidia-smi) and what the installed torch can
+      // do; install_gpu_pytorch swaps in the CUDA build of the same torch
+      // version and verifies it on the card.
+      function describeGpu(s) {
+        const t = (s && s.torch) || {};
+        const card = s && s.nvidia_gpu
+          ? `${s.nvidia_gpu} (driver ${s.driver || '?'})`
+          : 'No NVIDIA GPU detected';
+        if (t.error) return `${card} · PyTorch failed to load: ${t.error}`;
+        if (!t.torch) return `${card} · PyTorch status unknown`;
+        if (t.cuda_available) return `${card} · PyTorch ${t.torch} uses the GPU ✔`;
+        if (t.cuda_build) return `${card} · PyTorch ${t.torch} is a CUDA build but cannot reach the GPU -- update the NVIDIA driver`;
+        return `${card} · PyTorch ${t.torch} is CPU-only` +
+          (s.nvidia_gpu ? ' -- click Install GPU PyTorch' : '');
+      }
+      async function refreshGpuStatus() {
+        const el = document.getElementById('gpu-status');
+        if (!el || !window.__TAURI__?.invoke) return null;
+        el.textContent = 'Checking…';
+        try {
+          const s = await window.__TAURI__.invoke('gpu_status');
+          el.textContent = describeGpu(s);
+          return s;
+        } catch (e) {
+          el.textContent = 'GPU check failed: ' + e;
+          return null;
+        }
+      }
+      document.getElementById('btn-check-gpu')?.addEventListener('click', refreshGpuStatus);
+      document.getElementById('btn-install-gpu-pytorch')?.addEventListener('click', async () => {
+        if (!window.__TAURI__?.invoke) return;
+        const btn = document.getElementById('btn-install-gpu-pytorch');
+        const ok = window.confirm(
+          'Install the NVIDIA (CUDA) build of PyTorch?\n\n' +
+          '• Downloads about 3 GB from download.pytorch.org and needs ~5 GB free disk.\n' +
+          '• Needs an NVIDIA card with a recent driver (no CUDA Toolkit required).\n' +
+          '• Stop any training, recording or bot first.\n\n' +
+          'To go back to the CPU build later, use Repair PyTorch (pip).'
+        );
+        if (!ok) return;
+        if (btn) btn.disabled = true;
+        try {
+          window.notifyInfo?.('Installing GPU PyTorch',
+            'Downloading ~3 GB. Watch the terminal log for progress; this can take 10+ minutes.');
+          const msg = await window.__TAURI__.invoke('install_gpu_pytorch');
+          window.notifySuccess?.('GPU PyTorch ready', String(msg));
+        } catch (e) {
+          window.notifyError?.('GPU PyTorch not enabled', String(e));
+        } finally {
+          if (btn) btn.disabled = false;
+          refreshGpuStatus();
         }
       });
 
