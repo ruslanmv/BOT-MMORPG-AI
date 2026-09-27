@@ -16,9 +16,25 @@ display:
     compass: [0.40, 0.01, 0.20, 0.04]
     center_focus: [0.30, 0.25, 0.40, 0.50]
 
+# ---------------------------------------------------------------------------
+# Pipeline contract (bot_mmorpg.config.action_mapping)
+#
+# The action vector is fixed by the pipeline, not by this game:
+#   slots  0-8   keyboard  (W, S, A, D, WA, WD, SA, SD, no_keys)
+#   slots  9-28  gamepad   (10 implemented, 10 reported as unmapped)
+#   slots 29-38  mouse     (x, y, dx, dy, vx, vy, lmb, rmb, mmb, scroll) -- only with --mouse
+#
+# Frames are captured and fed to the network at 480x270. Both collect_data.py
+# and test_model.py hardcode that size and train_model.py does not rescale,
+# so a different value here cannot be honoured.
+#
+# The per-game part of this file is `default_bindings` below: which physical
+# key plays which role. Recording, training and inference all read the action
+# space; nothing here changes the slot order.
+# ---------------------------------------------------------------------------
 input:
-  action_space: "hybrid"
-  num_actions: 13
+  action_space: "standard"
+  num_actions: 29  # 9 keyboard + 20 gamepad (39 with --mouse)
   requires_mouse: true
   mouse_precision: "high"
   default_bindings:
@@ -38,7 +54,7 @@ input:
 
 training:
   recommended_architecture: "efficientnet_lstm"
-  recommended_input_size: [224, 224]
+  recommended_input_size: [480, 270]
   temporal_frames: 6
   minimum_samples: 8000
   class_balance_tolerance: 0.2
@@ -51,19 +67,19 @@ hardware_tiers:
   low:
     architecture: "mobilenetv3"
     batch_size: 6
-    input_size: [160, 160]
+    input_size: [480, 270]
     temporal_frames: 0
     workers: 2
   medium:
     architecture: "efficientnet_lstm"
     batch_size: 12
-    input_size: [224, 224]
+    input_size: [480, 270]
     temporal_frames: 4
     workers: 4
   high:
     architecture: "efficientnet_lstm"
     batch_size: 24
-    input_size: [256, 256]
+    input_size: [480, 270]
     temporal_frames: 6
     workers: 8
 

@@ -22,6 +22,8 @@ from pathlib import Path
 from typing import Dict, Any, List, Optional, Tuple
 import platform
 
+from modelhub.action_space import BASE_ACTION_COUNT
+
 
 @dataclass
 class InputSpec:
@@ -40,8 +42,12 @@ class InputSpec:
 
 @dataclass
 class OutputSpec:
-    """Specification for model output."""
-    num_classes: int = 29
+    """Specification for model output.
+
+    `num_classes` is the discrete slot count; a model recorded with
+    `collect_data --mouse` declares this plus the mouse block.
+    """
+    num_classes: int = BASE_ACTION_COUNT
     class_names: List[str] = field(default_factory=list)
     output_type: str = "classification"  # classification, regression, multi-label
     activation: str = "softmax"
@@ -378,7 +384,10 @@ def create_default_metadata(
         model_name=f"{game_id}_{architecture}_{datetime.now().strftime('%Y%m%d')}",
         game_id=game_id,
         input_spec=InputSpec(width=480, height=270, channels=3),
-        output_spec=OutputSpec(num_classes=29, class_names=default_classes[:29]),
+        output_spec=OutputSpec(
+            num_classes=BASE_ACTION_COUNT,
+            class_names=default_classes[:BASE_ACTION_COUNT],
+        ),
         training_config=TrainingConfig(architecture=architecture),
         tags=[game_id, architecture, "auto-generated"],
         status="draft"

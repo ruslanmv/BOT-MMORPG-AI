@@ -97,6 +97,39 @@ except ImportError:
 
 
 # =============================================================================
+# Action space widths
+# =============================================================================
+
+
+def valid_action_widths():
+    """Action-vector widths a recording may legitimately have.
+
+    ``collect_data`` writes the discrete action slots, followed by the mouse
+    block when ``--mouse`` is on, so the two accepted widths differ by exactly
+    one mouse block. Returns ``None`` when the action space module cannot be
+    reached (direct script execution), in which case widths are not checked.
+    """
+    try:
+        from ..config.action_mapping import (
+            DEFAULT_ACTION_SPACE_NAME,
+            MOUSE_OUTPUT_SIZE,
+            get_pipeline_action_space,
+        )
+    except ImportError:  # pragma: no cover - only when run as a script
+        try:
+            from config.action_mapping import (
+                DEFAULT_ACTION_SPACE_NAME,
+                MOUSE_OUTPUT_SIZE,
+                get_pipeline_action_space,
+            )
+        except ImportError:
+            return None
+
+    base = get_pipeline_action_space(DEFAULT_ACTION_SPACE_NAME).num_actions
+    return (base, base + MOUSE_OUTPUT_SIZE)
+
+
+# =============================================================================
 # Configuration (Legacy compatibility)
 # =============================================================================
 
@@ -160,6 +193,55 @@ class GameplayDataset(Dataset):
         # Load all data into memory
         self._load_data()
 
+    def _validate_action_widths(self, actions) -> int:
+        """Reject a dataset whose samples disagree on the action-vector width.
+
+        Recordings made before the mouse block grew from 6 to 10 values cannot
+        be mixed with newer ones. ``np.array`` would either fail on the ragged
+        input or silently train a model with the wrong output width, and the
+        slot indices would no longer line up with the action space.
+
+        Args:
+            actions: Every action vector collected from the dataset files.
+
+        Returns:
+            The single agreed action-vector width.
+
+        Raises:
+            ValueError: If the samples disagree, or if the width is not one the
+                action space defines.
+        """
+        widths = {}
+        for action in actions:
+            width = len(action)
+            widths[width] = widths.get(width, 0) + 1
+
+        if not widths:
+            raise ValueError("No action vectors found in the dataset")
+
+        if len(widths) > 1:
+            detail = ", ".join(
+                f"{width} values x{count} samples"
+                for width, count in sorted(widths.items())
+            )
+            raise ValueError(
+                f"Training data mixes {len(widths)} different action-vector "
+                f"widths ({detail}). Every recording in one dataset must use "
+                "the same width: the discrete action slots on their own, or "
+                "those plus the mouse block. Re-record the files that do not "
+                "match, or move them into their own directory."
+            )
+
+        width = next(iter(widths))
+        expected = valid_action_widths()
+        if expected is not None and width not in expected:
+            raise ValueError(
+                f"Training data has {width} action values, but the action "
+                f"space defines {expected[0]} (no mouse) or {expected[1]} "
+                f"(with mouse)."
+            )
+        return width
+
     def _load_data(self):
         """Load all data files into memory with security validation."""
         all_frames = []
@@ -192,6 +274,8 @@ class GameplayDataset(Dataset):
 
         if not all_frames:
             raise ValueError("No valid data loaded from files")
+
+        self.action_width = self._validate_action_widths(all_actions)
 
         self.frames = np.array(all_frames)
         self.actions = np.array(all_actions, dtype=np.float32)

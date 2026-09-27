@@ -200,16 +200,18 @@ class TestMouseCaptureButtons:
 
     def test_scroll_accumulation(self):
         """Test scroll delta accumulates and resets per snapshot."""
+        from bot_mmorpg.scripts import mouse_capture
         from bot_mmorpg.scripts.mouse_capture import MouseCapture
 
         mc = MouseCapture()
 
-        # Simulate scroll events
+        # Half of full scale, so the normalisation by _MAX_SCROLL_STEPS is
+        # visible without landing on the clamp.
         with mc._state.lock:
-            mc._state.scroll_accum = 3.0
+            mc._state.scroll_accum = mouse_capture._MAX_SCROLL_STEPS / 2
 
         state1 = mc.snapshot()
-        assert state1.scroll == 3.0
+        assert state1.scroll == 0.5
 
         # Scroll should be reset after snapshot
         state2 = mc.snapshot()
@@ -217,15 +219,119 @@ class TestMouseCaptureButtons:
 
     def test_negative_scroll(self):
         """Test negative scroll (scroll down)."""
+        from bot_mmorpg.scripts import mouse_capture
         from bot_mmorpg.scripts.mouse_capture import MouseCapture
 
         mc = MouseCapture()
 
         with mc._state.lock:
-            mc._state.scroll_accum = -5.0
+            mc._state.scroll_accum = -mouse_capture._MAX_SCROLL_STEPS / 2
 
         state = mc.snapshot()
-        assert state.scroll == -5.0
+        assert state.scroll == -0.5
+
+    def test_scroll_beyond_full_scale_is_clamped(self):
+        """A fast wheel flick sends more steps than one frame can express,
+        so snapshot() has to bound it. Without the clamp the recorded block
+        leaves the [0, 1] range the rest of the pipeline assumes.
+        """
+        from bot_mmorpg.scripts.mouse_capture import MouseCapture
+
+        mc = MouseCapture()
+
+        for accum, expected in ((50.0, 1.0), (-50.0, -1.0)):
+            with mc._state.lock:
+                mc._state.scroll_accum = accum
+            assert mc.snapshot().scroll == expected
+
+
+class TestMouseCaptureFirstFrame:
+    """The first move after start() must not be differenced against (0, 0).
+
+    Unseeded, a 20px nudge recorded as dx=+0.48 dy=+0.56 with the velocity
+    pinned at the ceiling: a full-speed camera whip in both axes, on the very
+    first frame of every session, which the model would then be trained on.
+    """
+
+    @staticmethod
+    def _fake_pynput(position):
+        """Stand in for pynput.mouse so this runs without a real cursor."""
+        import types
+
+        mouse_mod = types.ModuleType("pynput.mouse")
+
+        class _Controller:
+            @property
+            def position(self):
+                return position
+
+        class _Listener:
+            def __init__(self, **kwargs):
+                self.kwargs = kwargs
+
+            def start(self):
+                pass
+
+            def stop(self):
+                pass
+
+        mouse_mod.Controller = _Controller
+        mouse_mod.Listener = _Listener
+        mouse_mod.Button = types.SimpleNamespace(
+            left="left", right="right", middle="middle"
+        )
+        pynput_mod = types.ModuleType("pynput")
+        pynput_mod.mouse = mouse_mod
+        return pynput_mod
+
+    def test_start_seeds_position_and_delta_baseline(self, monkeypatch):
+        import sys
+
+        from bot_mmorpg.scripts.mouse_capture import MouseCapture
+
+        pynput_mod = self._fake_pynput((900, 600))
+        monkeypatch.setitem(sys.modules, "pynput", pynput_mod)
+        monkeypatch.setitem(sys.modules, "pynput.mouse", pynput_mod.mouse)
+
+        mc = MouseCapture(capture_region=(0, 0, 1920, 1080))
+        mc.start()
+        try:
+            assert (mc._prev_abs_x, mc._prev_abs_y) == (900, 600)
+
+            first = mc.snapshot()
+            # No movement has happened, so the frame must report none.
+            assert first.dx == 0.0
+            assert first.dy == 0.0
+            assert first.vx == 0.0
+            assert first.vy == 0.0
+            # Position must be real, not the (0, 0) fallback.
+            assert first.x == pytest.approx(900 / 1920)
+            assert first.y == pytest.approx(600 / 1080)
+        finally:
+            mc.stop()
+
+    def test_first_nudge_is_measured_against_the_cursor(self, monkeypatch):
+        """20px right reads as ~0.0104, not as the absolute position."""
+        import sys
+
+        from bot_mmorpg.scripts.mouse_capture import MouseCapture
+
+        pynput_mod = self._fake_pynput((900, 600))
+        monkeypatch.setitem(sys.modules, "pynput", pynput_mod)
+        monkeypatch.setitem(sys.modules, "pynput.mouse", pynput_mod.mouse)
+
+        mc = MouseCapture(capture_region=(0, 0, 1920, 1080))
+        mc.start()
+        try:
+            mc.snapshot()  # settle the timer
+            with mc._state.lock:  # a real move event lands at 920, 600
+                mc._state.abs_x = 920
+                mc._state.abs_y = 600
+            moved = mc.snapshot()
+            assert moved.dx == pytest.approx(20 / 1920)
+            assert moved.dy == 0.0
+        finally:
+            mc.stop()
 
 
 class TestMouseCaptureThreadSafety:

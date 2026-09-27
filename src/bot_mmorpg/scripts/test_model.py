@@ -164,6 +164,69 @@ except ImportError:
     _MOUSE_CTRL = None
     MOUSE_OUTPUT_AVAILABLE = False
 
+# Action space definition -- single source of truth for action indices.
+# Without this the module would fall back to hardcoded literals and drift from
+# bot_mmorpg.config.action_mapping.
+# Action space definition -- single source of truth for action indices.
+# Without this the module would fall back to hardcoded literals and drift from
+# bot_mmorpg.config.action_mapping.
+
+
+def _resolve_action_mapping():
+    """Return the action_mapping module, whichever way this file was started.
+
+    ``test_model.py`` runs both as ``bot-mmorpg-play`` and as a bare script, so
+    the same module is reachable under two names. Returns ``None`` when neither
+    resolves, which leaves this file importable with degraded action metadata
+    instead of failing at import time.
+    """
+    try:
+        from ..config import action_mapping as resolved
+
+        return resolved
+    except ImportError:  # pragma: no cover - exercised only when run as a script
+        pass
+
+    try:
+        from config import action_mapping as resolved
+
+        return resolved
+    except ImportError:
+        pass
+
+    # Direct script execution: put the package root on sys.path so the sibling
+    # "config" package resolves.
+    pkg_root = Path(__file__).resolve().parent.parent
+    if str(pkg_root) not in sys.path:
+        sys.path.insert(0, str(pkg_root))
+    try:
+        from config import action_mapping as resolved
+
+        return resolved
+    except ImportError:
+        return None
+
+
+_ACTION_MAPPING = _resolve_action_mapping()
+
+if _ACTION_MAPPING is not None:
+    ACTION_SPACE = _ACTION_MAPPING.get_pipeline_action_space(
+        _ACTION_MAPPING.DEFAULT_ACTION_SPACE_NAME
+    )
+    # Recorded mouse block, in mouse_capture.MouseState.to_array() order.
+    MOUSE_FIELDS = _ACTION_MAPPING.MOUSE_FIELDS
+    MOUSE_OUTPUT_SIZE = _ACTION_MAPPING.MOUSE_OUTPUT_SIZE
+    _DENORMALIZE_MOUSE = _ACTION_MAPPING.denormalize_mouse_value
+else:  # pragma: no cover - only when the config package is unreachable
+    ACTION_SPACE = None
+    MOUSE_FIELDS = ()
+    MOUSE_OUTPUT_SIZE = 0
+    _DENORMALIZE_MOUSE = None
+
+#: Mouse field by name, so ``execute_mouse`` reads a slot through its name
+#: rather than a magic index that a reordered block would silently invalidate.
+_MOUSE_FIELD = {field.name: field for field in MOUSE_FIELDS}
+
 # Platform-specific imports
 IS_WINDOWS = platform.system() == "Windows"
 if IS_WINDOWS:
@@ -229,27 +292,50 @@ _BASE_ACTION_WEIGHTS = np.array(
     ]
 )
 
-# Mouse weight block: [x, y, dx, dy, vx, vy, lmb, rmb, mmb, scroll]
+# Number of discrete slots (keyboard + gamepad) that precede any mouse outputs.
+# Derived from the action space so the weight table below cannot drift out of
+# sync with it; falls back to the historical 29 when the config package is
+# unavailable.
+_BASE_ACTION_COUNT = ACTION_SPACE.num_actions if ACTION_SPACE is not None else 29
+
+if len(_BASE_ACTION_WEIGHTS) != _BASE_ACTION_COUNT:  # pragma: no cover
+    raise ValueError(
+        f"_BASE_ACTION_WEIGHTS has {len(_BASE_ACTION_WEIGHTS)} entries but the "
+        f"'{ACTION_SPACE.name if ACTION_SPACE else 'standard'}' action space "
+        f"defines {_BASE_ACTION_COUNT} discrete actions"
+    )
+
+# Mouse weight block, in the same order as config.action_mapping.MOUSE_FIELDS:
+# [x, y, dx, dy, vx, vy, lmb, rmb, mmb, scroll]
 # Position/delta/velocity are continuous outputs (not chosen via argmax),
 # so their weights are low to avoid competing with discrete actions.
 _MOUSE_WEIGHTS_10 = np.array([0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 1.0, 1.0, 0.8, 0.3])
 
 # Legacy 6-value mouse: [x, y, lmb, rmb, mmb, scroll]
+_LEGACY_MOUSE_OUTPUT_SIZE = 6
 _MOUSE_WEIGHTS_6 = np.array([0.1, 0.1, 1.0, 1.0, 0.8, 0.3])
+
+if MOUSE_OUTPUT_SIZE and len(_MOUSE_WEIGHTS_10) != MOUSE_OUTPUT_SIZE:
+    # pragma: no cover - guards a reordering of MOUSE_FIELDS against these
+    # positional weights, which would silently reweight the wrong outputs.
+    raise ValueError(
+        f"_MOUSE_WEIGHTS_10 has {len(_MOUSE_WEIGHTS_10)} entries but the action "
+        f"space records a {MOUSE_OUTPUT_SIZE}-value mouse block"
+    )
 
 
 def build_action_weights(num_actions: int) -> np.ndarray:
     """Build action weights array matching model output size.
 
-    Automatically appends mouse weights when num_actions > 29.
+    Automatically appends mouse weights when num_actions > _BASE_ACTION_COUNT.
     """
-    if num_actions <= 29:
+    if num_actions <= _BASE_ACTION_COUNT:
         return _BASE_ACTION_WEIGHTS[:num_actions].copy()
 
-    mouse_size = num_actions - 29
-    if mouse_size == 10:
+    mouse_size = num_actions - _BASE_ACTION_COUNT
+    if mouse_size == MOUSE_OUTPUT_SIZE:
         mouse_w = _MOUSE_WEIGHTS_10
-    elif mouse_size == 6:
+    elif mouse_size == _LEGACY_MOUSE_OUTPUT_SIZE:
         mouse_w = _MOUSE_WEIGHTS_6
     else:
         # Unknown mouse format – equal weight
@@ -259,40 +345,46 @@ def build_action_weights(num_actions: int) -> np.ndarray:
 
 
 # Default for backward compatibility (29 actions, no mouse)
-ACTION_WEIGHTS = build_action_weights(29)
+ACTION_WEIGHTS = build_action_weights(_BASE_ACTION_COUNT)
 
-# Action names for logging
-ACTION_NAMES = [
-    "straight",
-    "reverse",
-    "left",
-    "right",
-    "forward+left",
-    "forward+right",
-    "reverse+left",
-    "reverse+right",
-    "nokeys",
-    "LT",
-    "RT",
-    "Lx",
-    "Ly",
-    "Rx",
-    "Ry",
-    "UP",
-    "DOWN",
-    "LEFT",
-    "RIGHT",
-    "START",
-    "SELECT",
-    "L3",
-    "R3",
-    "LB",
-    "RB",
-    "A",
-    "B",
-    "X",
-    "Y",
-]
+# Action names for logging. Derived from the action space so a new gamepad slot
+# cannot be added without a matching label here; the literal list below is only
+# used when the config package cannot be imported.
+ACTION_NAMES = (
+    [action.display_label() for action in ACTION_SPACE.actions]
+    if ACTION_SPACE is not None
+    else [
+        "straight",
+        "reverse",
+        "left",
+        "right",
+        "forward+left",
+        "forward+right",
+        "reverse+left",
+        "reverse+right",
+        "nokeys",
+        "LT",
+        "RT",
+        "Lx",
+        "Ly",
+        "Rx",
+        "Ry",
+        "UP",
+        "DOWN",
+        "LEFT",
+        "RIGHT",
+        "START",
+        "SELECT",
+        "L3",
+        "R3",
+        "LB",
+        "RB",
+        "A",
+        "B",
+        "X",
+        "Y",
+    ]
+)
 
 
 # =============================================================================
@@ -403,17 +495,172 @@ def release_all_keys():
 # Keyboard action mapping
 # =============================================================================
 
-KEYBOARD_ACTIONS = {
-    0: straight,
-    1: reverse,
-    2: left,
-    3: right,
-    4: forward_left,
-    5: forward_right,
-    6: reverse_left,
-    7: reverse_right,
-    8: no_keys,
+# Physical keypress handlers, keyed by action-space name. The action space owns
+# *which* actions exist and in what order; this table only says how each one is
+# pressed on this machine. Keeping them separate is what lets a new action be
+# added in action_mapping.py without silently going unhandled here.
+_KEYBOARD_ACTION_HANDLERS = {
+    "move_forward": straight,
+    "move_backward": reverse,
+    "move_left": left,
+    "move_right": right,
+    "move_forward_left": forward_left,
+    "move_forward_right": forward_right,
+    "move_backward_left": reverse_left,
+    "move_backward_right": reverse_right,
+    "no_keys": no_keys,
 }
+
+#: Number of leading slots in the action space that are keyboard actions.
+_KEYBOARD_SLOT_COUNT = 9
+
+if ACTION_SPACE is not None:
+    _keyboard_slots = ACTION_SPACE.actions[:_KEYBOARD_SLOT_COUNT]
+    _missing = [
+        a.name for a in _keyboard_slots if a.name not in _KEYBOARD_ACTION_HANDLERS
+    ]
+    if _missing:  # pragma: no cover - guards against an incomplete edit
+        raise ValueError(
+            f"No keypress handler for action(s) {_missing}; add them to "
+            f"_KEYBOARD_ACTION_HANDLERS in test_model.py"
+        )
+    KEYBOARD_ACTIONS = {
+        action.id: _KEYBOARD_ACTION_HANDLERS[action.name] for action in _keyboard_slots
+    }
+else:  # pragma: no cover - config package unavailable
+    KEYBOARD_ACTIONS = {
+        0: straight,
+        1: reverse,
+        2: left,
+        3: right,
+        4: forward_left,
+        5: forward_right,
+        6: reverse_left,
+        7: reverse_right,
+        8: no_keys,
+    }
+
+
+# =============================================================================
+# Gamepad action mapping
+# =============================================================================
+# Handlers are keyed by action-space name for the same reason the keyboard ones
+# are. vJoy only exposes bindings for triggers, both analog sticks and the face
+# buttons, so the D-pad / START / SELECT / L3 / R3 / LB / RB slots have no
+# handler. Those are collected in UNIMPLEMENTED_GAMEPAD_ACTIONS and reported at
+# startup instead of being selected by the model and silently ignored.
+
+
+def _press(fn) -> "callable":
+    """Wrap a plain press (no direction) in the signed-axis handler shape."""
+
+    def handler(value: float = 0.0) -> None:
+        fn()
+
+    return handler
+
+
+def _axis(negative, positive) -> "callable":
+    """Wrap an analog axis: the prediction's sign selects the direction."""
+
+    def handler(value: float) -> None:
+        if value < 0:
+            negative()
+        else:
+            positive()
+
+    return handler
+
+
+GAMEPAD_ACTIONS = {}
+UNIMPLEMENTED_GAMEPAD_ACTIONS = []
+
+if VJOY_AVAILABLE:
+    _GAMEPAD_ACTION_HANDLERS = {
+        "gamepad_lt": _press(gamepad_lt),
+        "gamepad_rt": _press(gamepad_rt),
+        "gamepad_lx": _axis(game_lx_left, game_lx_right),
+        "gamepad_ly": _axis(game_ly_down, game_ly_up),
+        "gamepad_rx": _axis(look_rx_left, look_rx_right),
+        "gamepad_ry": _axis(look_ry_down, look_ry_up),
+        "gamepad_a": _press(button_A),
+        "gamepad_b": _press(button_B),
+        "gamepad_x": _press(button_X),
+        "gamepad_y": _press(button_Y),
+    }
+
+    if ACTION_SPACE is not None:
+        _gamepad_slots = ACTION_SPACE.actions[_KEYBOARD_SLOT_COUNT:]
+        GAMEPAD_ACTIONS = {
+            action.id: _GAMEPAD_ACTION_HANDLERS[action.name]
+            for action in _gamepad_slots
+            if action.name in _GAMEPAD_ACTION_HANDLERS
+        }
+        UNIMPLEMENTED_GAMEPAD_ACTIONS = [
+            (action.id, action.display_label())
+            for action in _gamepad_slots
+            if action.name not in _GAMEPAD_ACTION_HANDLERS
+        ]
+    else:  # pragma: no cover - config package unavailable
+        GAMEPAD_ACTIONS = {
+            9: _press(gamepad_lt),
+            10: _press(gamepad_rt),
+            11: _axis(game_lx_left, game_lx_right),
+            12: _axis(game_ly_down, game_ly_up),
+            13: _axis(look_rx_left, look_rx_right),
+            14: _axis(look_ry_down, look_ry_up),
+            25: _press(button_A),
+            26: _press(button_B),
+            27: _press(button_X),
+            28: _press(button_Y),
+        }
+        UNIMPLEMENTED_GAMEPAD_ACTIONS = [
+            (i, n)
+            for i, n in enumerate(
+                [
+                    "UP",
+                    "DOWN",
+                    "LEFT",
+                    "RIGHT",
+                    "START",
+                    "SELECT",
+                    "L3",
+                    "R3",
+                    "LB",
+                    "RB",
+                ],
+                start=15,
+            )
+        ]
+else:  # pragma: no cover - vJoy not installed
+    UNIMPLEMENTED_GAMEPAD_ACTIONS = [
+        (i, n)
+        for i, n in enumerate(
+            [
+                "LT",
+                "RT",
+                "Lx",
+                "Ly",
+                "Rx",
+                "Ry",
+                "UP",
+                "DOWN",
+                "LEFT",
+                "RIGHT",
+                "START",
+                "SELECT",
+                "L3",
+                "R3",
+                "LB",
+                "RB",
+                "A",
+                "B",
+                "X",
+                "Y",
+            ],
+            start=9,
+        )
+    ]
 
 
 # =============================================================================
@@ -449,6 +696,19 @@ class InferenceEngine:
         self.enable_gamepad = enable_gamepad and VJOY_AVAILABLE
         self.temporal_frames = temporal_frames
 
+        if enable_gamepad and not VJOY_AVAILABLE:
+            print(
+                "[Warn] Gamepad requested but vJoy is not available - using keyboard only."
+            )
+
+        if self.enable_gamepad and UNIMPLEMENTED_GAMEPAD_ACTIONS:
+            labels = ", ".join(label for _, label in UNIMPLEMENTED_GAMEPAD_ACTIONS)
+            print(
+                f"[Info] {len(UNIMPLEMENTED_GAMEPAD_ACTIONS)} of the gamepad "
+                f"action slots have no vJoy binding and will be dropped if the "
+                f"model selects them: {labels}"
+            )
+
         # Load model
         self.model, self.metadata = self._load_model()
         self.model.eval()
@@ -462,9 +722,12 @@ class InferenceEngine:
         self.frame_buffer = deque(maxlen=self.temporal_frames)
 
         # Detect model output size and mouse support
-        self.num_actions = self.metadata.get("num_actions", 29)
-        self.has_mouse_output = self.num_actions > 29
-        self.mouse_output_size = max(0, self.num_actions - 29)
+        self.num_actions = self.metadata.get("num_actions", _BASE_ACTION_COUNT)
+        self.has_mouse_output = self.num_actions > _BASE_ACTION_COUNT
+        self.mouse_output_size = max(0, self.num_actions - _BASE_ACTION_COUNT)
+
+        # Slots the model selected but that have no vJoy binding (warned once)
+        self._warned_unmapped_actions = set()
 
         # Build action weights matching model output size
         self._action_weights = build_action_weights(self.num_actions)
@@ -573,7 +836,7 @@ class InferenceEngine:
 
         # Best discrete action is chosen from first 29 slots only
         # (mouse outputs are continuous, not picked by argmax)
-        discrete_end = min(29, len(weighted_abs))
+        discrete_end = min(_BASE_ACTION_COUNT, len(weighted_abs))
         action_idx = int(np.argmax(weighted_abs[:discrete_end]))
         action_val = weighted[action_idx]
 
@@ -596,84 +859,83 @@ class InferenceEngine:
         if not self.enable_gamepad:
             return
 
-        if action_idx == 9:
-            gamepad_lt()
-        elif action_idx == 10:
-            gamepad_rt()
-        elif action_idx == 11:
-            if action_val < 0:
-                game_lx_left()
-            else:
-                game_lx_right()
-        elif action_idx == 12:
-            if action_val < 0:
-                game_ly_down()
-            else:
-                game_ly_up()
-        elif action_idx == 13:
-            if action_val < 0:
-                look_rx_left()
-            else:
-                look_rx_right()
-        elif action_idx == 14:
-            if action_val < 0:
-                look_ry_down()
-            else:
-                look_ry_up()
-        # D-pad and buttons (15-28)
-        elif action_idx == 25:
-            button_A()
-        elif action_idx == 26:
-            button_B()
-        elif action_idx == 27:
-            button_X()
-        elif action_idx == 28:
-            button_Y()
+        handler = GAMEPAD_ACTIONS.get(action_idx)
+        if handler is None:
+            self._report_unmapped_action(action_idx)
+            return
+
+        handler(action_val)
+
+    def _report_unmapped_action(self, action_idx: int) -> None:
+        """Warn (once per slot) that the model selected an action we cannot press.
+
+        The action space defines 20 gamepad slots but vJoy only exposes bindings
+        for ten of them. A model can and does select the unbound slots; without
+        this the bot looks like it is playing while the input is dropped.
+        """
+        if action_idx in self._warned_unmapped_actions:
+            return
+
+        self._warned_unmapped_actions.add(action_idx)
+        label = (
+            ACTION_NAMES[action_idx]
+            if action_idx < len(ACTION_NAMES)
+            else f"slot {action_idx}"
+        )
+        print(
+            f"[Warn] Model selected gamepad action '{label}' (slot {action_idx}) "
+            f"but vJoy exposes no binding for it - input dropped. Add a handler "
+            f"in _GAMEPAD_ACTION_HANDLERS to enable it."
+        )
 
     def execute_mouse(self, predictions: np.ndarray):
         """Execute mouse actions from model predictions (optional, additive).
 
-        Only called when ``self.has_mouse_output`` is True.
-        Uses delta movement (dx, dy) for smooth camera control via
-        linear interpolation, and handles click predictions.
+                Only called when ``self.has_mouse_output`` is True.
+                Uses delta movement (dx, dy) for smooth camera control via
+                linear interpolation, and handles click predictions.
 
-        The mouse values live at prediction indices [29:].
-        10-value format: [x, y, dx, dy, vx, vy, lmb, rmb, mmb, scroll]
-         6-value format: [x, y, lmb, rmb, mmb, scroll]
+        The mouse values follow the discrete slots, and each one is read by name
+                through ``config.action_mapping.MOUSE_FIELDS``, so reordering that
+                block cannot silently swap dx with dy. Signed fields (dx, dy, vx, vy,
+                scroll) are recorded as ``(v + 1) / 2`` and mapped back here.
+
+                Legacy 6-value checkpoints (x, y, lmb, rmb, mmb, scroll) carry no
+                delta, so camera movement is skipped for them.
         """
         if not MOUSE_OUTPUT_AVAILABLE or _MOUSE_CTRL is None:
             return
 
-        mouse_preds = predictions[29:]
-        if len(mouse_preds) == 0:
+        if _DENORMALIZE_MOUSE is None:  # pragma: no cover
+            # Without the field table there is no safe way to tell which slot
+            # holds which mouse value, so decline rather than guess.
             return
 
-        if len(mouse_preds) >= 10:
-            # 10-value format: prefer delta for camera (smoother than absolute)
-            dx, dy = mouse_preds[2], mouse_preds[3]
-            lmb_prob, rmb_prob, _mmb_prob = (
-                mouse_preds[6],
-                mouse_preds[7],
-                mouse_preds[8],
-            )
-            scroll_val = mouse_preds[9]
-        elif len(mouse_preds) >= 6:
-            # Legacy 6-value: no delta available, skip movement
-            dx, dy = 0.0, 0.0
-            lmb_prob, rmb_prob, _mmb_prob = (
-                mouse_preds[2],
-                mouse_preds[3],
-                mouse_preds[4],
-            )
+        mouse_preds = predictions[_BASE_ACTION_COUNT:]
+        if len(mouse_preds) >= MOUSE_OUTPUT_SIZE:
+            # Current format: prefer the recorded delta for the camera, which
+            # is smoother than moving to the absolute cursor position.
+            dx = mouse_preds[_MOUSE_FIELD["dx"].index]
+            dy = mouse_preds[_MOUSE_FIELD["dy"].index]
+            lmb_prob = mouse_preds[_MOUSE_FIELD["lmb"].index]
+            rmb_prob = mouse_preds[_MOUSE_FIELD["rmb"].index]
+            scroll_val = mouse_preds[_MOUSE_FIELD["scroll"].index]
+        elif len(mouse_preds) >= _LEGACY_MOUSE_OUTPUT_SIZE:
+            # Legacy 6-value: no delta was recorded, so drive the camera to a
+            # remapped zero instead of pretending the delta was "full left".
+            dx = dy = 0.5
+            lmb_prob = mouse_preds[2]
+            rmb_prob = mouse_preds[3]
             scroll_val = mouse_preds[5]
         else:
             return
 
         # ── Smooth mouse movement via delta ──
-        # dx/dy are sigmoid outputs in [0,1]; remap to [-1,1] then scale to pixels
-        # The model learned normalized deltas: -1 = full left, +1 = full right
-        dx_remapped = (dx - 0.5) * 2.0  # [0,1] → [-1,1]
-        dy_remapped = (dy - 0.5) * 2.0
+        # dx/dy are sigmoid outputs in [0,1]; the recorder mapped the signed range
+        # through (v + 1) / 2, so invert it to recover [-1,1] and scale to
+        # pixels. A remapped 0 means "no movement", 1 means "full right".
+        dx_remapped = _DENORMALIZE_MOUSE(_MOUSE_FIELD["dx"], dx)
+        dy_remapped = _DENORMALIZE_MOUSE(_MOUSE_FIELD["dy"], dy)
         # Scale: max ~100px per frame for smooth camera
         pixel_dx = int(dx_remapped * 100)
         pixel_dy = int(dy_remapped * 100)
@@ -693,7 +955,7 @@ class InferenceEngine:
             _MOUSE_CTRL.release(_MBtn.right)
 
         # ── Scroll ──
-        scroll_remapped = (scroll_val - 0.5) * 2.0
+        scroll_remapped = _DENORMALIZE_MOUSE(_MOUSE_FIELD["scroll"], scroll_val)
         if abs(scroll_remapped) > 0.3:
             _MOUSE_CTRL.scroll(0, int(scroll_remapped * 3))
 

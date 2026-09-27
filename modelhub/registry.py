@@ -5,6 +5,8 @@ import json
 from pathlib import Path
 from typing import Dict, Any, List
 
+from modelhub.action_space import BASE_ACTION_COUNT
+
 CATALOG_DIR = Path("catalog")
 GAMES_DIR = CATALOG_DIR / "games"
 
@@ -42,7 +44,7 @@ def ensure_default_catalog() -> None:
                 "recommended_resolution": [1920, 1080],
                 "supported_inputs": ["keyboard", "gamepad"],
                 "expected_input_shape": [480, 270, 3],
-                "expected_classes": 29,
+                "expected_classes": BASE_ACTION_COUNT,
                 "notes": "Default blueprint. Local models only by default.",
             },
         )

@@ -56,6 +56,104 @@ except ImportError:
         MouseCapture = None
 
 
+#: Frame size the whole pipeline agrees on: collect_data.py records at it,
+#: test_model.py resizes to it, train_model.py does not rescale. A profile may
+#: ask for something else (see :func:`resolve_target_size`) but it cannot win.
+DEFAULT_TARGET_SIZE = (480, 270)
+
+#: Used only when the config package cannot be imported at all.
+_FALLBACK_BASE_ACTIONS = 29
+_FALLBACK_MOUSE_ACTIONS = 10
+
+
+def _load_action_space():
+    """Resolve the shared action space through every import path this script has.
+
+    Returns:
+        Tuple of (action_space or None, mouse_output_size, mouse_fields,
+        normalize_mouse_vector or None). The last two are empty only in the
+        built-in fallback, where there is no field table to normalise against.
+    """
+    try:
+        from ..config.action_mapping import (  # normal package import
+            DEFAULT_ACTION_SPACE_NAME,
+            MOUSE_FIELDS,
+            MOUSE_OUTPUT_SIZE,
+            get_pipeline_action_space,
+            normalize_mouse_vector,
+        )
+    except ImportError:  # pragma: no cover - exercised only when run as a script
+        try:
+            from config.action_mapping import (
+                DEFAULT_ACTION_SPACE_NAME,
+                MOUSE_FIELDS,
+                MOUSE_OUTPUT_SIZE,
+                get_pipeline_action_space,
+                normalize_mouse_vector,
+            )
+        except ImportError:
+            try:
+                import sys as _sys
+                from pathlib import Path as _Path
+
+                _pkg_root = _Path(__file__).resolve().parent.parent
+                if str(_pkg_root) not in _sys.path:
+                    _sys.path.insert(0, str(_pkg_root))
+                from config.action_mapping import (
+                    DEFAULT_ACTION_SPACE_NAME,
+                    MOUSE_FIELDS,
+                    MOUSE_OUTPUT_SIZE,
+                    get_pipeline_action_space,
+                    normalize_mouse_vector,
+                )
+            except ImportError:
+                logger.warning(
+                    "config.action_mapping not reachable; falling back to the "
+                    f"built-in {_FALLBACK_BASE_ACTIONS}-slot layout. "
+                    "Slot order stays identical, but the action space is no "
+                    "longer validated at import time."
+                )
+                return None, _FALLBACK_MOUSE_ACTIONS, (), None
+
+    return (
+        get_pipeline_action_space(DEFAULT_ACTION_SPACE_NAME),
+        MOUSE_OUTPUT_SIZE,
+        MOUSE_FIELDS,
+        normalize_mouse_vector,
+    )
+
+
+# Action space definition -- single source of truth for keyboard slot order.
+ACTION_SPACE, MOUSE_OUTPUT_SIZE, MOUSE_FIELDS, _NORMALIZE_MOUSE = _load_action_space()
+
+#: Number of keyboard slots at the head of the action space.
+_KEYBOARD_SLOT_COUNT = 9
+
+#: (action_id, key combo) pairs in slot order, derived from the action space.
+if ACTION_SPACE is not None:
+    _KEYBOARD_SLOTS = [
+        (
+            action.id,
+            tuple(action.key_binding.split("+")) if action.key_binding else (),
+        )
+        for action in ACTION_SPACE.actions[:_KEYBOARD_SLOT_COUNT]
+    ]
+    _NO_KEY_ID = ACTION_SPACE.actions[_KEYBOARD_SLOT_COUNT - 1].id
+else:  # pragma: no cover - config package unavailable
+    _KEYBOARD_SLOTS = [
+        (0, ("W",)),
+        (1, ("S",)),
+        (2, ("A",)),
+        (3, ("D",)),
+        (4, ("W", "A")),
+        (5, ("W", "D")),
+        (6, ("S", "A")),
+        (7, ("S", "D")),
+        (8, ()),
+    ]
+    _NO_KEY_ID = 8
+
+
 class DataCollectionError(Exception):
     """Custom exception for data collection errors."""
 
@@ -68,6 +166,105 @@ class ScreenCaptureError(DataCollectionError):
     pass
 
 
+def base_action_count() -> int:
+    """Number of keyboard+gamepad slots the pipeline records."""
+    if ACTION_SPACE is not None:
+        return ACTION_SPACE.num_actions
+    return _FALLBACK_BASE_ACTIONS
+
+
+def expected_action_width(with_mouse: bool) -> int:
+    """Number of values in one recorded action vector."""
+    return base_action_count() + (MOUSE_OUTPUT_SIZE if with_mouse else 0)
+
+
+def describe_action_space() -> str:
+    """One-line human readable breakdown of the recorded action vector."""
+    gamepad_slots = base_action_count() - _KEYBOARD_SLOT_COUNT
+    return (
+        f"{base_action_count()} actions "
+        f"({_KEYBOARD_SLOT_COUNT} keyboard + {gamepad_slots} gamepad) "
+        f"+ {MOUSE_OUTPUT_SIZE} mouse = {expected_action_width(True)} values"
+    )
+
+
+def resolve_target_size(profile) -> Tuple[int, int]:
+    """Frame size to record at, for *profile* (or ``None`` for the default).
+
+    The profile's ``recommended_input_size`` is honoured only when it matches
+    the rest of the pipeline. Any other value is reported and replaced, because
+    a differently sized dataset cannot be fed to ``test_model.py`` without
+    re-recording.
+    """
+    pipeline = f"{DEFAULT_TARGET_SIZE[0]}x{DEFAULT_TARGET_SIZE[1]}"
+
+    if profile is None:
+        return DEFAULT_TARGET_SIZE
+
+    try:
+        size = tuple(int(v) for v in profile.recommended_input_size)
+    except (TypeError, ValueError):
+        size = ()
+
+    if len(size) != 2 or any(v <= 0 for v in size):
+        logger.warning(
+            f"Profile '{profile.id}' has an unreadable recommended_input_size "
+            f"({getattr(profile, 'recommended_input_size', None)!r}). "
+            f"Recording at the pipeline size {pipeline}."
+        )
+        return DEFAULT_TARGET_SIZE
+
+    if size != DEFAULT_TARGET_SIZE:
+        logger.warning(
+            f"Profile '{profile.id}' recommends {size[0]}x{size[1]} but the "
+            f"pipeline records {pipeline} (test_model.py resizes to it, "
+            f"train_model.py does not rescale). Recording at {pipeline}."
+        )
+        return DEFAULT_TARGET_SIZE
+
+    return size
+
+
+def validate_profile(profile) -> None:
+    """Check a game profile against the action space this script records.
+
+    Args:
+        profile: Loaded ``GameProfile``, or ``None`` when ``--game`` was not used.
+
+    Raises:
+        DataCollectionError: If the profile declares an action count the
+            pipeline cannot produce.
+    """
+    if profile is None:
+        return
+
+    base = base_action_count()
+    declared_space = str(getattr(profile, "action_space", "") or "")
+    if declared_space and ACTION_SPACE is not None:
+        if declared_space != ACTION_SPACE.name:
+            logger.warning(
+                f"Profile '{profile.id}' declares action_space "
+                f"'{declared_space}' but the pipeline records "
+                f"'{ACTION_SPACE.name}'. Using the pipeline layout."
+            )
+
+    try:
+        declared = int(profile.num_actions)
+    except (TypeError, ValueError):
+        declared = -1
+
+    if declared in (base, base + MOUSE_OUTPUT_SIZE):
+        return
+
+    raise DataCollectionError(
+        f"Profile '{profile.id}' declares num_actions: {declared}, but this "
+        f"pipeline records {base} values without --mouse and "
+        f"{base + MOUSE_OUTPUT_SIZE} with it. A dataset recorded from this "
+        f"profile would not line up with a trained model. Set "
+        f"input.num_actions to {base} in the profile."
+    )
+
+
 class InputCaptureError(DataCollectionError):
     """Raised when input capture fails."""
 
@@ -76,35 +273,28 @@ class InputCaptureError(DataCollectionError):
 
 def keys_to_output(keys: List[str]) -> List[int]:
     """
-    One-hot encode keyboard input.
+    One-hot encode keyboard input into the action space's keyboard slots.
+
+    The action space (``bot_mmorpg.config.action_mapping``) owns the slot order
+    and the key combinations; this function only resolves which slot the keys
+    currently held match. The most specific (longest) combination wins, so
+    holding W+A selects ``move_forward_left`` rather than ``move_forward``.
 
     Args:
         keys: List of pressed key characters
 
     Returns:
-        One-hot encoded list [W, S, A, D, WA, WD, SA, SD, NOKEY]
+        One-hot encoded list ordered like ``KEYBOARD_BASE_ACTIONS`` --
+        [W, S, A, D, WA, WD, SA, SD, NOKEY]
     """
-    output = [0, 0, 0, 0, 0, 0, 0, 0, 0]
+    output = [0] * _KEYBOARD_SLOT_COUNT
+    best_id, best_len = _NO_KEY_ID, 0
 
-    if "W" in keys and "A" in keys:
-        output[4] = 1
-    elif "W" in keys and "D" in keys:
-        output[5] = 1
-    elif "S" in keys and "A" in keys:
-        output[6] = 1
-    elif "S" in keys and "D" in keys:
-        output[7] = 1
-    elif "W" in keys:
-        output[0] = 1
-    elif "S" in keys:
-        output[1] = 1
-    elif "A" in keys:
-        output[2] = 1
-    elif "D" in keys:
-        output[3] = 1
-    else:
-        output[8] = 1
+    for action_id, combo in _KEYBOARD_SLOTS:
+        if combo and len(combo) > best_len and all(key in keys for key in combo):
+            best_id, best_len = action_id, len(combo)
 
+    output[best_id] = 1
     return output
 
 
@@ -142,7 +332,8 @@ def validate_dependencies() -> bool:
 
 
 def capture_screen(
-    region: Tuple[int, int, int, int], target_size: Tuple[int, int] = (480, 270)
+    region: Tuple[int, int, int, int],
+    target_size: Tuple[int, int] = DEFAULT_TARGET_SIZE,
 ) -> np.ndarray:
     """
     Capture and process screen region.
@@ -186,8 +377,10 @@ def capture_input(
     Mouse recording is additive and non-destructive:
     - When *mouse_capturer* is ``None`` the returned mouse vector is ``None``
       and the existing keyboard+gamepad values are unchanged.
-    - When a :class:`MouseCapture` instance is provided, a 6-element float32
-      array ``[x, y, lmb, rmb, mmb, scroll]`` is appended.
+    - When a :class:`MouseCapture` instance is provided, its
+      ``MOUSE_OUTPUT_SIZE``-element float32 snapshot is appended, with the
+      signed fields mapped into ``[0, 1]`` so the BCE loss can represent them.
+      ``InferenceEngine.execute_mouse`` inverts that mapping at playback time.
 
     Args:
         mouse_capturer: Optional MouseCapture instance (or None to skip).
@@ -218,10 +411,20 @@ def capture_input(
         if mouse_capturer is not None:
             try:
                 state = mouse_capturer.snapshot()
-                mouse_output = state.to_array()  # float32, shape (6,)
-            except Exception:
-                # Mouse capture failure must never break recording
+                # Signed fields are mapped into [0, 1] here so the BCE loss
+                # can actually represent them; execute_mouse inverts this
+                # at playback time.
+                mouse_output = np.asarray(
+                    _NORMALIZE_MOUSE(state.to_array()),
+                    dtype=np.float32,
+                )
+            except Exception as exc:
+                # Mouse capture failure must never break recording -- but it
+                # must not be silent either. A dropped block is
+                # indistinguishable from a bot that simply has no mouse, and
+                # the dataset looks fine until training collapses.
                 mouse_output = None
+                logger.warning(f"Mouse capture failed, recording without it: {exc}")
 
         return keyboard_output, gamepad_output, mouse_output
 
@@ -386,6 +589,7 @@ Example:
             try:
                 loader = GameProfileLoader()
                 game_profile = loader.load(args.game)
+                validate_profile(game_profile)
                 logger.info(f"Loaded game profile: {game_profile.name}")
 
                 # Auto-configure output directory
@@ -404,17 +608,23 @@ Example:
                         f"(fps_target={task_cfg.fps_target})"
                     )
 
-                # Enable mouse if the game profile requires it
+                # A profile that needs the mouse gets it. Without these
+                # values the recorded vector is narrower than the one
+                # the profile (and therefore the model) describes.
                 if game_profile.requires_mouse and not args.mouse:
+                    args.mouse = True
                     logger.info(
-                        "Game profile requires mouse. "
-                        "Enable with --mouse for best results."
+                        "Game profile requires mouse: recording enabled "
+                        f"automatically (+{MOUSE_OUTPUT_SIZE} values)."
                     )
             except FileNotFoundError:
                 logger.error(f"Game profile '{args.game}' not found.")
                 logger.error(
                     "Available profiles are listed in game_profiles/index.yaml"
                 )
+                return 1
+            except DataCollectionError as e:
+                logger.error(f"Game profile '{args.game}' is inconsistent: {e}")
                 return 1
 
     # --- Auto-detect game window region ---
@@ -448,6 +658,11 @@ Example:
                         "Game window not found. Using default 1280x720. "
                         "Specify --region manually for best results."
                     )
+
+    # Frame size: the game profile picks it, the pipeline has a veto.
+    target_size = resolve_target_size(game_profile)
+    logger.info(f"Frame size: {target_size[0]}x{target_size[1]}")
+    logger.info(f"Action vector: {describe_action_space()}")
 
     # Final fallback for region
     if args.region is None:
@@ -507,7 +722,8 @@ Example:
             mouse_capturer = MouseCapture(capture_region=region)
             mouse_capturer.start()
             logger.info(
-                "Mouse recording ENABLED (adds 6 values: x, y, lmb, rmb, mmb, scroll)"
+                f"Mouse recording ENABLED (adds {MOUSE_OUTPUT_SIZE} values: "
+                f"{', '.join(f.name for f in MOUSE_FIELDS)})"
             )
 
     # Countdown
@@ -523,7 +739,7 @@ Example:
             if not paused:
                 try:
                     # Capture screen
-                    screen = capture_screen(region=region)
+                    screen = capture_screen(region=region, target_size=target_size)
 
                     # Capture input (mouse is additive / non-destructive)
                     keyboard_output, gamepad_output, mouse_output = capture_input(

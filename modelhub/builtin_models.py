@@ -27,6 +27,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Any, List, Optional
 
+from modelhub.action_space import BASE_ACTION_COUNT
+
 
 @dataclass
 class BuiltinModel:
@@ -157,7 +159,7 @@ def ensure_builtin_profile(target_dir: Path, game_id: str = "genshin_impact") ->
         "architecture": "inception_v3",
         "format": "tf_checkpoint",
         "input_shape": [480, 270, 3],
-        "classes": 29,
+        "classes": BASE_ACTION_COUNT,
         "dataset_id": "",
         "notes": "Generated locally from builtin model metadata.",
     }

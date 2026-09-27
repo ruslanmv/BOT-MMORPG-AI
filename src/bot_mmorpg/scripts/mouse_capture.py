@@ -46,6 +46,12 @@ import numpy as np
 # ── Maximum velocity (px / sec) used for normalization ──────────────
 _MAX_VELOCITY = 4000.0  # pixels per second (a fast flick on 1080p)
 
+# ── Maximum scroll (steps / frame) used for normalization ─────────────
+# Scroll arrives from pynput as an unbounded accumulated step count, so it
+# has to be bounded like the other signed fields. One frame at a fast
+# flick of the wheel is a good full-scale value.
+_MAX_SCROLL_STEPS = 3.0
+
 
 @dataclass(frozen=True)
 class MouseState:
@@ -59,7 +65,8 @@ class MouseState:
                      where ±1 means moved the full width/height of the region
         vx, vy     — velocity (px/sec) normalized to [-1, 1] via _MAX_VELOCITY
         lmb, rmb, mmb — button states (0 or 1)
-        scroll     — scroll delta since last snapshot
+        scroll     — scroll delta since last snapshot, normalized to [-1, 1]
+                  via _MAX_SCROLL_STEPS
         timestamp  — time.time() when this snapshot was taken
     """
 
@@ -235,6 +242,22 @@ class MouseCapture:
         self._listener.start()
         self._running = True
 
+        # Seed from where the cursor actually is. Without this the first move
+        # event is differenced against (0, 0), so a 20px nudge records as a
+        # full-speed camera whip in both axes and every session opens with a
+        # frame that is a lie.
+        try:
+            pos = mouse.Controller().position
+            self._prev_abs_x = int(pos[0])
+            self._prev_abs_y = int(pos[1])
+            with self._state.lock:
+                self._state.abs_x = self._prev_abs_x
+                self._state.abs_y = self._prev_abs_y
+        except Exception:  # pragma: no cover - cursor position unavailable
+            # Leave the defaults; the first frame after a real move will carry
+            # a bogus delta, which is no worse than not listening at all.
+            pass
+
     def stop(self) -> None:
         """Stop the listener thread."""
         if self._listener is not None:
@@ -261,7 +284,10 @@ class MouseCapture:
             lmb = self._state.lmb
             rmb = self._state.rmb
             mmb = self._state.mmb
-            scroll = self._state.scroll_accum
+            # Scroll accumulates raw step counts; bound it to [-1, 1] so every
+            # signed field in the recorded block shares a single range and the
+            # (v + 1) / 2 mapping in config.action_mapping stays valid.
+            scroll = max(-1.0, min(1.0, self._state.scroll_accum / _MAX_SCROLL_STEPS))
             self._state.scroll_accum = 0.0
 
         # ── Absolute position: normalized [0, 1] ──

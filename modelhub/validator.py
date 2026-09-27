@@ -3,6 +3,8 @@ import json
 from pathlib import Path
 from typing import Dict, Any, Tuple, Optional, Sequence
 
+from modelhub.action_space import MOUSE_OUTPUT_SIZES
+
 
 def load_json(path: Path) -> Dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
@@ -54,6 +56,19 @@ def _as_class_count(value: Any) -> Optional[int]:
     return None
 
 
+def accepted_class_counts(expected_classes: int) -> Tuple[int, ...]:
+    """Class counts a blueprint's expected width may legitimately be recorded at.
+
+    Args:
+        expected_classes: The discrete output count the blueprint declares.
+
+    Returns:
+        Every accepted output count, narrowest first: the declared width on its
+        own, and once more with the mouse block appended.
+    """
+    return tuple(sorted({int(expected_classes) + extra for extra in MOUSE_OUTPUT_SIZES}))
+
+
 def validate_compatibility(
     game_blueprint: Dict[str, Any],
     model_profile: Dict[str, Any],
@@ -72,6 +87,10 @@ def validate_compatibility(
       - game (optional but recommended)
       - input_shape (recommended)
       - classes (recommended: int count OR list of labels)
+
+    A blueprint expecting 29 discrete outputs also accepts a 39-output model:
+    `collect_data --mouse` appends the mouse block to the discrete slots, and
+    both widths run through the same bot.
     """
     blueprint_id = game_blueprint.get("id")
 
@@ -92,8 +111,13 @@ def validate_compatibility(
 
     # ---- class count check (only if both sides declare it) ----
     if expected_classes is not None and profile_classes is not None:
-        if int(expected_classes) != int(profile_classes):
-            return False, f"Class count mismatch: expected {expected_classes}, got {profile_classes}"
+        accepted = accepted_class_counts(expected_classes)
+        if int(profile_classes) not in accepted:
+            return False, (
+                f"Class count mismatch: expected "
+                f"{' or '.join(str(count) for count in accepted)}, "
+                f"got {profile_classes}"
+            )
 
     # ---- required minimum metadata ----
     if not model_profile.get("architecture"):
